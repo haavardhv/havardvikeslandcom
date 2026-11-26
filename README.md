@@ -15,6 +15,10 @@ The water is a wave simulation on the GPU (a height grid stepped with the wave e
 
 Debug URL options: `?scale=1` pins the render resolution (it otherwise adapts to the GPU); `?substeps=N` runs the simulation N times per frame, for testing on slow machines; `?post=0` disables temporal upsampling to show raw frames.
 
+## The game (separate site)
+
+`gtcv6/` holds **Grand Theft Cappes Vei 6**, a small 3D browser game set on Cappes vei 6 in Fjellet. It is its own Cloudflare Worker with its own `wrangler.jsonc` and is meant for a subdomain. It does not touch this page. See [`gtcv6/README.md`](gtcv6/README.md).
+
 ## Run locally
 
 ```bash

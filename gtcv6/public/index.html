@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+  <title>Grand Theft Cappes Vei 6</title>
+  <meta name="description" content="A tiny open-world game set in the rain on Cappes vei 6, Fjellet, Bergen. Get home, throw a party, outrun the seagulls.">
+  <meta name="theme-color" content="#101418">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <meta property="og:type" content="website">
+  <meta property="og:title" content="Grand Theft Cappes Vei 6">
+  <meta property="og:description" content="Get home. Throw a party. Outrun the seagulls of Fjellet.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,400..900&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/style.css">
+  <script type="module" src="/js/game.js"></script>
+</head>
+<body>
+  <canvas id="c" aria-label="Game view"></canvas>
+
+  <div id="hud" hidden>
+    <div id="mapwrap"><canvas id="minimap" width="360" height="360"></canvas><span id="north">N</span></div>
+    <div id="stats">
+      <div id="money">kr 0</div>
+      <div id="alarm" title="Måkealarm: how angry the seagulls are"></div>
+      <div id="health"><i></i></div>
+      <div id="umbrellas"></div>
+    </div>
+    <div id="timer" hidden></div>
+    <div id="objective"></div>
+    <div id="prompt" hidden></div>
+    <div id="phone" hidden><b></b><span></span></div>
+    <div id="toast" hidden></div>
+    <div id="banner" hidden><b></b><span></span></div>
+    <div id="help">WASD move · mouse look · Shift run · Space jump · Click punch · E use · Esc pause</div>
+    <button id="pausebtn" type="button" aria-label="Pause">II</button>
+  </div>
+
+  <div id="touch" hidden>
+    <div id="stick"><i></i></div>
+    <button data-k="jump" type="button">Jump</button>
+    <button data-k="punch" type="button">Punch</button>
+    <button data-k="use" type="button">E</button>
+    <button data-k="run" type="button">Run</button>
+  </div>
+
+  <section id="title">
+    <div class="titlebox">
+      <p class="kicker">Grand Theft</p>
+      <h1>Cappes Vei&nbsp;6</h1>
+      <p class="where">Fjellet · Bergen · 5018</p>
+      <p class="blurb">It is raining (it is Bergen). A gang of seagulls runs Fjellet. You just want to get home, throw a party on the terrace, and eat the last skillingsbolle in town.</p>
+      <button id="play" type="button" disabled>Loading…</button>
+      <dl class="keys">
+        <div><dt>WASD</dt><dd>move</dd></div>
+        <div><dt>Mouse</dt><dd>look</dd></div>
+        <div><dt>Shift</dt><dd>run</dd></div>
+        <div><dt>Space</dt><dd>jump</dd></div>
+        <div><dt>Click / F</dt><dd>punch</dd></div>
+        <div><dt>E</dt><dd>doors, scooters</dd></div>
+      </dl>
+    </div>
+  </section>
+
+  <section id="pause" hidden>
+    <div class="titlebox small">
+      <p class="kicker">Paused</p>
+      <h2 id="pausetitle">Cappes Vei 6</h2>
+      <p id="pausestats" class="where"></p>
+      <p id="fact" class="fact"></p>
+      <button id="resume" type="button">Resume</button>
+      <button id="restart" type="button" class="ghost">Restart mission</button>
+      <button id="soundbtn" type="button" class="ghost">Sound: on</button>
+      <button id="reset" type="button" class="ghost">Start over</button>
+    </div>
+  </section>
+
+  <div id="fade"></div>
+</body>
+</html>

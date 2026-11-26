@@ -1,0 +1,1452 @@
+// Grand Theft Cappes Vei 6 — main loop, player, camera, seagulls, missions, HUD.
+import * as THREE from '../vendor/three.module.min.js';
+import { buildTextures, textTexture } from './textures.js';
+import { buildWorld, laneY, H6 } from './world.js';
+import { Humanoid, Gull, makeScooter, makeItem, makeMarker, makeArrow } from './actors.js';
+import { Audio } from './audio.js';
+
+const $ = id => document.getElementById(id);
+const params = new URLSearchParams(location.search);
+const isTouch = matchMedia('(pointer: coarse)').matches;
+if (isTouch) document.body.classList.add('touch');
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const lerp = (a, b, t) => a + (b - a) * t;
+const damp = (a, b, k, dt) => lerp(a, b, 1 - Math.exp(-k * dt));
+const angDiff = (a, b) => { let d = b - a; while (d > Math.PI) d -= Math.PI * 2; while (d < -Math.PI) d += Math.PI * 2; return d; };
+
+// ------------------------------------------------------------------ renderer
+const canvas = $('c');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' });
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.08;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFShadowMap;
+let maxRatio = Math.min(devicePixelRatio || 1, isTouch ? 1.5 : 1.75);
+if (params.get('q') === 'low') maxRatio = 0.75;
+let pixelRatio = maxRatio;
+renderer.setPixelRatio(pixelRatio);
+
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(64, innerWidth / innerHeight, 0.08, 3000);
+function resize() {
+  renderer.setSize(innerWidth, innerHeight, false);
+  camera.aspect = innerWidth / innerHeight;
+  camera.fov = camera.aspect < 0.8 ? 78 : 64;
+  camera.updateProjectionMatrix();
+}
+addEventListener('resize', resize);
+resize();
+
+try { await document.fonts.load('800 72px "Archivo"'); } catch (e) { /* fall back to system fonts */ }
+
+// ------------------------------------------------------------------ sky, light, weather
+const skyU = {
+  top: { value: new THREE.Color(0x6d7f8e) },
+  horizon: { value: new THREE.Color(0xa3acb2) },
+  cloud: { value: 0.8 },
+  time: { value: 0 },
+  sunDir: { value: new THREE.Vector3() },
+};
+const sky = new THREE.Mesh(
+  new THREE.SphereGeometry(2000, 32, 16),
+  new THREE.ShaderMaterial({
+    uniforms: skyU, side: THREE.BackSide, depthWrite: false, fog: false,
+    vertexShader: `varying vec3 vDir; void main(){ vDir = position; vec4 p = projectionMatrix * modelViewMatrix * vec4(position,1.0); gl_Position = p.xyww; }`,
+    fragmentShader: `
+      uniform vec3 top, horizon, sunDir; uniform float cloud, time; varying vec3 vDir;
+      float h21(vec2 p){ p = fract(p*vec2(123.34, 456.21)); p += dot(p, p+45.32); return fract(p.x*p.y); }
+      float n2(vec2 p){ vec2 i=floor(p), f=fract(p); f=f*f*(3.-2.*f);
+        return mix(mix(h21(i),h21(i+vec2(1,0)),f.x), mix(h21(i+vec2(0,1)),h21(i+vec2(1,1)),f.x), f.y); }
+      float fbm(vec2 p){ float a=.5, s=0.; for(int i=0;i<5;i++){ s+=a*n2(p); p*=2.03; a*=.5; } return s; }
+      void main(){
+        vec3 d = normalize(vDir);
+        float h = clamp(d.y, 0., 1.);
+        vec3 col = mix(horizon, top, pow(h, .55));
+        float sun = pow(max(dot(d, sunDir), 0.), 40.) * (1. - cloud);
+        col += vec3(1., .85, .6) * sun * .8;
+        vec2 uv = d.xz / (d.y + .12) * 1.4 + vec2(time*.012, time*.005);
+        float n = fbm(uv);
+        float c = smoothstep(.62 - cloud*.45, .95 - cloud*.2, n);
+        vec3 cc = mix(vec3(.96,.96,.97), vec3(.52,.56,.6), cloud);
+        col = mix(col, cc, c * smoothstep(0., .12, d.y) * (.55 + cloud*.4));
+        gl_FragColor = vec4(col, 1.);
+        #include <tonemapping_fragment>
+        #include <colorspace_fragment>
+      }`,
+  })
+);
+sky.frustumCulled = false;
+sky.renderOrder = -10;
+scene.add(sky);
+
+const hemi = new THREE.HemisphereLight(0xd2dce4, 0x4b4e44, 1.3);
+scene.add(hemi);
+const sun = new THREE.DirectionalLight(0xffeedd, 1.8);
+const sunOffset = new THREE.Vector3(-55, 48, 62).normalize();
+sun.castShadow = true;
+sun.shadow.mapSize.set(isTouch ? 1024 : 2048, isTouch ? 1024 : 2048);
+const SH = 34;
+Object.assign(sun.shadow.camera, { left: -SH, right: SH, top: SH, bottom: -SH, near: 1, far: 220 });
+sun.shadow.bias = -0.0004;
+sun.shadow.normalBias = 0.04;
+scene.add(sun, sun.target);
+scene.fog = new THREE.Fog(0xa3acb2, 30, 700);
+
+const weather = { rain: 0.85, target: 0.85, t: 50, forced: null };
+const C = {
+  topWet: new THREE.Color(0x66737e), horWet: new THREE.Color(0x9aa3a8),
+  topDry: new THREE.Color(0x4f86c0), horDry: new THREE.Color(0xc4d3dc),
+};
+function updateWeather(dt) {
+  weather.t -= dt;
+  if (weather.forced !== null) weather.target = weather.forced;
+  else if (weather.t <= 0) {
+    const raining = weather.target > 0.4;
+    weather.target = raining ? 0.05 + Math.random() * 0.2 : 0.55 + Math.random() * 0.45;
+    weather.t = raining ? 25 + Math.random() * 30 : 60 + Math.random() * 70;
+  }
+  weather.rain = damp(weather.rain, weather.target, weather.forced !== null ? 1.2 : 0.25, dt);
+  const r = weather.rain;
+  skyU.cloud.value = 0.25 + r * 0.7;
+  skyU.top.value.lerpColors(C.topDry, C.topWet, Math.min(1, r * 1.3));
+  skyU.horizon.value.lerpColors(C.horDry, C.horWet, Math.min(1, r * 1.3));
+  scene.fog.color.copy(skyU.horizon.value);
+  scene.fog.near = lerp(80, 12, r);
+  scene.fog.far = lerp(1500, 420, r);
+  sun.intensity = lerp(2.9, 0.75, r);
+  hemi.intensity = lerp(1.15, 1.45, r);
+  hemi.color.lerpColors(new THREE.Color(0xcfe0ff), new THREE.Color(0xd4dbe0), r);
+}
+
+// ------------------------------------------------------------------ world
+const T = buildTextures();
+const W = buildWorld(scene, T);
+const world = W.world;
+for (const [x, y, z] of W.lights.slice(0, 3)) {
+  const l = new THREE.PointLight(0xffd6a0, 5, 9, 1.6);
+  l.position.set(x, y, z);
+  scene.add(l);
+}
+const inHouse = p => p.x > H6.x0 && p.x < H6.x1 && p.z > H6.z0 && p.z < H6.z1 && p.y < H6.C + 0.1 && p.y > -1;
+
+// ------------------------------------------------------------------ rain
+const RAIN_N = isTouch ? 1400 : 2600;
+const rainPos = new Float32Array(RAIN_N * 6);
+const rainGeo = new THREE.BufferGeometry();
+rainGeo.setAttribute('position', new THREE.BufferAttribute(rainPos, 3));
+const rainMat = new THREE.LineBasicMaterial({ color: 0xb8c6d2, transparent: true, opacity: 0.42, depthWrite: false });
+const rain = new THREE.LineSegments(rainGeo, rainMat);
+rain.frustumCulled = false;
+scene.add(rain);
+const drops = [];
+for (let i = 0; i < RAIN_N; i++) drops.push({ x: (Math.random() - 0.5) * 50, y: Math.random() * 30, z: (Math.random() - 0.5) * 50, s: 11 + Math.random() * 5 });
+function updateRain(dt) {
+  const n = Math.floor(RAIN_N * clamp(weather.rain * 1.2, 0, 1));
+  rainGeo.setDrawRange(0, n * 2);
+  rain.visible = n > 0;
+  if (!n) return;
+  const cx = camera.position.x, cy = camera.position.y, cz = camera.position.z;
+  const wind = 1.8;
+  for (let i = 0; i < n; i++) {
+    const d = drops[i];
+    d.y -= d.s * dt; d.x += wind * dt;
+    if (d.y < -12) { d.y += 30; d.x = (Math.random() - 0.5) * 50; d.z = (Math.random() - 0.5) * 50; }
+    if (d.x > 25) d.x -= 50;
+    let x = cx + d.x, y = cy + d.y, z = cz + d.z;
+    // wrap to the camera so the rain box follows smoothly
+    x = cx + ((x - cx + 25) % 50 + 50) % 50 - 25;
+    if (x > H6.x0 && x < H6.x1 && z > H6.z0 && z < H6.z1 && y < H6.C + 0.6) y = -9999;
+    const k = i * 6;
+    rainPos[k] = x; rainPos[k + 1] = y; rainPos[k + 2] = z;
+    rainPos[k + 3] = x - wind * 0.04; rainPos[k + 4] = y + 0.55; rainPos[k + 5] = z;
+  }
+  rainGeo.attributes.position.needsUpdate = true;
+}
+
+// ------------------------------------------------------------------ audio
+const audio = new Audio();
+
+// ------------------------------------------------------------------ save
+const SAVE_KEY = 'gtcv6-save-v1';
+const save = { mission: 0, money: 0, umbrellas: [], done: false };
+try { Object.assign(save, JSON.parse(localStorage.getItem(SAVE_KEY) || '{}')); } catch (e) { /* no storage */ }
+const persist = () => { try { localStorage.setItem(SAVE_KEY, JSON.stringify(save)); } catch (e) { /* ignore */ } };
+
+// ------------------------------------------------------------------ player
+const RADIUS = 0.3, HEIGHT = 1.8, STEP = 0.5;
+const player = {
+  pos: new THREE.Vector3(), vel: new THREE.Vector3(), heading: Math.PI / 2,
+  onGround: false, fig: new Humanoid(), stepAcc: 0, knockT: 0, riding: null,
+  carrying: null, punchCd: 0, airT: 0, hurtT: 0, health: 100, regenT: 0,
+};
+scene.add(player.fig.root);
+const carryHold = new THREE.Group(); // the bolle rides in the left hand
+player.fig.arms[0].add(carryHold);
+carryHold.position.set(0, -0.7, 0.12);
+
+// ------------------------------------------------------------------ camera rig
+const cam = { yaw: -Math.PI / 2, pitch: 0.32, dist: 4.4, cur: 4.4, lastLook: 0, shake: 0 };
+const _v = new THREE.Vector3(), _v2 = new THREE.Vector3(), _dir = new THREE.Vector3();
+const camBox = new THREE.Vector3();
+function updateCamera(dt) {
+  const p = player.pos;
+  const inside = inHouse(p);
+  const want = player.riding ? 5.6 : inside ? 2.5 : 4.6;
+  cam.dist = damp(cam.dist, want, 3, dt);
+  const baseFov = camera.aspect < 0.8 ? 78 : 64;
+  const fov = damp(camera.fov, inside ? baseFov + 14 : baseFov, 3, dt);
+  if (Math.abs(fov - camera.fov) > 0.01) { camera.fov = fov; camera.updateProjectionMatrix(); }
+  // follow the scooter's heading unless the player is steering the camera
+  if (player.riding && performance.now() - cam.lastLook > 900) {
+    cam.yaw = cam.yaw + angDiff(cam.yaw, player.riding.heading + Math.PI) * Math.min(1, dt * 2.5);
+    cam.pitch = damp(cam.pitch, 0.28, 2, dt);
+  }
+  const pivot = _v.set(p.x, p.y + (player.knockT > 0 ? 0.6 : 1.55), p.z);
+  _dir.set(Math.sin(cam.yaw) * Math.cos(cam.pitch), Math.sin(cam.pitch), Math.cos(cam.yaw) * Math.cos(cam.pitch));
+  const hit = world.raycast(pivot, _dir, cam.dist + 0.3);
+  const d = Math.max(0.35, Math.min(cam.dist, hit - 0.3));
+  cam.cur = d < cam.cur ? d : damp(cam.cur, d, 4, dt);
+  camBox.copy(pivot).addScaledVector(_dir, cam.cur);
+  // keep the camera out of walls sideways
+  camBox.y -= 0.05;
+  world.collide(camBox, 0.18, 0.1, 0.3);
+  camBox.y += 0.05;
+  const fl = world.floorAt(camBox.x, camBox.z, camBox.y, 0);
+  if (camBox.y < fl + 0.25) camBox.y = fl + 0.25;
+  camera.position.copy(camBox);
+  if (cam.shake > 0) {
+    cam.shake = Math.max(0, cam.shake - dt * 2);
+    camera.position.x += (Math.random() - 0.5) * cam.shake * 0.25;
+    camera.position.y += (Math.random() - 0.5) * cam.shake * 0.25;
+  }
+  camera.lookAt(pivot.x, pivot.y + 0.1, pivot.z);
+  player.fig.root.visible = cam.cur > 0.75;
+}
+
+// ------------------------------------------------------------------ input
+const keys = {};
+const pressed = { jump: false, punch: false, use: false };
+const touch = { mx: 0, my: 0, run: false, stickId: null, lookId: null, sx: 0, sy: 0, lx: 0, ly: 0 };
+let locked = false;
+addEventListener('keydown', e => {
+  if (e.repeat) { if (['Space', 'ArrowUp', 'ArrowDown'].includes(e.code)) e.preventDefault(); return; }
+  keys[e.code] = true;
+  if (state.mode === 'play' || state.mode === 'cut') {
+    if (e.code === 'Space') { pressed.jump = true; e.preventDefault(); }
+    if (e.code === 'KeyE' || e.code === 'Enter') pressed.use = true;
+    if (e.code === 'KeyF') pressed.punch = true;
+  }
+  if (e.code === 'KeyM') toggleSound();
+  if (e.code === 'Escape' && state.mode === 'pause' && !locked) resumeGame();
+  else if ((e.code === 'Escape' || e.code === 'KeyP') && state.mode === 'play') pauseGame();
+});
+addEventListener('keyup', e => { keys[e.code] = false; });
+addEventListener('blur', () => { for (const k in keys) keys[k] = false; });
+canvas.addEventListener('mousedown', e => {
+  if (isTouch) return;
+  if (state.mode === 'play') {
+    if (!locked) { requestLock(); return; }
+    if (e.button === 0) pressed.punch = true;
+  }
+});
+addEventListener('mousemove', e => {
+  if (!locked || state.mode !== 'play') return;
+  cam.yaw -= e.movementX * 0.0024;
+  cam.pitch = clamp(cam.pitch + e.movementY * 0.002, -0.45, 1.25);
+  cam.lastLook = performance.now();
+});
+function requestLock() {
+  if (isTouch) return;
+  try { const r = canvas.requestPointerLock(); if (r && r.catch) r.catch(() => {}); } catch (e) { /* ignore */ }
+}
+document.addEventListener('pointerlockchange', () => {
+  locked = document.pointerLockElement === canvas;
+  if (!locked && state.mode === 'play') pauseGame();
+});
+// touch: left half = stick, right half = look
+const stickEl = $('stick'), stickKnob = stickEl.querySelector('i');
+canvas.addEventListener('touchstart', e => {
+  for (const t of e.changedTouches) {
+    if (t.clientX < innerWidth * 0.45 && touch.stickId === null) {
+      touch.stickId = t.identifier; touch.sx = t.clientX; touch.sy = t.clientY; touch.mx = touch.my = 0;
+      stickEl.style.display = 'block'; stickEl.style.left = t.clientX + 'px'; stickEl.style.top = t.clientY + 'px';
+      stickKnob.style.transform = '';
+    } else if (touch.lookId === null) { touch.lookId = t.identifier; touch.lx = t.clientX; touch.ly = t.clientY; }
+  }
+  e.preventDefault();
+}, { passive: false });
+canvas.addEventListener('touchmove', e => {
+  for (const t of e.changedTouches) {
+    if (t.identifier === touch.stickId) {
+      let dx = t.clientX - touch.sx, dy = t.clientY - touch.sy;
+      const l = Math.hypot(dx, dy), m = 50;
+      if (l > m) { dx *= m / l; dy *= m / l; }
+      touch.mx = dx / m; touch.my = -dy / m;
+      stickKnob.style.transform = `translate(${dx}px, ${dy}px)`;
+    } else if (t.identifier === touch.lookId) {
+      cam.yaw -= (t.clientX - touch.lx) * 0.006;
+      cam.pitch = clamp(cam.pitch + (t.clientY - touch.ly) * 0.005, -0.45, 1.25);
+      touch.lx = t.clientX; touch.ly = t.clientY;
+      cam.lastLook = performance.now();
+    }
+  }
+  e.preventDefault();
+}, { passive: false });
+const endTouch = e => {
+  for (const t of e.changedTouches) {
+    if (t.identifier === touch.stickId) { touch.stickId = null; touch.mx = touch.my = 0; stickEl.style.display = 'none'; }
+    if (t.identifier === touch.lookId) touch.lookId = null;
+  }
+};
+canvas.addEventListener('touchend', endTouch);
+canvas.addEventListener('touchcancel', endTouch);
+for (const b of document.querySelectorAll('#touch button')) {
+  b.addEventListener('touchstart', e => {
+    e.preventDefault();
+    const k = b.dataset.k;
+    if (k === 'run') { touch.run = !touch.run; b.classList.toggle('on', touch.run); }
+    else pressed[k] = true;
+  }, { passive: false });
+}
+$('pausebtn').addEventListener('click', () => pauseGame());
+
+function moveInput() {
+  let x = 0, y = 0;
+  if (keys.KeyW || keys.ArrowUp) y += 1;
+  if (keys.KeyS || keys.ArrowDown) y -= 1;
+  if (keys.KeyA || keys.ArrowLeft) x -= 1;
+  if (keys.KeyD || keys.ArrowRight) x += 1;
+  x += touch.mx; y += touch.my;
+  const l = Math.hypot(x, y);
+  if (l > 1) { x /= l; y /= l; }
+  return { x, y, run: keys.ShiftLeft || keys.ShiftRight || touch.run };
+}
+
+// ------------------------------------------------------------------ HUD
+const hud = {
+  money: $('money'), alarm: $('alarm'), health: $('health').firstElementChild, timer: $('timer'),
+  objective: $('objective'), prompt: $('prompt'), phone: $('phone'), toast: $('toast'), banner: $('banner'),
+  umbrellas: $('umbrellas'),
+};
+const gullSvg = '<svg viewBox="0 0 32 18" aria-hidden="true"><path d="M1 6c5-3 10-2 15 4 5-6 10-7 15-4-4 0-9 3-11 8l-4 1-4-1C10 9 5 6 1 6z"/></svg>';
+hud.alarm.innerHTML = gullSvg.repeat(5);
+let shownMoney = save.money;
+const timers = {};
+function later(name, sec, fn) { timers[name] = { t: sec, fn }; }
+function showPhone(from, text, sec = 6) {
+  hud.phone.hidden = false;
+  hud.phone.firstElementChild.textContent = from;
+  hud.phone.lastElementChild.textContent = text;
+  hud.phone.style.animation = 'none'; void hud.phone.offsetWidth; hud.phone.style.animation = '';
+  later('phone', sec, () => { hud.phone.hidden = true; });
+  audio.pickup();
+}
+function toast(text, sec = 2.5) {
+  hud.toast.hidden = false; hud.toast.textContent = text;
+  hud.toast.style.animation = 'none'; void hud.toast.offsetWidth; hud.toast.style.animation = '';
+  later('toast', sec, () => { hud.toast.hidden = true; });
+}
+function banner(title, sub, cls = '', sec = 3.2) {
+  hud.banner.hidden = false; hud.banner.className = cls;
+  hud.banner.firstElementChild.textContent = title;
+  hud.banner.lastElementChild.textContent = sub || '';
+  hud.banner.style.animation = 'none'; void hud.banner.offsetWidth; hud.banner.style.animation = '';
+  later('banner', sec, () => { hud.banner.hidden = true; });
+}
+function setObjective(html) { hud.objective.innerHTML = html || ''; }
+const hurtEl = document.createElement('div');
+hurtEl.style.cssText = 'position:fixed;inset:0;pointer-events:none;box-shadow:inset 0 0 120px 30px rgba(200,20,10,.65);opacity:0;transition:opacity .25s';
+document.body.appendChild(hurtEl);
+function updateHud(dt) {
+  shownMoney = Math.abs(save.money - shownMoney) < 1 ? save.money : damp(shownMoney, save.money, 6, dt);
+  hud.money.textContent = 'kr ' + Math.round(shownMoney).toLocaleString('nb-NO');
+  const svgs = hud.alarm.children;
+  for (let i = 0; i < 5; i++) svgs[i].classList.toggle('on', i < state.alarm);
+  hud.alarm.classList.toggle('flash', state.alarm > 0 && state.alarmFlash > 0);
+  state.alarmFlash = Math.max(0, state.alarmFlash - dt);
+  hud.health.style.width = player.health + '%';
+  hud.umbrellas.textContent = `Lost umbrellas ${save.umbrellas.length}/${UMBRELLAS.length}`;
+  if (mission && mission.timer !== null) {
+    hud.timer.hidden = false;
+    const t = Math.max(0, mission.timer);
+    hud.timer.textContent = `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, '0')}`;
+    hud.timer.classList.toggle('low', t < 15);
+  } else hud.timer.hidden = true;
+  for (const k in timers) {
+    const tm = timers[k];
+    if (!tm) continue;
+    tm.t -= dt;
+    if (tm.t <= 0) { timers[k] = null; tm.fn(); }
+  }
+  hurtEl.style.opacity = player.hurtT > 0 ? Math.min(1, player.hurtT * 2.5) : 0;
+}
+
+// ------------------------------------------------------------------ minimap
+const MAP = { x0: -130, z0: -85, x1: 75, z1: 85, ppm: 3 };
+const mapBase = document.createElement('canvas');
+mapBase.width = (MAP.x1 - MAP.x0) * MAP.ppm; mapBase.height = (MAP.z1 - MAP.z0) * MAP.ppm;
+{
+  const g = mapBase.getContext('2d');
+  g.fillStyle = '#3f4a3a'; g.fillRect(0, 0, mapBase.width, mapBase.height);
+  const rects = [...W.mapRects].sort((a, b) => a.h - b.h);
+  for (const r of rects) {
+    const x = (r.x0 - MAP.x0) * MAP.ppm, y = (r.z0 - MAP.z0) * MAP.ppm, w = (r.x1 - r.x0) * MAP.ppm, h = (r.z1 - r.z0) * MAP.ppm;
+    g.fillStyle = r.c; g.fillRect(x, y, w, h);
+    if (r.house) { g.strokeStyle = 'rgba(0,0,0,.45)'; g.lineWidth = 2; g.strokeRect(x + 1, y + 1, w - 2, h - 2); }
+  }
+}
+const mm = $('minimap'), mg = mm.getContext('2d'), northEl = $('north');
+function drawMinimap(blips) {
+  const S = mm.width, c = S / 2, scale = 2.4 * (S / 360) * 1.5 / MAP.ppm;
+  const p = player.pos;
+  const fx = -Math.sin(cam.yaw), fz = -Math.cos(cam.yaw);
+  const rot = -Math.PI / 2 - Math.atan2(fz, fx);
+  mg.save();
+  mg.fillStyle = '#22404d'; mg.fillRect(0, 0, S, S);
+  mg.translate(c, c); mg.rotate(rot); mg.scale(scale, scale);
+  mg.drawImage(mapBase, -(p.x - MAP.x0) * MAP.ppm, -(p.z - MAP.z0) * MAP.ppm);
+  mg.restore();
+  const toMap = (x, z) => {
+    const dx = (x - p.x) * MAP.ppm * scale, dz = (z - p.z) * MAP.ppm * scale;
+    const cs = Math.cos(rot), sn = Math.sin(rot);
+    return [c + dx * cs - dz * sn, c + dx * sn + dz * cs];
+  };
+  for (const b of blips) {
+    let [x, y] = toMap(b.x, b.z);
+    const dx = x - c, dy = y - c, l = Math.hypot(dx, dy), R = c - 14;
+    if (l > R) { if (!b.edge) continue; x = c + dx / l * R; y = c + dy / l * R; }
+    mg.fillStyle = b.c; mg.strokeStyle = '#101418'; mg.lineWidth = 3;
+    mg.beginPath(); mg.arc(x, y, b.r || 7, 0, 7); mg.fill(); mg.stroke();
+  }
+  // player arrow
+  mg.save(); mg.translate(c, c); mg.rotate(rot + Math.atan2(Math.cos(player.heading), Math.sin(player.heading)) + Math.PI / 2);
+  mg.fillStyle = '#f2c12e'; mg.strokeStyle = '#101418'; mg.lineWidth = 3;
+  mg.beginPath(); mg.moveTo(0, -13); mg.lineTo(9, 10); mg.lineTo(0, 5); mg.lineTo(-9, 10); mg.closePath(); mg.fill(); mg.stroke();
+  mg.restore();
+  // north (-z) marker on the rim
+  northEl.style.left = 50 + Math.sin(rot) * 41 + '%';
+  northEl.style.top = 50 - Math.cos(rot) * 41 + '%';
+}
+
+// ------------------------------------------------------------------ doors
+function updateDoors(dt) {
+  for (const d of W.doors) {
+    if (!d.auto) continue;
+    const near = d.pos.distanceTo(_v2.set(player.pos.x, player.pos.y, player.pos.z)) < 2.3;
+    if (near && d.target === 0) audio.door();
+    d.target = near ? 1 : 0;
+    d.open = damp(d.open, d.target, 6, dt);
+    d.pivot.rotation.y = d.base + d.angle * d.open;
+  }
+}
+
+// ------------------------------------------------------------------ speech bubbles
+const bubbleTex = new Map();
+function bubble(text) {
+  if (!bubbleTex.has(text)) bubbleTex.set(text, textTexture([text], { w: 384, h: 128, bg: '#f4f1ea', fg: '#101418', font: '800 58px "Archivo", sans-serif', radius: 40 }));
+  const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: bubbleTex.get(text), depthTest: false, fog: false }));
+  s.scale.set(1.2, 0.4, 1);
+  s.renderOrder = 10;
+  return s;
+}
+
+// ------------------------------------------------------------------ pedestrians
+const LINES = ['Hei!', 'Uff!', 'Pass deg!', 'Typisk.', 'Neimen!', 'Au!', 'Hallo?!', 'Rolig!'];
+const npcs = [];
+const npcDefs = [
+  { path: [[-1.3, -47], [-1.3, 31]], jacket: 0x2c4c7a, umbrella: 0xd23a2b },
+  { path: [[1.7, 30], [1.7, -44]], jacket: 0x6b2d3a, umbrella: 0x2b2f36 },
+  { path: [[-0.2, -20], [-0.2, 20]], jacket: 0x3f6b4a, umbrella: 0xf2c12e },
+  { path: [[-78, -40], [-78, 58]], jacket: 0x22252b, umbrella: 0x3a6ea8 },
+  { path: [[-81, 52], [-81, -32]], jacket: 0xb14b2e, umbrella: null },
+  { path: [[-52, 36.8], [-7, 36.8]], jacket: 0x8a8f96, umbrella: 0x7a2e8a },
+  { path: [[-58, 31], [-58, -38]], jacket: 0x2f5d3a, umbrella: 0xe8e2d2 },
+  { path: [[-76, -20], [-76, 40]], jacket: 0xd9b75a, umbrella: 0x101418 },
+];
+for (const d of npcDefs) {
+  const fig = new Humanoid({ jacket: d.jacket, pants: [0x2b3140, 0x3b3b3b, 0x4a3a2c][npcs.length % 3], hat: Math.random() < 0.5 ? null : [0x2c4c7a, 0x7a2e28, 0x3b3b3b][npcs.length % 3], hair: [0x3a2618, 0xc9a26b, 0x1d1d1d, 0x8a8a8a][npcs.length % 4], umbrella: d.umbrella });
+  scene.add(fig.root);
+  const n = { fig, path: d.path, seg: 0, dir: 1, t: Math.random(), pos: new THREE.Vector3(), heading: 0, downT: 0, speed: 1.1 + Math.random() * 0.4, bubble: null, bubbleT: 0, fall: 0 };
+  const [a, b] = d.path;
+  n.pos.set(lerp(a[0], b[0], n.t), 0, lerp(a[1], b[1], n.t));
+  n.pos.y = world.floorAt(n.pos.x, n.pos.z, 100);
+  npcs.push(n);
+}
+function knockNpc(n, from) {
+  if (n.downT > 0) return;
+  n.downT = 3;
+  n.fallDir = Math.atan2(n.pos.x - from.x, n.pos.z - from.z);
+  say(n, LINES[Math.floor(Math.random() * LINES.length)]);
+  audio.bump();
+}
+function say(n, text) {
+  if (n.bubble) n.fig.root.remove(n.bubble);
+  n.bubble = bubble(text);
+  n.bubble.position.y = 2.35;
+  n.fig.root.add(n.bubble);
+  n.bubbleT = 2.2;
+}
+function updateNpcs(dt) {
+  for (const n of npcs) {
+    if (n.bubble) { n.bubbleT -= dt; if (n.bubbleT <= 0) { n.fig.root.remove(n.bubble); n.bubble = null; } }
+    if (n.party) { n.fig.animate(dt, 0, n.party); n.fig.root.position.copy(n.pos); continue; }
+    if (n.downT > 0) {
+      n.downT -= dt;
+      n.fall = n.downT > 0.6 ? damp(n.fall, 1, 10, dt) : damp(n.fall, 0, 8, dt);
+    } else {
+      const [a, b] = n.path;
+      const len = Math.hypot(b[0] - a[0], b[1] - a[1]);
+      n.t += n.dir * n.speed * dt / len;
+      if (n.t > 1) { n.t = 1; n.dir = -1; } else if (n.t < 0) { n.t = 0; n.dir = 1; }
+      const tx = lerp(a[0], b[0], n.t), tz = lerp(a[1], b[1], n.t);
+      const want = Math.atan2((b[0] - a[0]) * n.dir, (b[1] - a[1]) * n.dir);
+      n.heading += angDiff(n.heading, want) * Math.min(1, dt * 5);
+      n.pos.x = tx; n.pos.z = tz;
+      const fl = world.floorAt(n.pos.x, n.pos.z, n.pos.y + 0.6, 0.6);
+      if (fl > -50) n.pos.y = damp(n.pos.y, fl, 15, dt);
+    }
+    // bump with the player
+    const dx = player.pos.x - n.pos.x, dz = player.pos.z - n.pos.z, d = Math.hypot(dx, dz);
+    if (d < 0.6 && Math.abs(player.pos.y - n.pos.y) < 1.2 && d > 1e-4 && n.downT <= 0) {
+      const speed = player.riding ? Math.abs(player.riding.speed) : Math.hypot(player.vel.x, player.vel.z);
+      if (speed > 5) knockNpc(n, player.pos);
+      else { player.pos.x += dx / d * (0.6 - d); player.pos.z += dz / d * (0.6 - d); }
+    }
+    n.fig.animate(dt, n.downT > 0 ? 0 : n.speed, 'walk');
+    n.fig.root.position.copy(n.pos);
+    n.fig.root.rotation.set(0, n.downT > 0 ? n.fallDir : n.heading, 0);
+    n.fig.body.rotation.x = n.fall * 1.45;
+    if (n.fall > 0.01) n.fig.body.position.y = 0.12 * n.fall;
+  }
+}
+
+// ------------------------------------------------------------------ scooters
+const scooters = [];
+function addScooter(x, z, heading) {
+  const obj = makeScooter();
+  scene.add(obj);
+  const s = { obj, pos: new THREE.Vector3(x, 0, z), heading, speed: 0, vy: 0, home: [x, z, heading], tilt: 0, lean: 0 };
+  s.pos.y = world.floorAt(x, z, 100);
+  scooters.push(s);
+  return s;
+}
+addScooter(1.6, 8.5, 0);
+addScooter(-1.6, -27, 0);
+addScooter(-70, 33, Math.PI / 2);
+addScooter(-6, -57, Math.PI / 2);
+const scInfo = {};
+function updateScooter(s, dt, input) {
+  const fwd = _v2.set(Math.sin(s.heading), 0, Math.cos(s.heading));
+  const ridden = player.riding === s;
+  // ground and slope
+  const fl = world.floorAt(s.pos.x, s.pos.z, s.pos.y + 0.1, 0.5, scInfo);
+  const onStairs = scInfo.block && scInfo.block.stairs;
+  const grounded = s.pos.y <= fl + 0.05;
+  let slope = 0;
+  if (grounded) {
+    const hf = world.floorAt(s.pos.x + fwd.x * 0.6, s.pos.z + fwd.z * 0.6, s.pos.y + 0.6, 0.9);
+    const hb = world.floorAt(s.pos.x - fwd.x * 0.6, s.pos.z - fwd.z * 0.6, s.pos.y + 0.6, 0.9);
+    if (hf > -50 && hb > -50) slope = (hf - hb) / 1.2;
+  }
+  if (ridden && grounded) {
+    const thr = input.y;
+    if (thr > 0) s.speed += thr * (s.speed < 0 ? 12 : 5.5) * dt;
+    else if (thr < 0) s.speed += thr * (s.speed > 0.5 ? 11 : 3) * dt;
+    const turn = 2.3 * clamp(Math.abs(s.speed) / 3, 0.25, 1) * (s.speed < 0 ? -1 : 1);
+    s.heading -= input.x * turn * dt;
+    s.lean = damp(s.lean, -input.x * clamp(s.speed / 10, 0, 1) * 0.35, 6, dt);
+  } else s.lean = damp(s.lean, 0, 6, dt);
+  if (grounded) {
+    s.speed -= slope * 9.8 * 0.55 * dt;
+    s.speed *= 1 - (ridden && input.y !== 0 ? 0.25 : 0.9) * dt;
+    const maxS = onStairs ? 4.5 : 12.5;
+    s.speed = clamp(s.speed, -3, maxS);
+    if (onStairs && Math.abs(s.speed) > 1.5 && ridden) { cam.shake = Math.max(cam.shake, 0.35); if (Math.random() < dt * 8) audio.bump(); }
+  }
+  // move
+  const dist = s.speed * dt, n = Math.max(1, Math.ceil(Math.abs(dist) / 0.1));
+  let crashed = false;
+  for (let i = 0; i < n; i++) {
+    s.pos.x += fwd.x * dist / n; s.pos.z += fwd.z * dist / n;
+    const hit = world.collide(s.pos, 0.35, 1.7, 0.45);
+    if (hit) {
+      const into = -(hit.nx * fwd.x + hit.nz * fwd.z);
+      if (ridden && Math.abs(s.speed) > 7.5 && into > 0.5) { crashed = true; break; }
+      s.speed *= into > 0.5 ? -0.25 : 0.9;
+      if (into > 0.5 && Math.abs(s.speed) > 1) audio.bump();
+    }
+  }
+  // vertical
+  const fl2 = world.floorAt(s.pos.x, s.pos.z, s.pos.y + 0.1, 0.5);
+  if (s.vy <= 0 && s.pos.y <= fl2 + 0.35 && (grounded || s.pos.y <= fl2)) { s.pos.y = fl2; if (s.vy < -6 && ridden) { audio.land(); cam.shake = 0.5; } s.vy = 0; }
+  else { s.vy -= 20 * dt; s.pos.y += s.vy * dt; if (s.pos.y < fl2) { s.pos.y = fl2; s.vy = 0; } }
+  s.tilt = damp(s.tilt, -Math.atan(slope), 10, dt);
+  s.obj.position.copy(s.pos);
+  s.obj.rotation.set(s.tilt, s.heading, s.lean, 'YXZ');
+  return crashed;
+}
+
+// ------------------------------------------------------------------ seagulls
+const gulls = [];
+const GULL_N = 12;
+const groundSpots = [[-80, -12, 4], [-79, -12, 11], [-81.5, -12, -7], [-77.5, -12, 19], [-82, -12, 30]];
+for (let i = 0; i < GULL_N; i++) {
+  const g = new Gull();
+  scene.add(g.root);
+  const a = { g, pos: new THREE.Vector3(), vel: new THREE.Vector3(), state: 'circle', t: 0, c: new THREE.Vector3(), r: 20, ang: Math.random() * 6, w: 0.25, alt: 25, cd: 0 };
+  if (i < groundSpots.length) {
+    a.state = 'ground'; a.home = groundSpots[i];
+    a.pos.set(...groundSpots[i]);
+  } else newCircle(a, true);
+  gulls.push(a);
+}
+function newCircle(a, place) {
+  a.state = 'circle';
+  a.c.set(-70 + Math.random() * 80, 0, -50 + Math.random() * 100);
+  a.r = 12 + Math.random() * 25;
+  a.alt = 16 + Math.random() * 18;
+  a.w = (Math.random() < 0.5 ? -1 : 1) * (4.5 + Math.random() * 2) / a.r;
+  if (place) a.pos.set(a.c.x + Math.cos(a.ang) * a.r, a.alt, a.c.z + Math.sin(a.ang) * a.r);
+}
+let gullCallT = 4;
+function updateGulls(dt) {
+  const p = player.pos;
+  const indoors = inHouse(p);
+  const head = _v2.set(p.x, p.y + 1.4, p.z);
+  // how many attackers the alarm calls for
+  const want = state.alarm > 0 ? Math.min(GULL_N - 2, state.alarm * 2) : 0;
+  let have = gulls.filter(a => ['orbit', 'dive', 'climb'].includes(a.state)).length;
+  if (have < want) {
+    const cands = gulls.filter(a => a.state === 'circle' || a.state === 'ground' || a.state === 'leave').sort((x, y) => x.pos.distanceToSquared(p) - y.pos.distanceToSquared(p));
+    for (const a of cands.slice(0, want - have)) { a.state = 'orbit'; a.t = 1 + Math.random() * 2; a.ang = Math.random() * 6; }
+  } else if (have > want) {
+    for (const a of gulls) { if (have <= want) break; if (['orbit', 'dive', 'climb'].includes(a.state)) { newCircle(a, false); a.state = 'leave'; a.t = 3; have--; } }
+  }
+  gullCallT -= dt;
+  if (gullCallT <= 0) {
+    gullCallT = state.alarm > 0 ? 1.5 + Math.random() * 2 : 5 + Math.random() * 8;
+    const near = gulls.reduce((m, a) => Math.min(m, a.pos.distanceTo(p)), 999);
+    audio.gull(clamp(1.4 - near / 40, 0.15, 1));
+  }
+  for (const a of gulls) {
+    a.t -= dt;
+    let flap = 0.2, grounded = false;
+    const desired = _v.set(0, 0, 0);
+    switch (a.state) {
+      case 'circle': {
+        a.ang += a.w * dt;
+        const tx = a.c.x + Math.cos(a.ang) * a.r, tz = a.c.z + Math.sin(a.ang) * a.r;
+        desired.set(tx - a.pos.x, a.alt - a.pos.y, tz - a.pos.z).multiplyScalar(2);
+        flap = Math.sin(a.ang * 3) > 0.7 ? 0.6 : 0.05;
+        break;
+      }
+      case 'leave': {
+        desired.set(a.c.x - a.pos.x, a.alt - a.pos.y, a.c.z - a.pos.z).normalize().multiplyScalar(8);
+        flap = 0.8;
+        if (a.t <= 0) a.state = 'circle';
+        break;
+      }
+      case 'ground': {
+        grounded = true;
+        a.vel.set(0, 0, 0);
+        const d = a.pos.distanceTo(p);
+        const fast = player.riding ? Math.abs(player.riding.speed) > 2 : Math.hypot(player.vel.x, player.vel.z) > 4;
+        if ((d < 3.5 && fast) || d < 1.2) { a.state = 'takeoff'; a.t = 1.2; audio.squawk(); a.vel.set(a.pos.x - p.x, 4, a.pos.z - p.z).normalize().multiplyScalar(6); }
+        a.g.root.position.copy(a.pos);
+        a.g.root.rotation.set(Math.max(0, Math.sin(performance.now() * 0.004 + a.ang * 9)) * 0.6, a.ang, 0, 'YXZ');
+        a.g.animate(dt, 0, true);
+        continue;
+      }
+      case 'takeoff': {
+        desired.copy(a.vel).setY(5);
+        flap = 1;
+        if (a.t <= 0) { newCircle(a, false); a.state = 'leave'; a.t = 4; }
+        break;
+      }
+      case 'orbit': {
+        a.ang += dt * 0.9;
+        const r = 7, h = indoors ? 12 : 4.5;
+        const cx = indoors ? (H6.x0 + H6.x1) / 2 : p.x, cz = indoors ? 0 : p.z;
+        desired.set(cx + Math.cos(a.ang) * r - a.pos.x, p.y + h + Math.sin(a.ang * 2) - a.pos.y, cz + Math.sin(a.ang) * r - a.pos.z).multiplyScalar(1.8);
+        flap = 0.5;
+        if (a.t <= 0 && !indoors && player.knockT <= 0 && state.mode === 'play') { a.state = 'dive'; a.t = 2.4; audio.squawk(); }
+        break;
+      }
+      case 'dive': {
+        const sp = 10 + state.alarm * 0.8;
+        desired.copy(head).sub(a.pos).normalize().multiplyScalar(sp);
+        flap = 0.15;
+        if (a.pos.distanceTo(head) < 0.85 && !indoors) { hitPlayer(a); a.state = 'climb'; a.t = 1.4; }
+        else if (a.t <= 0 || indoors) { a.state = 'climb'; a.t = 1.2; }
+        break;
+      }
+      case 'climb': {
+        desired.set(a.vel.x, 6, a.vel.z).normalize().multiplyScalar(9);
+        flap = 1;
+        if (a.t <= 0) { a.state = 'orbit'; a.t = 1.5 + Math.random() * 2.5 / Math.max(1, state.alarm * 0.6); }
+        break;
+      }
+      case 'knocked': {
+        a.vel.y -= 18 * dt;
+        a.pos.addScaledVector(a.vel, dt);
+        const fl = world.floorAt(a.pos.x, a.pos.z, a.pos.y, 0.2);
+        if (a.pos.y < fl + 0.2) { a.pos.y = fl + 0.2; a.vel.multiplyScalar(0.3); }
+        a.g.root.position.copy(a.pos);
+        a.g.root.rotation.x += dt * 9; a.g.root.rotation.z += dt * 5;
+        a.g.animate(dt, 0.1);
+        if (a.t <= 0) { a.state = 'takeoff'; a.t = 1.2; a.vel.set(Math.random() - 0.5, 1, Math.random() - 0.5).normalize().multiplyScalar(5); a.g.root.rotation.set(0, 0, 0); }
+        continue;
+      }
+      case 'thief': {
+        const b = bolleDrop;
+        if (!b) { newCircle(a, false); a.state = 'leave'; a.t = 3; break; }
+        desired.set(b.pos.x - a.pos.x, b.pos.y + 0.2 - a.pos.y, b.pos.z - a.pos.z);
+        const d = desired.length();
+        desired.normalize().multiplyScalar(Math.min(9, d * 3 + 2));
+        flap = 0.7;
+        if (d < 0.5) { a.state = 'carry'; a.t = 3.5 + Math.random() * 2; a.carry = b; b.item.removeFromParent(); a.g.root.add(b.item); b.item.position.set(0, -0.25, 0.1); bolleDrop = null; audio.squawk(); toast('A gull grabbed the bolle!'); a.dest = pickDropSpot(a.pos); }
+        break;
+      }
+      case 'carry': {
+        desired.set(a.dest.x - a.pos.x, a.dest.y + 8 - a.pos.y, a.dest.z - a.pos.z);
+        desired.normalize().multiplyScalar(7);
+        flap = 0.8;
+        if (a.t <= 0 || Math.hypot(a.dest.x - a.pos.x, a.dest.z - a.pos.z) < 1) {
+          dropBolleAt(a.dest, a);
+          a.carry = null; newCircle(a, false); a.state = 'leave'; a.t = 3;
+        }
+        break;
+      }
+    }
+    a.vel.lerp(desired, Math.min(1, dt * 3));
+    a.pos.addScaledVector(a.vel, dt);
+    // stay above ground
+    const fl = world.floorAt(a.pos.x, a.pos.z, a.pos.y + 1, 1);
+    if (a.state !== 'dive' && a.state !== 'thief' && a.pos.y < fl + 1.2) a.pos.y = fl + 1.2;
+    if (a.pos.y < fl + 0.3) a.pos.y = fl + 0.3;
+    a.g.root.position.copy(a.pos);
+    if (a.vel.lengthSq() > 0.01) {
+      _v.copy(a.pos).add(a.vel);
+      a.g.root.lookAt(_v);
+      a.g.root.rotateZ(clamp(-a.w * 6, -0.5, 0.5) * (a.state === 'circle' ? 1 : 0));
+    }
+    a.g.animate(dt, flap, grounded);
+  }
+}
+function hitPlayer(a) {
+  if (state.mode !== 'play' || player.hurtT > 0.3) return;
+  const dmg = 7 + state.alarm * 2;
+  player.health = Math.max(0, player.health - dmg);
+  player.hurtT = 0.6; player.regenT = 5;
+  cam.shake = 0.7;
+  audio.squawk(); audio.hurt();
+  const away = new THREE.Vector3(player.pos.x - a.pos.x, 0, player.pos.z - a.pos.z).normalize();
+  if (!player.riding) { player.vel.x += away.x * 4; player.vel.z += away.z * 4; player.vel.y = Math.max(player.vel.y, 3); player.onGround = false; }
+  else player.riding.speed *= 0.6;
+  if (player.carrying) dropBolle();
+  if (player.health <= 0) die('TATT AV MÅKENE', 'Taken by the gulls. They took 100 kr too.');
+}
+
+// ------------------------------------------------------------------ alarm
+const state = { mode: 'title', alarm: 0, alarmMin: 0, alarmCool: 0, alarmFlash: 0 };
+function raiseAlarm(n = 1) {
+  const before = state.alarm;
+  state.alarm = clamp(state.alarm + n, 0, 5);
+  state.alarmCool = 16;
+  if (state.alarm > before) { state.alarmFlash = 2; if (before === 0) toast('Måkealarm! The gulls are coming for you.'); }
+}
+function updateAlarm(dt) {
+  if (state.alarm < state.alarmMin) state.alarm = state.alarmMin;
+  if (state.alarm > state.alarmMin) {
+    state.alarmCool -= dt * (inHouse(player.pos) ? 2.5 : 1);
+    if (state.alarmCool <= 0) { state.alarm--; state.alarmCool = 14; if (state.alarm === 0) toast('The gulls lost interest.'); }
+  }
+}
+
+// ------------------------------------------------------------------ pickups: lost umbrellas
+const L = laneY;
+const alley = W.bryggen[5] ? (W.bryggen[5].z1 + W.bryggen[6].z0) / 2 : 0;
+const UMBRELLAS = [
+  [-10.4, -58], [19.5, -5.2], [-30, -20], [-82.5, -43], [-67, alley], [-4.5, 38.5], [-28, -23.5], [11.2, -3.0, H6.U], [11.9, -5.6], [-47, 40.5],
+];
+const umbrellaObjs = UMBRELLAS.map((u, i) => {
+  const y = u[2] !== undefined ? u[2] : world.floorAt(u[0], u[1], 100);
+  const o = makeItem('umbrella');
+  o.position.set(u[0], y, u[1]);
+  o.rotation.z = 0.5; o.rotation.y = i;
+  o.visible = !save.umbrellas.includes(i);
+  scene.add(o);
+  return { o, i, base: y };
+});
+function updateUmbrellas(dt, time) {
+  for (const u of umbrellaObjs) {
+    if (!u.o.visible) continue;
+    u.o.rotation.y += dt;
+    u.o.position.y = u.base + 0.15 + Math.sin(time * 2 + u.i) * 0.08;
+    const dx = u.o.position.x - player.pos.x, dz = u.o.position.z - player.pos.z, dy = u.base - player.pos.y;
+    if (dx * dx + dz * dz < 0.8 && Math.abs(dy) < 1.5) {
+      u.o.visible = false;
+      save.umbrellas.push(u.i); save.money += 50; persist();
+      audio.coin();
+      const n = save.umbrellas.length;
+      toast(n === UMBRELLAS.length ? `All ${n} lost umbrellas found! Bergen thanks you. +500 kr` : `Lost umbrella ${n}/${UMBRELLAS.length}  +50 kr`, 3);
+      if (n === UMBRELLAS.length) { save.money += 500; persist(); }
+    }
+  }
+}
+
+// ------------------------------------------------------------------ punch
+function doPunch() {
+  if (player.punchCd > 0 || player.knockT > 0 || player.riding) return;
+  player.punchCd = 0.42;
+  player.fig.punch();
+  audio.whoosh();
+  const p = player.pos, f = _v2.set(Math.sin(player.heading), 0, Math.cos(player.heading));
+  const chest = _v.set(p.x, p.y + 1.2, p.z);
+  let hitAny = false;
+  for (const a of gulls) {
+    if (a.state === 'knocked') continue;
+    const d = a.pos.distanceTo(chest);
+    const dot = ((a.pos.x - p.x) * f.x + (a.pos.z - p.z) * f.z) / Math.max(0.01, Math.hypot(a.pos.x - p.x, a.pos.z - p.z));
+    const reach = a.state === 'ground' ? 1.6 : 2.0;
+    if (d < reach && (dot > 0.2 || d < 1.0)) {
+      if (a.carry) { dropBolleAt(a.pos.clone().setY(world.floorAt(a.pos.x, a.pos.z, a.pos.y)), a); a.carry = null; }
+      a.state = 'knocked'; a.t = 1.1;
+      a.vel.set(f.x * 6, 3, f.z * 6);
+      hitAny = true;
+      save.money += 5;
+      if (!mission || !mission.def.noPunchAlarm) raiseAlarm(1);
+    }
+  }
+  for (const n of npcs) {
+    if (n.party) continue;
+    const dx = n.pos.x - p.x, dz = n.pos.z - p.z, d = Math.hypot(dx, dz);
+    if (d < 1.3 && (dx * f.x + dz * f.z) / Math.max(d, 0.01) > 0.3 && Math.abs(n.pos.y - p.y) < 1) { knockNpc(n, p); hitAny = true; raiseAlarm(1); }
+  }
+  if (hitAny) { audio.punch(); cam.shake = 0.3; }
+}
+
+// ------------------------------------------------------------------ player update
+const pInfo = {};
+let lastSurfaceTag = null;
+function surfaceAt() {
+  const p = player.pos;
+  if (inHouse(p)) {
+    if (p.y > 2) { if (p.x > 10.35 && p.z < -1.65) return 'tile'; if (p.z > -2.95 && p.z < 0.15 && p.x > 9.1) return 'tile'; if (p.z > -1.65 && p.z < 0.15) return 'tile'; }
+    return 'wood';
+  }
+  return 'stone';
+}
+function updatePlayer(dt) {
+  const inp = state.mode === 'play' ? moveInput() : { x: 0, y: 0, run: false };
+  player.punchCd -= dt;
+  player.hurtT = Math.max(0, player.hurtT - dt);
+  player.regenT -= dt;
+  if (player.regenT <= 0 && player.health < 100) player.health = Math.min(100, player.health + 4 * dt);
+
+  // use: get on / off scooters
+  if (pressed.use && player.knockT <= 0) {
+    if (player.riding) dismount();
+    else {
+      const s = nearestScooter(1.7);
+      if (s) mount(s);
+    }
+  }
+  if (pressed.punch) doPunch();
+
+  if (player.riding) {
+    const s = player.riding;
+    const crashed = updateScooter(s, dt, inp);
+    player.pos.copy(s.pos);
+    player.heading = s.heading;
+    player.vel.set(Math.sin(s.heading) * s.speed, s.vy, Math.cos(s.heading) * s.speed);
+    if (crashed) {
+      const sp = s.speed;
+      dismount(true);
+      player.vel.set(Math.sin(s.heading) * sp * 0.6, 4, Math.cos(s.heading) * sp * 0.6);
+      s.speed = 0;
+      player.knockT = 1.4; player.onGround = false;
+      audio.crash(); cam.shake = 1;
+      player.health = Math.max(5, player.health - 10); player.regenT = 4;
+      toast('Wipeout!');
+      if (player.carrying) dropBolle();
+    }
+    player.fig.animate(dt, 0, 'ride');
+    player.fig.root.position.copy(player.pos).add(_v.set(0, 0.17, 0));
+    player.fig.root.rotation.set(s.tilt, s.heading, s.lean, 'YXZ');
+    pressed.jump = false;
+    return;
+  }
+
+  const p = player.pos, v = player.vel;
+  // movement intent relative to the camera
+  const fx = -Math.sin(cam.yaw), fz = -Math.cos(cam.yaw);
+  // right vector = (-fz, fx), so move = forward*y + right*x
+  const mx = fx * inp.y - fz * inp.x, mz = fz * inp.y + fx * inp.x;
+  const mag = Math.hypot(mx, mz);
+  const control = player.knockT <= 0;
+  const speedT = control ? (inp.run ? 6.4 : 3.3) * Math.min(1, mag) : 0;
+  const accel = player.onGround ? 16 : 4;
+  const tvx = mag > 0.01 ? mx / mag * speedT : 0, tvz = mag > 0.01 ? mz / mag * speedT : 0;
+  if (player.onGround || mag > 0.01) {
+    v.x = damp(v.x, tvx, accel * (player.knockT > 0 ? 0.3 : 1), dt);
+    v.z = damp(v.z, tvz, accel * (player.knockT > 0 ? 0.3 : 1), dt);
+  }
+  if (mag > 0.1 && control) player.heading += angDiff(player.heading, Math.atan2(mx, mz)) * Math.min(1, dt * 12);
+  if (pressed.jump && player.onGround && control) { v.y = 6.4; player.onGround = false; audio.jump(); }
+  pressed.jump = false;
+  v.y -= 19 * dt;
+  if (v.y < -30) v.y = -30;
+
+  // horizontal, in small substeps
+  const hd = Math.hypot(v.x, v.z) * dt, n = Math.max(1, Math.ceil(hd / 0.1));
+  for (let i = 0; i < n; i++) {
+    p.x += v.x * dt / n; p.z += v.z * dt / n;
+    world.collide(p, RADIUS, HEIGHT, player.onGround ? STEP : 0.25);
+  }
+  // vertical
+  const wasGround = player.onGround;
+  p.y += v.y * dt;
+  const fl = world.floorAt(p.x, p.z, p.y, STEP, pInfo);
+  if (v.y <= 0 && p.y <= fl) {
+    if (!wasGround && v.y < -9) { audio.land(); cam.shake = Math.min(1, -v.y / 25); }
+    p.y = fl; v.y = 0; player.onGround = true;
+  } else if (wasGround && v.y <= 0 && p.y - fl < 0.55 && fl > -1e9) {
+    p.y = fl; v.y = 0; player.onGround = true;
+  } else player.onGround = false;
+  const ceil = world.ceilingAt(p.x, p.z, p.y, HEIGHT);
+  if (p.y + HEIGHT > ceil && v.y > 0) { v.y = 0; p.y = ceil - HEIGHT; }
+  if (player.knockT > 0) player.knockT -= dt;
+
+  // footsteps
+  const hs = Math.hypot(v.x, v.z);
+  if (player.onGround && hs > 0.5) {
+    player.stepAcc += hs * dt;
+    if (player.stepAcc > (hs > 5 ? 1.05 : 0.75)) { player.stepAcc = 0; audio.step(surfaceAt()); }
+  }
+  lastSurfaceTag = pInfo.block && pInfo.block.tag;
+
+  // fell into Vågen
+  if (p.y < -12.6 && p.x < -83) { splash(); return; }
+  if (p.y < -40) respawn();
+
+  player.fig.animate(dt, player.knockT > 0 ? 0 : hs, player.knockT > 0.3 ? 'down' : 'walk', player.onGround || player.knockT > 0);
+  player.fig.root.position.copy(p);
+  player.fig.root.rotation.set(0, player.heading, 0);
+}
+function nearestScooter(r) {
+  let best = null, bd = r;
+  for (const s of scooters) { const d = s.pos.distanceTo(player.pos); if (d < bd) { bd = d; best = s; } }
+  return best;
+}
+function mount(s) {
+  player.riding = s;
+  s.speed = 0;
+  player.vel.set(0, 0, 0);
+  audio.start2();
+  if (!s.stolen) { s.stolen = true; toast('Grand Theft Sparkesykkel'); save.money += 0; }
+}
+function dismount(crash = false) {
+  const s = player.riding;
+  if (!s) return;
+  player.riding = null;
+  const side = _v.set(Math.cos(s.heading), 0, -Math.sin(s.heading)).multiplyScalar(0.7);
+  player.pos.copy(s.pos).add(crash ? _v.set(0, 0.3, 0) : side);
+  world.collide(player.pos, RADIUS, HEIGHT, STEP);
+  player.vel.set(0, 0, 0);
+  if (!crash) s.speed = 0;
+  player.fig.root.rotation.set(0, player.heading, 0);
+}
+
+// ------------------------------------------------------------------ bolle (mission 4)
+let bolleDrop = null;
+const bolleItem = makeItem('bolle');
+bolleItem.scale.setScalar(1.6);
+const bolleMarker = makeArrow(0xf2c12e);
+scene.add(bolleMarker);
+bolleMarker.visible = false;
+function giveBolle() {
+  player.carrying = bolleItem;
+  bolleItem.removeFromParent();
+  carryHold.add(bolleItem);
+  bolleItem.position.set(0, 0, 0);
+  bolleDrop = null;
+}
+function dropBolle() {
+  if (!player.carrying) return;
+  player.carrying = null;
+  const pos = player.pos.clone();
+  pos.y = world.floorAt(pos.x, pos.z, pos.y + 0.3);
+  dropBolleAt(pos, null);
+  bolleDrop.cool = 1.0;
+  toast('You dropped the bolle! Grab it before a gull does.');
+  // the nearest attacking gull goes for it
+  const g = gulls.filter(a => ['orbit', 'climb', 'dive'].includes(a.state)).sort((x, y) => x.pos.distanceTo(pos) - y.pos.distanceTo(pos))[0];
+  if (g) later('thief', 0.5, () => { if (bolleDrop && g.state !== 'knocked') g.state = 'thief'; });
+}
+function dropBolleAt(pos, gull) {
+  void gull;
+  bolleItem.removeFromParent();
+  scene.add(bolleItem);
+  const y = world.floorAt(pos.x, pos.z, pos.y + 0.5);
+  bolleItem.position.set(pos.x, (y > -50 ? y : pos.y) + 0.02, pos.z);
+  bolleDrop = { pos: bolleItem.position.clone(), item: bolleItem };
+}
+function pickDropSpot(from) {
+  // somewhere walkable 12-22 m away, on the way home
+  for (let k = 0; k < 30; k++) {
+    const a = Math.random() * Math.PI * 2, r = 12 + Math.random() * 10;
+    const x = clamp(from.x + Math.cos(a) * r, -82, 18), z = clamp(from.z + Math.sin(a) * r, -55, 55);
+    const y = world.floorAt(x, z, 60, 0.45, pInfo);
+    if (y > -13 && pInfo.block && pInfo.block.tag !== 'house' && pInfo.block.walk && !inHouse({ x, y, z })) return new THREE.Vector3(x, y, z);
+  }
+  return new THREE.Vector3(-1, L(10), 10);
+}
+
+// ------------------------------------------------------------------ missions
+const marker = makeMarker();
+scene.add(marker);
+marker.visible = false;
+const itemArrows = [];
+let mission = null;
+const SPAWN = {
+  wharf: [-79.5, -12, 31, Math.PI / 2],
+  home: [1.5, L(-0.85), -0.85, Math.PI / 2],
+  lane: [0.5, L(4), 4, Math.PI],
+  bakery: [-76.5, -12, W.bakeZ, Math.PI / 2],
+};
+const DOOR = new THREE.Vector3(1.9, L(-0.85), -0.85);
+const TERRACE = new THREE.Vector3(16.5, H6.U, -0.8);
+const G = H6.G, U = H6.U;
+const ITEMS = [
+  { kind: 'laptop', p: [11.9, G + 0.9, -4.0], name: 'laptop' },
+  { kind: 'candle', p: [10.2, G + 0.43, 2.1], name: 'candle & flowers' },
+  { kind: 'router', p: [3.1, G + 0.76, -3.0], name: 'wi-fi router' },
+  { kind: 'cushion', p: [7.6, U + 0.56, 3.6], name: 'blue cushions' },
+  { kind: 'plant', p: [12.05, U + 1.43, -3.2], name: 'bathroom plant' },
+  { kind: 'book', p: [3.1, U + 0.76, 2.3], name: 'coffee-table book' },
+];
+const itemObjs = ITEMS.map(it => {
+  const o = makeItem(it.kind);
+  o.position.set(...it.p);
+  o.visible = false;
+  scene.add(o);
+  const arrow = makeArrow();
+  arrow.visible = false;
+  scene.add(arrow);
+  return { ...it, o, arrow, got: false };
+});
+
+const CHECKPOINTS = [
+  [0.2, 16], [0.2, 30], [-4, 36.6], [-25, 36.8], [-48, 36.8], [-70, 35],
+];
+
+const MISSIONS = [
+  {
+    id: 'home', title: 'Hjem, vått hjem', sub: 'Home, wet home', spawn: 'wharf', reward: 100,
+    start(m) {
+      showPhone('Ingrid (housemate)', 'Where ARE you? You have the only key and it’s pouring. Cappes vei 6. Now please.', 7);
+      m.step = 0;
+    },
+    update(m) {
+      setObjective('Get home to <em>Cappes vei 6</em>. The smau stairs run straight up from Bryggen.');
+      m.target = DOOR;
+      if (player.pos.distanceTo(DOOR) < 1.4 || inHouse(player.pos)) return 'done';
+    },
+  },
+  {
+    id: 'inside', title: 'Innbrudd', sub: 'Inside job', spawn: 'home', reward: 300, timer: 150,
+    start(m) {
+      showPhone('Ingrid', 'Party on the terrace tonight! The landlord stores “his” nice things all over the house. Borrow them. All six. He’s back in 2½ minutes.', 9);
+      for (const it of itemObjs) { it.got = false; it.o.visible = true; it.o.position.set(...it.p); }
+      m.step = 0;
+    },
+    update(m, dt) {
+      const left = itemObjs.filter(i => !i.got);
+      for (const it of left) {
+        const dx = it.o.position.x - player.pos.x, dz = it.o.position.z - player.pos.z, dy = it.o.position.y - player.pos.y;
+        if (dx * dx + dz * dz < 1.25 && dy > -0.4 && dy < 2.0) {
+          it.got = true; it.o.visible = false; it.arrow.visible = false;
+          audio.pickup();
+          toast(`Got the ${it.name} (${6 - left.length + 1}/6)`);
+        }
+      }
+      for (const it of itemObjs) {
+        it.arrow.visible = !it.got;
+        it.arrow.position.set(it.o.position.x, it.o.position.y + 0.65 + Math.sin(performance.now() * 0.005) * 0.08, it.o.position.z);
+        it.o.rotation.y += dt * 0.6;
+      }
+      const remaining = itemObjs.filter(i => !i.got);
+      if (remaining.length) {
+        setObjective(`Borrow the landlord’s things: <em>${6 - remaining.length}/6</em> &nbsp;·&nbsp; next: ${remaining.map(i => i.name).slice(0, 3).join(', ')}${remaining.length > 3 ? '…' : ''}`);
+        let best = null, bd = 1e9;
+        for (const it of remaining) { const d = it.o.position.distanceTo(player.pos); if (d < bd) { bd = d; best = it; } }
+        m.target = null;
+        m.blips = remaining.map(i => ({ x: i.o.position.x, z: i.o.position.z, c: '#f2c12e', r: 5, edge: false }));
+        void best;
+      } else {
+        if (!m.allGot) { m.allGot = true; showPhone('Ingrid', 'Perfect. Bring it all up to the terrace. The back door upstairs.', 6); }
+        setObjective('Carry it all to the <em>terrace</em> (upstairs, out the back door).');
+        m.target = TERRACE;
+        m.blips = null;
+        if (player.pos.distanceTo(TERRACE) < 2.2) return 'done';
+      }
+      if (m.timer <= 0) return 'fail:The landlord got home first. Act natural.';
+    },
+    cleanup() { for (const it of itemObjs) { it.o.visible = false; it.arrow.visible = false; } },
+  },
+  {
+    id: 'scooter', title: 'Grand Theft Sparkesykkel', sub: 'The bakery at Bryggen closes in one minute', spawn: 'lane', reward: 500,
+    noPunchAlarm: true,
+    start(m) {
+      showPhone('Ingrid', 'DISASTER. No boller for the party. The bakery at Bryggen closes in a minute. Grab a scooter. Go go go.', 8);
+      m.step = 0; m.cp = 0;
+      const s = scooters[0];
+      s.pos.set(1.6, L(8.5), 8.5); s.heading = 0; s.speed = 0; s.pos.y = world.floorAt(1.6, 8.5, 100);
+    },
+    update(m) {
+      if (m.step === 0) {
+        setObjective('Steal an <em>e-scooter</em> — there’s one just down the lane. Press <em>E</em> next to it.');
+        const s = nearestScooter(1000);
+        m.target = s ? s.pos : null;
+        if (player.riding) { m.step = 1; m.timer = 60; state.alarmMin = 2; raiseAlarm(2); toast('Gulls incoming. Keep riding!'); }
+        return;
+      }
+      const cp = CHECKPOINTS[m.cp];
+      const y = world.floorAt(cp[0], cp[1], 100);
+      m.target = _cpv.set(cp[0], y, cp[1]);
+      setObjective(`Ride down to <em>Bryggen</em> through the checkpoints (${m.cp + 1}/${CHECKPOINTS.length}).`);
+      if (Math.hypot(player.pos.x - cp[0], player.pos.z - cp[1]) < 3.2) {
+        m.cp++; audio.coin();
+        if (m.cp >= CHECKPOINTS.length) return 'done';
+      }
+      if (m.timer !== null && m.timer <= 0) return 'fail:The bakery closed. The party is ruined (it isn’t, try again).';
+    },
+  },
+  {
+    id: 'bolle', title: 'Bollejakt', sub: 'The last skillingsbolle in Bergen', spawn: 'bakery', reward: 1000,
+    noPunchAlarm: true,
+    start(m) {
+      m.step = 0;
+      state.alarmMin = 0;
+      showPhone('Ingrid', 'Did you make it?? Get the LAST skillingsbolle. Every gull in Bergen is watching that counter.', 7);
+    },
+    update(m, dt) {
+      const door = _cpv.set(-75.2, -12, W.bakeZ);
+      if (m.step === 0) {
+        setObjective('Get the last <em>skillingsbolle</em> from the bakery.');
+        m.target = door;
+        if (Math.hypot(player.pos.x - door.x, player.pos.z - door.z) < 1.8) {
+          m.step = 1; giveBolle(); audio.pickup();
+          banner('Bolle secured', 'Now get it home. They have seen it.', '', 2.5);
+          state.alarmMin = 3; raiseAlarm(3);
+        }
+        return;
+      }
+      if (player.carrying) {
+        setObjective('Carry the bolle home to the <em>terrace of Cappes vei 6</em>. Punch gulls that get close.');
+        m.target = TERRACE;
+        bolleMarker.visible = false;
+        if (player.pos.distanceTo(TERRACE) < 2.4) return 'done';
+      } else if (bolleDrop) {
+        setObjective('You dropped the <em>bolle</em>! Grab it!');
+        m.target = bolleDrop.pos;
+        bolleMarker.visible = true;
+        bolleMarker.position.set(bolleDrop.pos.x, bolleDrop.pos.y + 0.8 + Math.sin(performance.now() * 0.006) * 0.1, bolleDrop.pos.z);
+        bolleDrop.cool = (bolleDrop.cool || 0) - dt;
+        if (bolleDrop.cool <= 0 && Math.hypot(player.pos.x - bolleDrop.pos.x, player.pos.z - bolleDrop.pos.z) < 0.9 && Math.abs(player.pos.y - bolleDrop.pos.y) < 1.5) { giveBolle(); audio.pickup(); toast('Got it back!'); }
+      } else {
+        const thief = gulls.find(a => a.state === 'carry');
+        setObjective('A gull has the bolle! <em>Chase it</em>, it will drop it soon. (Or punch it.)');
+        m.target = thief ? thief.pos : null;
+        bolleMarker.visible = false;
+      }
+    },
+    cleanup() { bolleMarker.visible = false; if (player.carrying) { player.carrying = null; } bolleItem.removeFromParent(); bolleDrop = null; },
+  },
+];
+const _cpv = new THREE.Vector3();
+
+function startMission(i, { spawn = true, quiet = false } = {}) {
+  if (mission && mission.def.cleanup) mission.def.cleanup(mission);
+  const def = MISSIONS[i];
+  if (!def) { mission = null; freeRoam(); return; }
+  save.mission = i; persist();
+  mission = { def, idx: i, timer: def.timer ?? null, target: null, blips: null, step: 0 };
+  state.alarmMin = 0; state.alarm = 0;
+  if (spawn) placePlayer(SPAWN[def.spawn]);
+  if (!quiet) banner(def.title, def.sub, '', 3.4);
+  audio.start2();
+  def.start(mission);
+}
+function freeRoam() {
+  mission = null;
+  state.alarmMin = 0;
+  setObjective(save.umbrellas.length < UMBRELLAS.length ? `Free roam. Find all <em>${UMBRELLAS.length} lost umbrellas</em> hidden around Fjellet and Bryggen.` : 'Free roam. Fjellet is yours.');
+}
+function completeMission() {
+  const def = mission.def;
+  if (def.cleanup) def.cleanup(mission);
+  save.money += def.reward;
+  audio.jingle();
+  banner('Oppdrag fullført', `Mission complete  ·  +${def.reward} kr`, 'pass', 3.6);
+  const next = mission.idx + 1;
+  state.alarmMin = 0;
+  mission = null;
+  setObjective('');
+  marker.visible = false;
+  save.mission = next; persist();
+  if (next === MISSIONS.length) { later('ending', 2.5, ending); return; }
+  if (next === 3) { later('next', 2.4, () => startMission(3, { spawn: false })); return; }
+  later('next', 4, () => startMission(next, { spawn: false }));
+}
+function failMission(reason) {
+  audio.fail();
+  banner('Oppdrag feilet', reason, 'fail', 3.6);
+  const idx = mission.idx;
+  if (mission.def.cleanup) mission.def.cleanup(mission);
+  mission = null;
+  marker.visible = false;
+  later('retry', 3.8, () => fadeThen(() => startMission(idx)));
+}
+function updateMission(dt) {
+  if (!mission) { marker.visible = false; return; }
+  if (mission.timer !== null) mission.timer -= dt;
+  const r = mission.def.update(mission, dt);
+  if (r === 'done') { completeMission(); return; }
+  if (typeof r === 'string' && r.startsWith('fail:')) { failMission(r.slice(5)); return; }
+  if (mission && mission.target) {
+    marker.visible = true;
+    marker.position.copy(mission.target);
+    const t = performance.now() * 0.003;
+    marker.userData.ring.scale.setScalar(1 + Math.sin(t) * 0.08);
+    marker.userData.beam.material.opacity = 0.16 + Math.sin(t * 1.3) * 0.05;
+  } else marker.visible = false;
+}
+
+// ------------------------------------------------------------------ death, water, respawn
+function placePlayer(sp) {
+  const [x, y, z, h] = sp;
+  player.pos.set(x, world.floorAt(x, z, y + 1), z);
+  player.vel.set(0, 0, 0);
+  player.heading = h;
+  cam.yaw = h + Math.PI; cam.pitch = 0.3; cam.cur = cam.dist = 4.4;
+  player.knockT = 0; player.fig.body.rotation.x = 0;
+  if (player.riding) player.riding = null;
+}
+function fadeThen(fn) {
+  const f = $('fade');
+  f.classList.add('on');
+  setTimeout(() => { fn(); setTimeout(() => f.classList.remove('on'), 150); }, 650);
+}
+function respawn() {
+  placePlayer(mission ? SPAWN[mission.def.spawn] : SPAWN.home);
+}
+function splash() {
+  audio.splash();
+  if (player.carrying) { player.carrying = null; bolleItem.removeFromParent(); }
+  toast('Vågen is 8 °C in November. Not today.', 3);
+  fadeThen(() => {
+    placePlayer(SPAWN.wharf);
+    if (mission && mission.def.id === 'bolle' && mission.step === 1 && !player.carrying && !bolleDrop) { giveBolle(); }
+  });
+  player.pos.y = -12.5; player.vel.set(0, 0, 0);
+}
+function die(title, sub) {
+  state.mode = 'dead';
+  audio.fail();
+  banner(title, sub, 'fail', 3.5);
+  save.money = Math.max(0, save.money - 100); persist();
+  player.knockT = 99;
+  later('respawn', 3, () => fadeThen(() => {
+    player.health = 100; state.alarm = 0; player.knockT = 0;
+    state.mode = 'play';
+    if (mission) startMission(mission.idx); else respawn();
+  }));
+}
+
+// ------------------------------------------------------------------ ending
+const party = [];
+function ending() {
+  state.mode = 'cut';
+  weather.forced = 0;
+  const spots = [[15.4, 0.1, -2.2, 'wave', 0x2c4c7a, 0xc9a26b], [16.2, 2.6, Math.PI, 'idle', 0x8a3b6b, 0x1d1d1d], [18.2, -2.6, -0.4, 'wave', 0x3f6b4a, 0x3a2618]];
+  if (!party.length) for (const [x, z, h, anim, jacket, hair] of spots) {
+    const fig = new Humanoid({ jacket, hair, hat: null });
+    scene.add(fig.root);
+    const n = { fig, pos: new THREE.Vector3(x, U, z), heading: h, party: anim, downT: 0, fall: 0, path: [[x, z], [x, z]] };
+    fig.root.position.copy(n.pos); fig.root.rotation.y = h;
+    npcs.push(n); party.push(n);
+  }
+  say(party[0], 'Bolle!!');
+  hud.phone.hidden = true;
+  setObjective('');
+  const t0 = performance.now();
+  state.cut = { t0, dur: 11000 };
+  later('end1', 1.2, () => banner('Velkommen hjem', 'Cappes vei 6 · Fjellet · Bergen', 'pass', 6));
+  later('end2', 7.5, () => banner('Takk for at du spilte', 'Free roam unlocked: find the lost umbrellas', '', 4));
+  later('end3', 11, () => { state.mode = 'play'; state.cut = null; weather.forced = null; save.done = true; persist(); freeRoam(); if (!locked) requestLock(); });
+}
+function updateCut(dt) {
+  if (!state.cut) return;
+  const k = clamp((performance.now() - state.cut.t0) / state.cut.dur, 0, 1);
+  const e = k * k * (3 - 2 * k);
+  // rise from the terrace and look out over the rooftops to Vågen
+  const a = new THREE.Vector3(19.5, U + 2.2, 3.5), b = new THREE.Vector3(24, U + 34, 16);
+  camera.position.lerpVectors(a, b, e);
+  const la = new THREE.Vector3(14.5, U + 1.2, -0.5), lb = new THREE.Vector3(-90, -14, -4);
+  camera.lookAt(_v.lerpVectors(la, lb, e));
+  player.fig.root.visible = true;
+  void dt;
+}
+
+// ------------------------------------------------------------------ title camera
+function updateTitleCam(time) {
+  const a = time * 0.12;
+  camera.position.set(-1.3 + Math.sin(a) * 0.6, 4.4 + Math.sin(a * 0.7) * 0.4, -15 + Math.cos(a) * 1.5);
+  camera.lookAt(3.5, 2.6, 1);
+}
+
+// ------------------------------------------------------------------ flow
+function startGame() {
+  $('title').hidden = true;
+  $('hud').hidden = false;
+  if (isTouch) $('touch').hidden = false;
+  audio.start();
+  state.mode = 'play';
+  const idx = save.mission || 0;
+  if (idx >= MISSIONS.length) { placePlayer(SPAWN.home); freeRoam(); }
+  else startMission(idx);
+  requestLock();
+  later('help', 14, () => { $('help').style.opacity = 0; });
+}
+const FACTS = [
+  'Bergen gets well over two metres of rain in a normal year, which makes it one of the wettest cities in Europe.',
+  'Fløibanen, the funicular up Fløyen, has been running since 1918.',
+  'The wharf houses of Bryggen are on UNESCO’s World Heritage List.',
+  'Ulriken, at 643 metres, is the highest of the seven mountains around Bergen.',
+  'Fjellet is the old neighbourhood on the slope just above Bryggen, all steep lanes and white wooden houses.',
+  'The skillingsbolle is Bergen’s own cinnamon bun. The gulls know this.',
+  'Bergen’s gulls really do snatch food out of people’s hands. Hold on to your bolle.',
+];
+let factIdx = Math.floor(Math.random() * FACTS.length);
+function pauseGame() {
+  if (state.mode !== 'play') return;
+  state.mode = 'pause';
+  $('pause').hidden = false;
+  $('pausetitle').textContent = mission ? mission.def.title : 'Cappes Vei 6';
+  $('pausestats').textContent = `kr ${save.money.toLocaleString('nb-NO')} · umbrellas ${save.umbrellas.length}/${UMBRELLAS.length}`;
+  $('restart').hidden = !mission;
+  $('fact').innerHTML = '<b>Bergen fact</b>' + FACTS[factIdx++ % FACTS.length];
+  if (audio.ctx) audio.ctx.suspend();
+}
+function resumeGame() {
+  $('pause').hidden = true;
+  state.mode = 'play';
+  if (audio.ctx) audio.ctx.resume();
+  requestLock();
+  last = performance.now();
+}
+function toggleSound() {
+  audio.setOn(!audio.on);
+  $('soundbtn').textContent = 'Sound: ' + (audio.on ? 'on' : 'off');
+}
+$('play').addEventListener('click', startGame);
+$('resume').addEventListener('click', resumeGame);
+$('restart').addEventListener('click', () => { if (!mission) return; const i = mission.idx; resumeGame(); fadeThen(() => startMission(i)); });
+$('soundbtn').addEventListener('click', toggleSound);
+$('reset').addEventListener('click', () => {
+  if (!confirm('Start over from the first mission? Money and umbrellas reset.')) return;
+  Object.assign(save, { mission: 0, money: 0, umbrellas: [], done: false }); persist();
+  for (const u of umbrellaObjs) u.o.visible = true;
+  shownMoney = 0;
+  resumeGame();
+  fadeThen(() => startMission(0));
+});
+
+// ------------------------------------------------------------------ main loop
+let last = performance.now(), time = 0, frameAvg = 16, adaptT = 0;
+const funiState = { t: 0 };
+function frame(now) {
+  requestAnimationFrame(frame);
+  let dt = Math.min(0.05, (now - last) / 1000);
+  last = now;
+  time += dt;
+  if (state.mode === 'pause') { pressed.jump = pressed.punch = pressed.use = false; renderer.render(scene, camera); return; }
+
+  updateWeather(dt);
+  skyU.time.value = time;
+  sky.position.copy(camera.position);
+  skyU.sunDir.value.copy(sunOffset);
+
+  if (state.mode === 'title') {
+    updateTitleCam(time);
+  } else {
+    if (state.mode === 'play' || state.mode === 'dead' || state.mode === 'cut') {
+      if (state.mode === 'play') updatePlayer(dt);
+      else player.fig.animate(dt, 0, state.mode === 'dead' ? 'down' : 'walk');
+      for (const s of scooters) if (s !== player.riding) updateScooter(s, dt, { x: 0, y: 0 });
+      updateDoors(dt);
+      updateAlarm(dt);
+      if (state.mode === 'play') updateMission(dt);
+      updateUmbrellas(dt, time);
+      if (state.mode === 'cut') updateCut(dt); else updateCamera(dt);
+    }
+    updateHud(dt);
+    const blips = [];
+    if (mission && mission.target) blips.push({ x: mission.target.x, z: mission.target.z, c: '#f2c12e', edge: true, r: 8 });
+    if (mission && mission.blips) blips.push(...mission.blips);
+    if (!mission || mission.def.id === 'scooter') for (const s of scooters) if (s !== player.riding) blips.push({ x: s.pos.x, z: s.pos.z, c: '#2bb673', r: 5 });
+    for (const a of gulls) if (['orbit', 'dive', 'climb', 'carry'].includes(a.state)) blips.push({ x: a.pos.x, z: a.pos.z, c: a.state === 'carry' ? '#f2c12e' : '#d2301f', r: 4 });
+    blips.push({ x: 7.6, z: 0, c: '#f4f1ea', r: 6, edge: true });
+    drawMinimap(blips);
+    // prompt
+    let prompt = '';
+    if (state.mode === 'play' && !player.riding) { const s = nearestScooter(1.7); if (s) prompt = `<kbd>${isTouch ? 'E' : 'E'}</kbd>${s.stolen ? 'Ride e-scooter' : 'Steal e-scooter'}`; }
+    else if (state.mode === 'play' && player.riding && Math.abs(player.riding.speed) < 1) prompt = '<kbd>E</kbd>Get off';
+    hud.prompt.hidden = !prompt;
+    if (prompt && hud.prompt.innerHTML !== prompt) hud.prompt.innerHTML = prompt;
+    audio.update(weather.rain, inHouse(camera.position), player.riding ? Math.abs(player.riding.speed) : 0);
+  }
+  pressed.jump = pressed.punch = pressed.use = false;
+
+  updateNpcs(dt);
+  updateGulls(dt);
+  updateRain(dt);
+
+  // funicular cars shuttle up and down, passing halfway
+  funiState.t += dt / 70;
+  const ft = (Math.sin(funiState.t * Math.PI * 2) + 1) / 2;
+  W.funi.cars.forEach((car, i) => {
+    const u = i === 0 ? ft : 1 - ft;
+    const p = W.funi.curve.getPointAt(clamp(u, 0, 1));
+    const p2 = W.funi.curve.getPointAt(clamp(u + 0.01, 0, 1));
+    car.position.copy(p).add(_v.set(0, 0, i === 0 ? 1.6 : -1.6));
+    car.lookAt(p2.x, p2.y, p2.z + (i === 0 ? 1.6 : -1.6));
+    car.rotateY(-Math.PI / 2);
+  });
+
+  // the sun's shadow box follows the player
+  const focus = state.mode === 'title' ? _v.set(4, 2, 0) : player.pos;
+  sun.position.copy(focus).addScaledVector(sunOffset, 100);
+  sun.target.position.copy(focus);
+
+  renderer.render(scene, camera);
+
+  // adaptive resolution
+  frameAvg = lerp(frameAvg, dt * 1000, 0.05);
+  adaptT += dt;
+  if (adaptT > 2 && !params.get('q')) {
+    adaptT = 0;
+    if (frameAvg > 24 && pixelRatio > 0.6) { pixelRatio = Math.max(0.6, pixelRatio - 0.2); renderer.setPixelRatio(pixelRatio); resize(); }
+    else if (frameAvg < 14 && pixelRatio < maxRatio) { pixelRatio = Math.min(maxRatio, pixelRatio + 0.1); renderer.setPixelRatio(pixelRatio); resize(); }
+  }
+}
+placePlayer(SPAWN.home);
+requestAnimationFrame(frame);
+$('play').disabled = false;
+$('play').textContent = save.mission > 0 ? (save.mission >= MISSIONS.length ? 'Free roam' : 'Continue') : 'Play';
+
+// debug hooks for testing
+window.__gt = { renderer, camera, player, cam, world, state, startMission, save, weather, scooters, gulls, mission: () => mission, startGame, raiseAlarm, W, ending, hitPlayer, dropBolle, bolle: () => ({ drop: bolleDrop, carrying: !!player.carrying }) };
