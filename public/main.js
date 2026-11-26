@@ -586,10 +586,18 @@ vec3 mountains(vec3 rd, vec3 col) {
     if (inside <= 0.0) continue;
     // shape by darkening: far ranges just below the waterline, near ones deeper
     vec3 tone = waterline * mix(0.84, 0.4, depth) * mix(vec3(1.0), vec3(0.94, 1.0, 1.07), depth);
-    // subtle form, by darkening only: the flank turned from the eclipse, a darker
-    // cap toward the crest, and faint vertical gullies
+    // subtle form, by darkening only. Light comes from the slope of the ridgeline:
+    // measured over a window that widens with depth below the crest, at an
+    // azimuth that wanders with slow noise, so the lit/shaded boundary is crisp
+    // near the summit and drifts softly, diagonally, down the face.
     float below = h - rd.y;
-    tone *= mix(0.64, 1.0, lit);
+    float e = 0.004 + below * 0.9;
+    float aw = az + (vnoise(vec2(az * 9.0 + fi * 5.0, rd.y * 40.0)) - 0.5) * below * 1.6;
+    float l0;
+    float slope = (rangeHeight(i, aw + e, sunAz, l0) - rangeHeight(i, aw - e, sunAz, l0)) / (2.0 * e);
+    float toward = clamp((sunAz - az) * 12.0, -1.0, 1.0);       // which way the eclipse lies
+    float facing = clamp(-slope * toward * 1.8, -1.0, 1.0);     // > 0: the face turns toward it
+    tone *= mix(0.66, 1.0, 0.5 + 0.5 * facing);
     tone *= mix(0.84, 1.0, smoothstep(0.0, 0.035, below));
     tone *= 0.93 + 0.07 * vnoise(vec2(az * 150.0 + fi * 17.0, rd.y * 14.0));
     // at the foot, settle into exactly the waterline colour: never brighter below
