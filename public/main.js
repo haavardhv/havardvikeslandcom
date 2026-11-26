@@ -43,10 +43,10 @@ void main() {
   vec2 info = texture(uPrev, uv).rg;
   float avg = (texture(uPrev, uv + vec2(uTexel.x, 0.0)).r + texture(uPrev, uv - vec2(uTexel.x, 0.0)).r +
                texture(uPrev, uv + vec2(0.0, uTexel.y)).r + texture(uPrev, uv - vec2(0.0, uTexel.y)).r) * 0.25;
-  info.g += (avg - info.r) * 0.3;   // coupling: waves travel at ~sqrt(0.3/2) of the old speed
-  info.g *= 0.997;
+  info.g += (avg - info.r) * 0.075;   // coupling: wave speed goes as its square root
+  info.g *= 0.9985;
   info.r += info.g;
-  info.r *= 0.9993;
+  info.r *= 0.9996;
   vec2 e = min(uv, 1.0 - uv);
   info *= mix(0.86, 1.0, smoothstep(0.0, 0.07, min(e.x, e.y)));   // absorbing shore, no echoes
   for (int i = 0; i < 8; i++) {
@@ -483,7 +483,10 @@ vec3 shadeGround(vec3 p, vec3 ro, vec3 rd) {
     if (wuv.x > 0.0 && wuv.y > 0.0 && wuv.x < 1.0 && wuv.y < 1.0) {
       float tx = uWaterRect.w;
       vec2 gw = vec2(texture(uWater, wuv + vec2(tx, 0.0)).r - texture(uWater, wuv - vec2(tx, 0.0)).r,
-                     texture(uWater, wuv + vec2(0.0, tx)).r - texture(uWater, wuv - vec2(0.0, tx)).r) * 12.0;
+                     texture(uWater, wuv + vec2(0.0, tx)).r - texture(uWater, wuv - vec2(0.0, tx)).r) * 6.0;
+      // fade with distance, 1/(1 + k d^4): full up close, gone where grazing angles would streak
+      float wd = length(p - ro);
+      gw /= 1.0 + 2e-5 * wd * wd * wd * wd;
       slope = length(gw);
       n = normalize(n + vec3(-gw.x, 0.0, -gw.y));
     }
