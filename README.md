@@ -11,7 +11,9 @@ Plain static files, no build step and no libraries:
 | `public/main.js` | WebGL2 setup, the fragment shader (signed distance fields, soft shadows, height fog, analytic glows), interaction and synthesized sound |
 | `public/favicon.svg`, `public/og-image.png` | Tab icon and social share preview |
 
-Add `?scale=1` to the URL to pin the render resolution (it otherwise adapts to the GPU).
+The water is a wave simulation on the GPU (a height grid stepped with the wave equation, ping-ponging two float textures). Dragging draws a stick through it; taps, footsteps and falling slabs drop into it. The floating slabs are small rigid bodies simulated in JavaScript: the light gathers them into a swirling clump, they push each other apart, tumble, and drift home.
+
+Debug URL options: `?scale=1` pins the render resolution (it otherwise adapts to the GPU); `?substeps=N` runs the simulation N times per frame, for testing on slow machines.
 
 ## Run locally
 

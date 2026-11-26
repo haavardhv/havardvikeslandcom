@@ -28,6 +28,38 @@ void main() {
   gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0);
 }`;
 
+// Wave equation on a height grid (height in r, velocity in g). Drops are
+// segments in uv space: a moving stick pushes the surface along its path.
+const SIM_FRAG = `#version 300 es
+precision highp float;
+uniform sampler2D uPrev;
+uniform vec2 uTexel;
+uniform int uDropCount;
+uniform vec4 uDropSeg[8];    // a.xy, b.xy (uv)
+uniform vec2 uDropParam[8];  // radius (uv), strength
+out vec4 o;
+void main() {
+  vec2 uv = gl_FragCoord.xy * uTexel;
+  vec2 info = texture(uPrev, uv).rg;
+  float avg = (texture(uPrev, uv + vec2(uTexel.x, 0.0)).r + texture(uPrev, uv - vec2(uTexel.x, 0.0)).r +
+               texture(uPrev, uv + vec2(0.0, uTexel.y)).r + texture(uPrev, uv - vec2(0.0, uTexel.y)).r) * 0.25;
+  info.g += (avg - info.r) * 2.0;
+  info.g *= 0.994;
+  info.r += info.g;
+  info.r *= 0.9985;
+  vec2 e = min(uv, 1.0 - uv);
+  info *= mix(0.86, 1.0, smoothstep(0.0, 0.07, min(e.x, e.y)));   // absorbing shore, no echoes
+  for (int i = 0; i < 8; i++) {
+    if (i >= uDropCount) break;
+    vec2 a = uDropSeg[i].xy, b = uDropSeg[i].zw;
+    vec2 pa = uv - a, ba = b - a;
+    float h = clamp(dot(pa, ba) / max(dot(ba, ba), 1e-9), 0.0, 1.0);
+    float d = max(0.0, 1.0 - length(pa - ba * h) / uDropParam[i].x);
+    info.r += (0.5 - 0.5 * cos(d * 3.14159265)) * uDropParam[i].y;
+  }
+  o = vec4(info, 0.0, 1.0);
+}`;
+
 const FRAG = `#version 300 es
 precision highp float;
 out vec4 fragColor;
@@ -44,12 +76,19 @@ uniform float uEleZ;
 uniform float uTrunk;    // 0 hanging .. 1 raised
 uniform vec3  uRocket;   // x, lift, z
 uniform float uFire;
-uniform vec4  uPulse;    // origin xyz, age
 uniform vec3  uSun;      // eclipse direction
 uniform float uFade;
 uniform float uFlare;    // brief brightening on any click
 uniform float uStartle;  // elephant flinch
 uniform int   uFrame;
+
+#define NSTONE 12
+uniform vec4  uStone[NSTONE];   // centre xyz, bounding radius
+uniform vec3  uStoneB[NSTONE];  // half extents
+uniform mat3  uStoneR[NSTONE];  // world -> local rotation
+uniform sampler2D uWater;       // wave simulation: r = height
+uniform vec4  uWaterRect;       // min x, min z, size, texel (uv)
+uniform float uWaterOn;
 
 // A loop start the compiler cannot prove is 0, so it won't unroll or duplicate
 // the scene function at every call site (keeps compile times sane, esp. ANGLE/D3D).
@@ -157,23 +196,26 @@ float sdRocket(vec3 p) {
   return d;
 }
 
-const vec3 S0 = vec3(-6.8, 2.7, -9.5);
-const vec3 S1 = vec3(6.2, 4.4, -15.0);
-const vec3 S2 = vec3(2.6, 1.5, -7.5);
-
-float sdStone(vec3 p, vec3 c, vec3 b, float s) {
-  p -= c + vec3(0.0, sin(uTime * 0.35 + s) * 0.18, 0.0);
-  p.xz = rot(uTime * 0.07 + s) * p.xz;
-  p.xy = rot(0.4 + s) * p.xy;
-  return sdBox(p, b - 0.04) - 0.04;
+// The floating slabs; positions and rotations come from the CPU physics.
+vec2 sdStones(vec3 p) {
+  vec2 res = vec2(1e9, 3.0);
+  for (int i = ZERO; i < NSTONE; i++) {
+    vec3 q = p - uStone[i].xyz;
+    float bs = length(q) - uStone[i].w;
+    if (bs > 0.25) { res.x = min(res.x, bs); continue; }   // cheap bound while far away
+    q = uStoneR[i] * q;
+    float d = sdBox(q, uStoneB[i] - 0.03) - 0.03;
+    if (d < res.x) res = vec2(d, (i % 4 == 0) ? 4.0 : 3.0);
+  }
+  return res;
 }
 
 vec2 mapObj(vec3 p) {
   vec2 res = vec2(sdElephant(p - vec3(uEle.x, 0.0, uEleZ)), 1.0);
   float r = sdRocket(p - vec3(uRocket.x, uRocket.y, uRocket.z));
   if (r < res.x) res = vec2(r, 2.0);
-  float s = min(sdStone(p, S0, vec3(0.32, 0.5, 0.06), 0.0), min(sdStone(p, S1, vec3(0.55, 0.36, 0.05), 2.0), sdStone(p, S2, vec3(0.16, 0.22, 0.03), 4.0)));
-  if (s < res.x) res = vec2(s, 3.0);
+  vec2 st = sdStones(p);
+  if (st.x < res.x) res = st;
   return res;
 }
 
@@ -343,7 +385,7 @@ vec3 applyFog(vec3 col, vec3 ro, vec3 rd, float t) {
 /* ---------- shading ---------- */
 vec3 shadeObj(vec3 p, vec3 rd, float id, bool cheap) {
   vec3 n = calcNormal(p);
-  vec3 alb = id < 1.5 ? vec3(0.4, 0.38, 0.36) : (id < 2.5 ? vec3(0.07, 0.07, 0.075) : vec3(0.035, 0.034, 0.036));
+  vec3 alb = id < 1.5 ? vec3(0.4, 0.38, 0.36) : id < 2.5 ? vec3(0.07, 0.07, 0.075) : id < 3.5 ? vec3(0.035, 0.034, 0.036) : vec3(0.32, 0.3, 0.28);
   vec3 L = uOrb - p;
   float dl = length(L);
   L /= dl;
@@ -364,15 +406,6 @@ vec3 shadeObj(vec3 p, vec3 rd, float id, bool cheap) {
   return col;
 }
 
-float pulseWave(vec2 xz, out vec2 dir) {
-  vec2 v = xz - uPulse.xz;
-  float d = length(v);
-  dir = v / max(d, 1e-3);
-  float r = uPulse.w * 5.0;
-  float env = exp(-uPulse.w * 0.6) * smoothstep(0.0, 0.1, uPulse.w);
-  return sin((d - r) * 7.0) * exp(-(d - r) * (d - r) * 1.5) * env;
-}
-
 vec3 traceReflection(vec3 ro, vec3 rd) {
   vec2 h = march(ro, rd, 60.0, 56);
   vec3 col;
@@ -386,13 +419,24 @@ vec3 traceReflection(vec3 ro, vec3 rd) {
 }
 
 vec3 shadeGround(vec3 p, vec3 ro, vec3 rd) {
-  float wet = smoothstep(0.38, 0.62, fbm(p.xz * 0.11 + 3.0));
+  float wet = smoothstep(0.2, 0.5, fbm(p.xz * 0.11 + 3.0));
   vec2 e = vec2(0.04, 0.0);
   vec2 g = vec2(fbm(p.xz * 1.4 + e.xy) - fbm(p.xz * 1.4 - e.xy), fbm(p.xz * 1.4 + e.yx) - fbm(p.xz * 1.4 - e.yx)) / (2.0 * e.x);
   float amp = mix(0.07, 0.012, wet) / (1.0 + 0.08 * length(p - ro));   // fade detail with distance: no sparkle
-  vec2 pdir;
-  float pw = pulseWave(p.xz, pdir);
-  vec3 n = normalize(vec3(-g.x * amp - pdir.x * pw * 0.25, 1.0, -g.y * amp - pdir.y * pw * 0.25));
+  vec3 n = normalize(vec3(-g.x * amp, 1.0, -g.y * amp));
+
+  // waves from the simulation
+  float slope = 0.0;
+  if (uWaterOn > 0.5) {
+    vec2 wuv = (p.xz - uWaterRect.xy) / uWaterRect.z;
+    if (wuv.x > 0.0 && wuv.y > 0.0 && wuv.x < 1.0 && wuv.y < 1.0) {
+      float tx = uWaterRect.w;
+      vec2 gw = vec2(texture(uWater, wuv + vec2(tx, 0.0)).r - texture(uWater, wuv - vec2(tx, 0.0)).r,
+                     texture(uWater, wuv + vec2(0.0, tx)).r - texture(uWater, wuv - vec2(0.0, tx)).r) * 12.0;
+      slope = length(gw);
+      n = normalize(n + vec3(-gw.x, 0.0, -gw.y));
+    }
+  }
 
   vec3 R = reflect(rd, n);
   R.y = abs(R.y);
@@ -408,10 +452,9 @@ vec3 shadeGround(vec3 p, vec3 ro, vec3 rd) {
   vec3 alb = mix(vec3(0.05, 0.048, 0.05), vec3(0.02, 0.02, 0.022), wet);
   vec3 diff = alb * ORB_COL * max(dot(n, L), 0.0) * att * sh + alb * vec3(0.03, 0.03, 0.038) * ao;
   vec3 col = mix(diff, refl * ao, clamp(fre * mix(0.35, 1.0, wet) + wet * 0.12, 0.0, 1.0));
-  // the pulse: a ring of light on the water, 1/(1+x^2) across its width
-  float pd = length(p.xz - uPulse.xz) - uPulse.w * 5.0;
-  float penv = exp(-uPulse.w * 0.8) * smoothstep(0.0, 0.08, uPulse.w);
-  col += ORB_COL * penv * 0.22 / (1.0 + pd * pd * 30.0);
+  // wave slopes catch the light and the glow of the sky (1/(1+x^2) falloff with distance)
+  float near = 1.0 / (1.0 + 0.004 * dot(p - ro, p - ro));
+  col += ORB_COL * att * slope * 0.5 * sh + vec3(0.55, 0.57, 0.66) * min(slope, 1.5) * 0.045 * near;
   return col;
 }
 
@@ -481,10 +524,96 @@ function finishProgram() {
   }
   gl.useProgram(prog);
   gl.bindVertexArray(gl.createVertexArray());
-  for (const name of ['uRes', 'uTime', 'uCam', 'uTarget', 'uFocal', 'uOrb', 'uOrbI', 'uEle', 'uEleZ', 'uTrunk', 'uRocket', 'uFire', 'uPulse', 'uSun', 'uFade', 'uFlare', 'uStartle', 'uFrame']) {
+  for (const name of ['uRes', 'uTime', 'uCam', 'uTarget', 'uFocal', 'uOrb', 'uOrbI', 'uEle', 'uEleZ', 'uTrunk', 'uRocket', 'uFire', 'uSun', 'uFade', 'uFlare', 'uStartle', 'uFrame', 'uStone', 'uStoneB', 'uStoneR', 'uWater', 'uWaterRect', 'uWaterOn']) {
     U[name] = gl.getUniformLocation(prog, name);
   }
   return true;
+}
+
+/* ------------------------------------------------------------------ *
+ *  Water: a wave simulation on the GPU, ping-ponging two float textures
+ * ------------------------------------------------------------------ */
+
+const SIM = 320;
+const WATER = { minX: -24, minZ: -34, size: 48 };   // world rect the grid covers
+let water = null;
+const drops = [];
+
+function initWater() {
+  if (!gl.getExtension('EXT_color_buffer_float')) return null;
+  const p = gl.createProgram();
+  const v = gl.createShader(gl.VERTEX_SHADER);
+  const f = gl.createShader(gl.FRAGMENT_SHADER);
+  gl.shaderSource(v, VERT);
+  gl.shaderSource(f, SIM_FRAG);
+  gl.compileShader(v);
+  gl.compileShader(f);
+  gl.attachShader(p, v);
+  gl.attachShader(p, f);
+  gl.linkProgram(p);
+  if (!gl.getProgramParameter(p, gl.LINK_STATUS)) { console.error(gl.getShaderInfoLog(f)); return null; }
+  const target = () => {
+    const tex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RG16F, SIM, SIM, 0, gl.RG, gl.HALF_FLOAT, null);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    const fb = gl.createFramebuffer();
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+    return { tex, fb };
+  };
+  const a = target();
+  const b = target();
+  const ok = gl.checkFramebufferStatus(gl.FRAMEBUFFER) === gl.FRAMEBUFFER_COMPLETE;
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  if (!ok) return null;
+  const u = {};
+  for (const n of ['uPrev', 'uTexel', 'uDropCount', 'uDropSeg', 'uDropParam']) u[n] = gl.getUniformLocation(p, n);
+  return { prog: p, u, src: a, dst: b, acc: 0, seg: new Float32Array(32), param: new Float32Array(16) };
+}
+
+// Push the water along a world-space segment (a stick dragged through it).
+function addDrop(ax, az, bx, bz, radius, strength) {
+  if (!water || drops.length >= 8) return;
+  const S = WATER.size;
+  drops.push([(ax - WATER.minX) / S, (az - WATER.minZ) / S, (bx - WATER.minX) / S, (bz - WATER.minZ) / S, radius / S, strength]);
+}
+
+function stepWater(dt) {
+  if (!water) return;
+  water.acc = Math.min(water.acc + dt, 0.1);
+  let steps = 0;
+  while (water.acc >= 1 / 60 && steps < 3) { water.acc -= 1 / 60; steps++; }
+  if (drops.length && !steps) steps = 1;
+  if (!steps) return;
+  gl.useProgram(water.prog);
+  gl.viewport(0, 0, SIM, SIM);
+  gl.uniform2f(water.u.uTexel, 1 / SIM, 1 / SIM);
+  gl.uniform1i(water.u.uPrev, 0);
+  gl.activeTexture(gl.TEXTURE0);
+  for (let k = 0; k < steps; k++) {
+    const n = k === 0 ? drops.length : 0;
+    for (let i = 0; i < n; i++) {
+      water.seg.set(drops[i].slice(0, 4), i * 4);
+      water.param.set(drops[i].slice(4, 6), i * 2);
+    }
+    gl.uniform1i(water.u.uDropCount, n);
+    if (n) {
+      gl.uniform4fv(water.u.uDropSeg, water.seg);
+      gl.uniform2fv(water.u.uDropParam, water.param);
+    }
+    gl.bindFramebuffer(gl.FRAMEBUFFER, water.dst.fb);
+    gl.bindTexture(gl.TEXTURE_2D, water.src.tex);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    [water.src, water.dst] = [water.dst, water.src];
+  }
+  drops.length = 0;
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  gl.viewport(0, 0, canvas.width, canvas.height);
+  gl.useProgram(prog);
 }
 
 /* ------------------------------------------------------------------ *
@@ -576,6 +705,18 @@ const audio = {
     lfo2.start();
     wind.connect(bp).connect(wg).connect(lp);
     wind.start();
+    // water being stirred: band-passed noise, loudness follows drag speed
+    const sw = ctx.createBufferSource();
+    sw.buffer = nbuf;
+    sw.loop = true;
+    const sbp = ctx.createBiquadFilter();
+    sbp.type = 'bandpass';
+    sbp.frequency.value = 1100;
+    sbp.Q.value = 0.9;
+    this.swishG = ctx.createGain();
+    this.swishG.gain.value = 0;
+    sw.connect(sbp).connect(this.swishG).connect(this.bus);
+    sw.start();
     lp.connect(drone).connect(this.bus);
   },
   set(on) {
@@ -595,6 +736,10 @@ const audio = {
     g.gain.exponentialRampToValueAtTime(0.0001, t + a + h + r);
     g.connect(this.bus);
     return g;
+  },
+  swish(speed) {
+    if (!this.ctx || !this.swishG) return;
+    this.swishG.gain.setTargetAtTime(this.on ? Math.min(0.3, speed * 0.05) : 0, this.ctx.currentTime, 0.06);
   },
   pulse() {
     if (!this.on || !this.ctx) return;
@@ -672,18 +817,42 @@ const state = {
   ele: { x: 1, phase: 0, yaw: 0, pitch: 0, trunk: 0, trunkT: 99, z: -12, startle: 0, snap: 0 },
   rocket: { x: 14, z: -34, lift: 0, fire: 0, mode: 'idle', t: 0, cough: 0, shake: 0 },
   flare: 0,
-  pulse: [0, 0, 0, 99],
   sun: norm([-0.1, 0.165, -1]),
   halfW: 16,
 };
 
 // ?scale=1 pins the render resolution (handy for screenshots).
-const pinnedScale = parseFloat(new URLSearchParams(location.search).get('scale'));
+const params = new URLSearchParams(location.search);
+const pinnedScale = parseFloat(params.get('scale'));
+// ?substeps=N runs the simulation N times per frame (for testing on slow machines).
+const substeps = Math.min(20, Math.max(1, parseInt(params.get('substeps'), 10) || 1));
 let renderScale = pinnedScale > 0 ? pinnedScale : 0.7;
 const maxScale = 1;
 const minScale = 0.45;
 // Never shade more than this many pixels per frame, whatever the screen size.
 const pixelBudget = coarse ? 900000 : 1500000;
+
+// Floating slabs: simple rigid bodies drawn by the shader.
+const NSTONE = 12;
+const stones = (() => {
+  let seed = 7;
+  const rnd = () => { seed = (seed * 16807) % 2147483647; return (seed - 1) / 2147483646; };
+  const list = [];
+  for (let i = 0; i < NSTONE; i++) {
+    const s = 0.12 + rnd() * 0.34;
+    const b = [s * (0.55 + rnd() * 0.5), s * (0.8 + rnd() * 0.6), s * (0.08 + rnd() * 0.16)];
+    const home = [-9.5 + rnd() * 19, 1.0 + rnd() * 4.2, -14 + rnd() * 9];
+    const ax = norm([rnd() - 0.5, rnd() - 0.5, rnd() - 0.5]);
+    const ang = rnd() * Math.PI;
+    list.push({
+      b, r: Math.hypot(...b), home, p: home.slice(), v: [0, 0, 0],
+      q: [ax[0] * Math.sin(ang / 2), ax[1] * Math.sin(ang / 2), ax[2] * Math.sin(ang / 2), Math.cos(ang / 2)],
+      w: [(rnd() - 0.5) * 0.3, (rnd() - 0.5) * 0.3, (rnd() - 0.5) * 0.3], seed: rnd() * 10,
+    });
+  }
+  return list;
+})();
+const stoneBuf = { c: new Float32Array(NSTONE * 4), b: new Float32Array(NSTONE * 3), r: new Float32Array(NSTONE * 9) };
 
 function layout() {
   const w = window.innerWidth;
@@ -766,6 +935,18 @@ function setHover(target) {
   }
 }
 
+// Where the pointer ray meets the water (null when pointing at the sky).
+function groundAt(uv) {
+  const rd = rayAt(uv);
+  if (rd[1] > -0.004) return null;
+  const t = -state.cam[1] / rd[1];
+  return [state.cam[0] + rd[0] * t, state.cam[2] + rd[2] * t];
+}
+const drag = { down: false, last: null, speed: 0 };
+
+window.addEventListener('pointerup', () => { drag.down = false; drag.last = null; });
+window.addEventListener('pointercancel', () => { drag.down = false; drag.last = null; });
+
 window.addEventListener('pointermove', (e) => {
   [pointer.x, pointer.y] = toUv(e.clientX, e.clientY);
   pointer.active = true;
@@ -779,12 +960,29 @@ canvas.addEventListener('pointerdown', (e) => {
   pointer.active = true;
   pointer.last = performance.now() / 1000;
   const target = targetAt([pointer.x, pointer.y]);
+  try { canvas.setPointerCapture(e.pointerId); } catch { /* ignore */ }
 
-  // Every click: a pulse across the water, a flare of the light and the corona.
-  state.pulse = [state.orb[0], 0, state.orb[2], 0];
+  // Every click: a drop in the water, a flare of the light and the corona,
+  // and the slabs near the light are flung outward.
+  const g = groundAt([pointer.x, pointer.y]);
+  const at = g || [state.orb[0], state.orb[2]];
+  addDrop(at[0], at[1], at[0], at[1], 0.45, -0.5);
+  drag.down = true;
+  drag.last = g;
   state.orbI = Math.max(state.orbI, 2.6);
   state.flare = 1;
   audio.pulse();
+  for (const st of stones) {
+    const d = sub(st.p, state.orb);
+    const dist = Math.hypot(...d) || 1e-3;
+    if (dist > 6) continue;
+    const k = 7 / (1 + dist * 0.8);
+    for (let i = 0; i < 3; i++) {
+      st.v[i] += (d[i] / dist) * k;
+      st.w[i] += (Math.random() - 0.5) * 6 * k / 7;
+    }
+    st.v[1] += k * 0.25;
+  }
 
   if (target === 'elephant') {
     const E = state.ele;
@@ -842,7 +1040,17 @@ function update(dt, t, now) {
   const E = state.ele;
   const speed = 0.2;
   E.x -= speed * dt;
+  const prevPhase = E.phase;
   E.phase += (speed * Math.PI / 0.64) * dt;
+  // footfalls ripple the water
+  for (let i = 0; i < 4; i++) {
+    const off = i === 0 || i === 3 ? 0 : Math.PI;
+    if (Math.cos(prevPhase + off) < 0 && Math.cos(E.phase + off) >= 0) {
+      const fx = E.x + (i < 2 ? -0.82 : 0.88) + Math.sin(E.phase + off) * 0.32;
+      const fz = E.z + (i === 0 || i === 3 ? 0.38 : -0.38);
+      addDrop(fx, fz, fx, fz, 0.22, -0.12);
+    }
+  }
   if (E.x < -state.halfW - 4) E.x = state.halfW + 4;
   const head = [E.x - 1.55, 5.0, E.z];
   const v = sub(state.orb, head);
@@ -877,8 +1085,96 @@ function update(dt, t, now) {
     if (p >= 1) { R.mode = 'idle'; R.lift = 0; R.fire = 0; }
   }
 
-  state.pulse[3] += dt;
   state.flare *= Math.exp(-dt * 2.2);
+
+  // dragging: the pointer is a stick drawn through the water
+  if (drag.down) {
+    const g = groundAt([pointer.x, pointer.y]);
+    if (g && drag.last) {
+      const len = Math.hypot(g[0] - drag.last[0], g[1] - drag.last[1]);
+      if (len > 0.002) addDrop(drag.last[0], drag.last[1], g[0], g[1], 0.22, -0.09 * clamp(len / 0.12, 0.25, 1.5));
+      drag.speed = len / Math.max(dt, 1e-3);
+    } else drag.speed = 0;
+    drag.last = g;
+  } else drag.speed *= Math.exp(-dt * 8);
+  audio.swish(drag.speed);
+
+  updateStones(dt, t);
+}
+
+function updateStones(dt, t) {
+  const orb = state.orb;
+  const R = 5;
+  for (const st of stones) {
+    const f = [0, 0, 0];
+    const d = sub(orb, st.p);
+    const dist = Math.hypot(...d) || 1e-3;
+    if (dist < R) {
+      // clump around the light: spring toward a shell, plus a slow swirl
+      const w = 1 - dist / R;
+      const wk = w * w * (3 - 2 * w);
+      const shell = 0.55 + st.r * 1.5;
+      const pull = (dist - shell) * 9 * wk;
+      const swirl = cross(d, [0, 0, 1]);
+      const sl = Math.hypot(...swirl) || 1;
+      for (let i = 0; i < 3; i++) f[i] += (d[i] / dist) * pull + (swirl[i] / sl) * 2.6 * wk;
+    }
+    const bob = Math.sin(t * 0.35 + st.seed) * 0.2;
+    const home = [st.home[0], st.home[1] + bob, st.home[2]];
+    for (let i = 0; i < 3; i++) f[i] += (home[i] - st.p[i]) * 0.35;
+    for (const o of stones) {
+      if (o === st) continue;
+      const dd = sub(st.p, o.p);
+      const dl = Math.hypot(...dd) || 1e-3;
+      const minD = (st.r + o.r) * 0.95;
+      if (dl < minD) for (let i = 0; i < 3; i++) f[i] += (dd[i] / dl) * (minD - dl) * 40;
+    }
+    const damping = Math.exp(-1.5 * dt);
+    for (let i = 0; i < 3; i++) st.v[i] = (st.v[i] + f[i] * dt) * damping;
+  }
+  for (const st of stones) {
+    for (let i = 0; i < 3; i++) st.p[i] += st.v[i] * dt;
+    // touch the water: splash, bounce
+    const floor = st.r * 0.55;
+    if (st.p[1] < floor) {
+      if (st.v[1] < -0.4) addDrop(st.p[0], st.p[2], st.p[0], st.p[2], 0.25 + st.r, clamp(st.v[1] * 0.06, -0.35, 0));
+      st.p[1] = floor;
+      st.v[1] = Math.abs(st.v[1]) * 0.3;
+      st.v[0] *= 0.7;
+      st.v[2] *= 0.7;
+    }
+    // tumble: spin picks up from motion, then settles
+    const tq = cross([0, 1, 0], st.v);
+    const ad = Math.exp(-0.9 * dt);
+    for (let i = 0; i < 3; i++) st.w[i] = (st.w[i] + tq[i] * 0.5 * dt) * ad + (i === 1 ? 0.02 * dt : 0);
+    const [qx, qy, qz, qw] = st.q;
+    const [wx, wy, wz] = st.w;
+    const nq = [
+      qx + 0.5 * dt * (wx * qw + wy * qz - wz * qy),
+      qy + 0.5 * dt * (wy * qw + wz * qx - wx * qz),
+      qz + 0.5 * dt * (wz * qw + wx * qy - wy * qx),
+      qw - 0.5 * dt * (wx * qx + wy * qy + wz * qz),
+    ];
+    const ql = Math.hypot(...nq);
+    st.q = nq.map((c) => c / ql);
+  }
+}
+
+function uploadStones() {
+  stones.forEach((st, i) => {
+    stoneBuf.c.set([st.p[0], st.p[1], st.p[2], st.r + 0.05], i * 4);
+    stoneBuf.b.set(st.b, i * 3);
+    const [x, y, z, w] = st.q;
+    // rotation matrix R (local -> world), written row-major so GLSL reads R^T (world -> local)
+    stoneBuf.r.set([
+      1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w),
+      2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w),
+      2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y),
+    ], i * 9);
+  });
+  gl.uniform4fv(U.uStone, stoneBuf.c);
+  gl.uniform3fv(U.uStoneB, stoneBuf.b);
+  gl.uniformMatrix3fv(U.uStoneR, false, stoneBuf.r);
 }
 
 function frame(nowMs) {
@@ -888,7 +1184,10 @@ function frame(nowMs) {
   last = nowMs;
   const dt = rawDt * motion;
   const t = ((nowMs - start) / 1000) * motion;
-  update(dt, t, now);
+  for (let i = 0; i < substeps; i++) {
+    update(dt, t + i * dt, now);
+    stepWater(dt);
+  }
 
   gl.uniform2f(U.uRes, canvas.width, canvas.height);
   gl.uniform1f(U.uTime, t);
@@ -907,7 +1206,12 @@ function frame(nowMs) {
   gl.uniform1f(U.uFlare, state.flare);
   gl.uniform1f(U.uStartle, state.ele.startle);
   gl.uniform1i(U.uFrame, frameNo++);
-  gl.uniform4fv(U.uPulse, state.pulse);
+  uploadStones();
+  gl.activeTexture(gl.TEXTURE0);
+  gl.bindTexture(gl.TEXTURE_2D, water ? water.src.tex : null);
+  gl.uniform1i(U.uWater, 0);
+  gl.uniform1f(U.uWaterOn, water ? 1 : 0);
+  gl.uniform4f(U.uWaterRect, WATER.minX, WATER.minZ, WATER.size, 1 / SIM);
   gl.uniform3fv(U.uSun, state.sun);
   gl.uniform1f(U.uFade, Math.min(1, ((nowMs - start) / 1000) / 3) ** 2);
   gl.drawArrays(gl.TRIANGLES, 0, 3);
@@ -931,6 +1235,8 @@ function frame(nowMs) {
 
 function begin() {
   if (!finishProgram()) return;
+  water = initWater();
+  gl.useProgram(prog);
   start = last = performance.now();
   document.documentElement.classList.add('ready');
   requestAnimationFrame(frame);
