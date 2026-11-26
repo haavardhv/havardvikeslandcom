@@ -134,6 +134,28 @@ h1 {
 #sound:hover { color: var(--bone); }
 #sound:focus-visible { outline: 1px solid var(--bone); outline-offset: 4px; }
 
+.tag {
+  position: fixed;
+  z-index: 3;
+  left: 0;
+  top: 0;
+  padding: 6px 9px;
+  border: 1px solid var(--hair);
+  background: rgba(7, 7, 10, 0.55);
+  backdrop-filter: blur(6px);
+  font-family: "Geist Mono", ui-monospace, monospace;
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--bone);
+  white-space: nowrap;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.25s ease;
+}
+
+.tag.on { opacity: 1; }
+
 /* entrance */
 .bar, .hero { opacity: 0; transition: opacity 2s ease 1.2s; }
 .ready .bar, .ready .hero { opacity: 1; }

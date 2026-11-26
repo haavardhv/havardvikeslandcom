@@ -49,6 +49,8 @@ uniform float uFire;
 uniform vec4  uPulse;    // origin xyz, age
 uniform vec3  uSun;      // eclipse direction
 uniform float uFade;
+uniform float uFlare;    // brief brightening on any click
+uniform float uStartle;  // elephant flinch
 
 const vec3 ORB_COL = vec3(1.0, 0.84, 0.68);
 const vec3 COR_COL = vec3(0.86, 0.9, 1.0);
@@ -90,7 +92,7 @@ float sdElephant(vec3 p) {
   if (bb > 0.4) return bb;
 
   vec3 bc = vec3(0.0, LEG + 0.55, 0.0);
-  bc.y += sin(uEle.y * 2.0) * 0.035;
+  bc.y += sin(uEle.y * 2.0) * 0.035 - uStartle * 0.14;
   float d = sdEllipsoid(p - bc, vec3(1.45, 0.9, 0.8));
   d = smin(d, sdEllipsoid(p - bc - vec3(0.35, 0.35, 0.0), vec3(0.9, 0.55, 0.6)), 0.4);
 
@@ -103,6 +105,7 @@ float sdElephant(vec3 p) {
   vec3 eq = q - vec3(-0.1, 0.0, 0.0);
   eq.z = abs(eq.z) - 0.48;
   eq.xy = rot(-0.15) * eq.xy;
+  eq.xz = rot(uStartle * 0.7) * eq.xz;   // ears flare
   d = smin(d, sdEllipsoid(eq, vec3(0.44, 0.6, 0.09)), 0.1);
 
   vec3 tq = q; tq.z = abs(tq.z);
@@ -188,6 +191,22 @@ vec2 march(vec3 ro, vec3 rd, float tmax, int steps) {
   return vec2(1e9, -1.0);
 }
 
+// Primary march that also records the closest near miss, so silhouettes can be
+// blended by how much of the pixel cone they cover (single-sample anti-aliasing).
+vec2 marchAA(vec3 ro, vec3 rd, float tmax, float pxr, out vec3 edge) {
+  float t = 0.05;
+  edge = vec3(0.0, 0.0, -1.0);   // coverage, t, material
+  for (int i = 0; i < 160; i++) {
+    vec2 h = mapObj(ro + rd * t);
+    if (abs(h.x) < 0.0006 * t) return vec2(t, h.y);
+    float c = 1.0 - clamp(h.x / (pxr * t), 0.0, 1.0);
+    if (c > edge.x) edge = vec3(c, t, h.y);
+    t += h.x * 0.8;
+    if (t > tmax) break;
+  }
+  return vec2(1e9, -1.0);
+}
+
 float softShadow(vec3 ro, vec3 rd, float maxt, float k) {
   float res = 1.0, t = 0.03, ph = 1e10;
   for (int i = 0; i < 48; i++) {
@@ -218,7 +237,7 @@ vec3 hazeColor(vec3 rd) {
   float c = max(dot(rd, uSun), 0.0);
   float a = acos(clamp(dot(rd, uSun), -1.0, 1.0));
   vec3 col = vec3(0.0065, 0.0065, 0.009);
-  col += COR_COL * 0.06 / (1.0 + (a / 0.2) * (a / 0.2));   // forward scatter toward the eclipse
+  col += COR_COL * 0.06 * (1.0 + uFlare) / (1.0 + (a / 0.2) * (a / 0.2));   // forward scatter toward the eclipse
   col += vec3(0.05, 0.035, 0.04) * pow(c, 6.0) * 0.4;
   return col;
 }
@@ -251,7 +270,7 @@ vec3 sky(vec3 rd) {
   streak = 0.45 + 1.1 * streak * streak;
   float xs = max(x, 0.0);
   float corona = 0.0025 / (xs + 0.0028);                      // k/(x+e)
-  corona *= mix(1.0, streak, smoothstep(0.0, 0.06, xs));
+  corona *= mix(1.0, streak, smoothstep(0.0, 0.06, xs)) * (1.0 + uFlare * 1.4);
   corona += 0.0006 / (xs * xs * 40.0 + 0.0006) * 0.6;         // thin bright limb, 1/(1+x^2)
   vec3 ccol = mix(vec3(1.0, 0.96, 0.92), COR_COL * vec3(0.8, 0.85, 1.0), smoothstep(0.0, 0.12, xs));
   float prom = pow(vnoise(ring * 6.0 + 3.0), 6.0) * 2.5 / (1.0 + xs * xs * 60000.0);
@@ -333,9 +352,8 @@ vec3 shadeObj(vec3 p, vec3 rd, float id, bool cheap) {
     col += ORB_COL * att * sh * pow(max(dot(n, hv), 0.0), 48.0) * 0.5;
   }
   col += alb * (vec3(0.03, 0.031, 0.04) * (0.55 + 0.45 * n.y)) * ao;
-  float rim = pow(clamp(1.0 + dot(n, rd), 0.0, 1.0), 4.0);
-  col += COR_COL * rim * 0.22 * smoothstep(0.6, 1.0, dot(rd, uSun)) * ao;
-  col += COR_COL * rim * 0.025 * ao;
+  float rim = pow(clamp(1.0 + dot(n, rd), 0.0, 1.0), 3.0) * ao;
+  col += COR_COL * rim * (0.1 * smoothstep(0.6, 1.0, dot(rd, uSun)) + 0.015);
   return col;
 }
 
@@ -343,8 +361,8 @@ float pulseWave(vec2 xz, out vec2 dir) {
   vec2 v = xz - uPulse.xz;
   float d = length(v);
   dir = v / max(d, 1e-3);
-  float r = uPulse.w * 4.0;
-  float env = exp(-uPulse.w * 0.55) * smoothstep(0.0, 0.3, uPulse.w);
+  float r = uPulse.w * 5.0;
+  float env = exp(-uPulse.w * 0.6) * smoothstep(0.0, 0.1, uPulse.w);
   return sin((d - r) * 7.0) * exp(-(d - r) * (d - r) * 1.5) * env;
 }
 
@@ -364,7 +382,7 @@ vec3 shadeGround(vec3 p, vec3 ro, vec3 rd) {
   float wet = smoothstep(0.38, 0.62, fbm(p.xz * 0.11 + 3.0));
   vec2 e = vec2(0.04, 0.0);
   vec2 g = vec2(fbm(p.xz * 1.4 + e.xy) - fbm(p.xz * 1.4 - e.xy), fbm(p.xz * 1.4 + e.yx) - fbm(p.xz * 1.4 - e.yx)) / (2.0 * e.x);
-  float amp = mix(0.18, 0.015, wet);
+  float amp = mix(0.07, 0.012, wet) / (1.0 + 0.08 * length(p - ro));   // fade detail with distance: no sparkle
   vec2 pdir;
   float pw = pulseWave(p.xz, pdir);
   vec3 n = normalize(vec3(-g.x * amp - pdir.x * pw * 0.25, 1.0, -g.y * amp - pdir.y * pw * 0.25));
@@ -382,7 +400,12 @@ vec3 shadeGround(vec3 p, vec3 ro, vec3 rd) {
   float ao = calcAO(p, vec3(0.0, 1.0, 0.0));
   vec3 alb = mix(vec3(0.05, 0.048, 0.05), vec3(0.02, 0.02, 0.022), wet);
   vec3 diff = alb * ORB_COL * max(dot(n, L), 0.0) * att * sh + alb * vec3(0.03, 0.03, 0.038) * ao;
-  return mix(diff, refl * ao, clamp(fre * mix(0.5, 1.0, wet) + wet * 0.12, 0.0, 1.0));
+  vec3 col = mix(diff, refl * ao, clamp(fre * mix(0.35, 1.0, wet) + wet * 0.12, 0.0, 1.0));
+  // the pulse: a ring of light on the water, 1/(1+x^2) across its width
+  float pd = length(p.xz - uPulse.xz) - uPulse.w * 5.0;
+  float penv = exp(-uPulse.w * 0.8) * smoothstep(0.0, 0.08, uPulse.w);
+  col += ORB_COL * penv * 0.22 / (1.0 + pd * pd * 30.0);
+  return col;
 }
 
 vec3 aces(vec3 x) { return clamp((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14), 0.0, 1.0); }
@@ -396,7 +419,9 @@ void main() {
   vec3 ro = uCam;
 
   float tG = rd.y < 0.0 ? -ro.y / rd.y : 1e9;
-  vec2 hit = march(ro, rd, min(tG, 90.0), 160);
+  float pxr = 1.6 / (uRes.y * uFocal);
+  vec3 edge;
+  vec2 hit = marchAA(ro, rd, min(tG, 90.0), pxr, edge);
   vec3 col;
   float t;
   if (hit.y > 0.0 && hit.x < tG) {
@@ -410,6 +435,10 @@ void main() {
     col = sky(rd);
   }
   col = applyFog(col, ro, rd, min(t, 400.0));
+  if (edge.x > 0.0 && edge.y < t - 0.02) {
+    vec3 ec = shadeObj(ro + rd * edge.y, rd, edge.z, false);
+    col = mix(col, applyFog(ec, ro, rd, edge.y), edge.x);
+  }
   col += orbLight(ro, rd, t);
   col += rocketLights(ro, rd, t);
 
@@ -440,7 +469,7 @@ gl.useProgram(prog);
 gl.bindVertexArray(gl.createVertexArray());
 
 const U = {};
-for (const name of ['uRes', 'uTime', 'uCam', 'uTarget', 'uFocal', 'uOrb', 'uOrbI', 'uEle', 'uEleZ', 'uTrunk', 'uRocket', 'uFire', 'uPulse', 'uSun', 'uFade']) {
+for (const name of ['uRes', 'uTime', 'uCam', 'uTarget', 'uFocal', 'uOrb', 'uOrbI', 'uEle', 'uEleZ', 'uTrunk', 'uRocket', 'uFire', 'uPulse', 'uSun', 'uFade', 'uFlare', 'uStartle']) {
   U[name] = gl.getUniformLocation(prog, name);
 }
 
@@ -626,8 +655,9 @@ const state = {
   focal: 1.9,
   orb: [0, 1.8, -8],
   orbI: 0,
-  ele: { x: 1, phase: 0, yaw: 0, pitch: 0, trunk: 0, trunkT: 99, z: -12 },
-  rocket: { x: 14, z: -34, lift: 0, fire: 0, mode: 'idle', t: 0 },
+  ele: { x: 1, phase: 0, yaw: 0, pitch: 0, trunk: 0, trunkT: 99, z: -12, startle: 0, snap: 0 },
+  rocket: { x: 14, z: -34, lift: 0, fire: 0, mode: 'idle', t: 0, cough: 0, shake: 0 },
+  flare: 0,
   pulse: [0, 0, 0, 99],
   sun: norm([-0.1, 0.165, -1]),
   halfW: 16,
@@ -635,9 +665,9 @@ const state = {
 
 // ?scale=1 pins the render resolution (handy for screenshots).
 const pinnedScale = parseFloat(new URLSearchParams(location.search).get('scale'));
-let renderScale = pinnedScale > 0 ? pinnedScale : coarse ? 0.55 : 0.8;
+let renderScale = pinnedScale > 0 ? pinnedScale : coarse ? 0.6 : 0.85;
 const maxScale = 1;
-const minScale = 0.4;
+const minScale = 0.55;
 
 function layout() {
   const w = window.innerWidth;
@@ -690,35 +720,80 @@ function rayAt(uv) {
   ]);
 }
 
+// Generous screen-space hit boxes, projected from the objects' world bounds.
+function screenBox(points) {
+  const ps = points.map(project);
+  return [Math.min(...ps.map((p) => p[0])), Math.max(...ps.map((p) => p[0])), Math.min(...ps.map((p) => p[1])), Math.max(...ps.map((p) => p[1]))];
+}
+function inBox(b, uv, pad) {
+  return uv[0] > b[0] - pad && uv[0] < b[1] + pad && uv[1] > b[2] - pad && uv[1] < b[3] + pad;
+}
+function targetAt(uv) {
+  const R = state.rocket;
+  if (R.lift < 30) {
+    const rb = screenBox([[R.x - 0.9, R.lift - 0.4, R.z], [R.x + 0.9, R.lift + 5.4, R.z]]);
+    if (inBox(rb, uv, 0.05)) return 'rocket';
+  }
+  const E = state.ele;
+  const eb = screenBox([[E.x - 2.7, 0, E.z], [E.x + 1.7, 6.2, E.z]]);
+  if (inBox(eb, uv, 0.03)) return 'elephant';
+  return null;
+}
+
+const tag = document.getElementById('tag');
+let hovered = null;
+function setHover(target, e) {
+  if (target !== hovered) {
+    hovered = target;
+    canvas.style.cursor = target ? 'pointer' : '';
+    tag.classList.toggle('on', !!target);
+    if (target === 'elephant') {
+      tag.textContent = 'Call the elephant';
+      state.ele.startle = Math.max(state.ele.startle, 0.35);
+    } else if (target === 'rocket') {
+      tag.textContent = state.rocket.mode === 'idle' ? 'Launch' : 'In flight';
+      if (state.rocket.mode === 'idle') state.rocket.cough = 1;
+    }
+  }
+  if (target && e) tag.style.transform = `translate(${e.clientX + 18}px, ${e.clientY + 14}px)`;
+}
+
 window.addEventListener('pointermove', (e) => {
   [pointer.x, pointer.y] = toUv(e.clientX, e.clientY);
   pointer.active = true;
   pointer.last = performance.now() / 1000;
+  setHover(e.pointerType === 'mouse' ? targetAt([pointer.x, pointer.y]) : null, e);
 }, { passive: true });
-document.documentElement.addEventListener('mouseleave', () => { pointer.active = false; });
+document.documentElement.addEventListener('mouseleave', () => { pointer.active = false; setHover(null); });
 
 canvas.addEventListener('pointerdown', (e) => {
   [pointer.x, pointer.y] = toUv(e.clientX, e.clientY);
   pointer.active = true;
   pointer.last = performance.now() / 1000;
-  const click = [pointer.x, pointer.y];
+  const target = targetAt([pointer.x, pointer.y]);
 
+  // Every click: a pulse across the water, a flare of the light and the corona.
   state.pulse = [state.orb[0], 0, state.orb[2], 0];
-  state.orbI = Math.max(state.orbI, 2.2);
+  state.orbI = Math.max(state.orbI, 2.6);
+  state.flare = 1;
   audio.pulse();
 
-  const E = state.ele;
-  const ep = project([E.x - 0.6, 4.6, E.z]);
-  if (Math.hypot(ep[0] - click[0], ep[1] - click[1]) < 0.28) {
+  if (target === 'elephant') {
+    const E = state.ele;
     E.trunkT = 0;
+    E.startle = 1;
+    E.snap = 1.5;
     audio.horn();
-  }
-  const R = state.rocket;
-  const rp = project([R.x, R.lift + 2.6, R.z]);
-  if (R.mode === 'idle' && Math.hypot(rp[0] - click[0], rp[1] - click[1]) < 0.2) {
-    R.mode = 'launch';
-    R.t = 0;
-    audio.launch();
+  } else if (target === 'rocket') {
+    const R = state.rocket;
+    if (R.mode === 'idle') {
+      R.mode = 'launch';
+      R.t = 0;
+      tag.textContent = 'In flight';
+      audio.launch();
+    } else {
+      R.shake = 1;
+    }
   }
   if (!poked) { poked = true; hint.classList.add('gone'); }
 });
@@ -766,18 +841,24 @@ function update(dt, t, now) {
   const v = sub(state.orb, head);
   const yaw = clamp(Math.atan2(v[2], -v[0]), -0.85, 0.85);
   const pitch = clamp(Math.atan2(v[1], Math.hypot(v[0], v[2])), -0.45, 0.35);
-  E.yaw += (yaw - E.yaw) * damp(1.2, dt);
-  E.pitch += (pitch - E.pitch) * damp(1.2, dt);
+  E.snap = Math.max(0, E.snap - dt);
+  const headSpeed = E.snap > 0 ? 7 : 1.2;
+  E.yaw += (yaw - E.yaw) * damp(headSpeed, dt);
+  E.pitch += (pitch - E.pitch) * damp(headSpeed, dt);
   E.trunkT += dt;
-  const tw = E.trunkT < 4 ? Math.min(1, E.trunkT / 0.8) * Math.min(1, (4 - E.trunkT) / 1.2) : 0;
-  E.trunk += (tw - E.trunk) * damp(4, dt);
+  const tw = E.trunkT < 3.2 ? Math.min(1, E.trunkT / 0.22) * Math.min(1, (3.2 - E.trunkT) / 1.0) : 0;
+  E.trunk += (tw - E.trunk) * damp(14, dt);
+  E.startle *= Math.exp(-dt * 3.5);
 
   // the rocket: idle, rise, gone, return
   const R = state.rocket;
   R.t += dt;
+  R.cough *= Math.exp(-dt * 4);
+  R.shake *= Math.exp(-dt * 5);
   if (R.mode === 'launch') {
-    R.fire = Math.min(1, R.t / 1.2);
-    R.lift = Math.max(0, R.t - 1.2) ** 2 * 0.55;
+    R.fire = Math.min(1, R.t / 0.12);
+    R.shake = Math.max(R.shake, R.t < 0.5 ? 1 : 0);
+    R.lift = Math.max(0, R.t - 0.35) ** 2 * 1.1;
     if (R.lift > 60) { R.mode = 'gone'; R.t = 0; }
   } else if (R.mode === 'gone') {
     R.fire = 0;
@@ -790,6 +871,7 @@ function update(dt, t, now) {
   }
 
   state.pulse[3] += dt;
+  state.flare *= Math.exp(-dt * 2.2);
 }
 
 function frame(nowMs) {
@@ -810,8 +892,12 @@ function frame(nowMs) {
   gl.uniform4f(U.uEle, state.ele.x, state.ele.phase, state.ele.yaw, state.ele.pitch);
   gl.uniform1f(U.uEleZ, state.ele.z);
   gl.uniform1f(U.uTrunk, state.ele.trunk);
-  gl.uniform3f(U.uRocket, state.rocket.x, state.rocket.lift, state.rocket.z);
-  gl.uniform1f(U.uFire, state.rocket.fire);
+  const R = state.rocket;
+  const jitter = (Math.random() - 0.5) * 0.06 * R.shake;
+  gl.uniform3f(U.uRocket, R.x + jitter, R.lift + Math.abs(jitter) * 0.5, R.z);
+  gl.uniform1f(U.uFire, Math.max(R.fire, R.cough * 0.35));
+  gl.uniform1f(U.uFlare, state.flare);
+  gl.uniform1f(U.uStartle, state.ele.startle);
   gl.uniform4fv(U.uPulse, state.pulse);
   gl.uniform3fv(U.uSun, state.sun);
   gl.uniform1f(U.uFade, Math.min(1, ((nowMs - start) / 1000) / 3) ** 2);
@@ -823,8 +909,8 @@ function frame(nowMs) {
     const avg = frameTimes.reduce((a, b) => a + b, 0) / frameTimes.length;
     frameTimes = [];
     const prev = renderScale;
-    if (avg > 0.024) renderScale = Math.max(minScale, renderScale - 0.1);
-    else if (avg < 0.0135) renderScale = Math.min(maxScale, renderScale + 0.05);
+    if (avg > 0.03) renderScale = Math.max(minScale, renderScale - 0.1);
+    else if (avg < 0.018) renderScale = Math.min(maxScale, renderScale + 0.05);
     if (renderScale !== prev) layout();
   }
 
