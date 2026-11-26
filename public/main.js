@@ -49,6 +49,11 @@ uniform vec3  uSun;      // eclipse direction
 uniform float uFade;
 uniform float uFlare;    // brief brightening on any click
 uniform float uStartle;  // elephant flinch
+uniform int   uFrame;
+
+// A loop start the compiler cannot prove is 0, so it won't unroll or duplicate
+// the scene function at every call site (keeps compile times sane, esp. ANGLE/D3D).
+#define ZERO min(uFrame, 0)
 
 const vec3 ORB_COL = vec3(1.0, 0.84, 0.68);
 const vec3 COR_COL = vec3(0.86, 0.9, 1.0);
@@ -64,7 +69,7 @@ float vnoise(vec2 p) {
 }
 float fbm(vec2 p) {
   float s = 0.0, a = 0.5;
-  for (int i = 0; i < 4; i++) { s += a * vnoise(p); p = p * 2.03 + vec2(1.7, 9.2); a *= 0.5; }
+  for (int i = ZERO; i < 4; i++) { s += a * vnoise(p); p = p * 2.03 + vec2(1.7, 9.2); a *= 0.5; }
   return s;
 }
 mat2 rot(float a) { float c = cos(a), s = sin(a); return mat2(c, s, -s, c); }
@@ -120,7 +125,7 @@ float sdElephant(vec3 p) {
   d = smin(d, tr, 0.15);
 
   // impossibly long legs, walking
-  for (int i = 0; i < 4; i++) {
+  for (int i = ZERO; i < 4; i++) {
     float fx = i < 2 ? -0.82 : 0.88;
     float fz = (i == 0 || i == 3) ? 0.38 : -0.38;
     float ph = uEle.y + ((i == 0 || i == 3) ? 0.0 : 3.14159);
@@ -173,13 +178,17 @@ vec2 mapObj(vec3 p) {
 }
 
 vec3 calcNormal(vec3 p) {
-  const vec2 e = vec2(1.0, -1.0) * 0.0015;
-  return normalize(e.xyy * mapObj(p + e.xyy).x + e.yyx * mapObj(p + e.yyx).x + e.yxy * mapObj(p + e.yxy).x + e.xxx * mapObj(p + e.xxx).x);
+  vec3 n = vec3(0.0);
+  for (int i = ZERO; i < 4; i++) {
+    vec3 e = 0.5773 * (2.0 * vec3(float(((i + 3) >> 1) & 1), float((i >> 1) & 1), float(i & 1)) - 1.0);
+    n += e * mapObj(p + 0.0015 * e).x;
+  }
+  return normalize(n);
 }
 
 vec2 march(vec3 ro, vec3 rd, float tmax, int steps) {
   float t = 0.05;
-  for (int i = 0; i < 160; i++) {
+  for (int i = ZERO; i < 160; i++) {
     if (i >= steps) break;
     vec2 h = mapObj(ro + rd * t);
     if (abs(h.x) < 0.0006 * t) return vec2(t, h.y);
@@ -194,7 +203,7 @@ vec2 march(vec3 ro, vec3 rd, float tmax, int steps) {
 vec2 marchAA(vec3 ro, vec3 rd, float tmax, float pxr, out vec3 edge) {
   float t = 0.05;
   edge = vec3(0.0, 0.0, -1.0);   // coverage, t, material
-  for (int i = 0; i < 160; i++) {
+  for (int i = ZERO; i < 160; i++) {
     vec2 h = mapObj(ro + rd * t);
     if (abs(h.x) < 0.0006 * t) return vec2(t, h.y);
     float c = 1.0 - clamp(h.x / (pxr * t), 0.0, 1.0);
@@ -207,7 +216,7 @@ vec2 marchAA(vec3 ro, vec3 rd, float tmax, float pxr, out vec3 edge) {
 
 float softShadow(vec3 ro, vec3 rd, float maxt, float k) {
   float res = 1.0, t = 0.03, ph = 1e10;
-  for (int i = 0; i < 48; i++) {
+  for (int i = ZERO; i < 48; i++) {
     float h = mapObj(ro + rd * t).x;
     float y = h * h / (2.0 * ph);
     float d = sqrt(max(h * h - y * y, 0.0));
@@ -222,7 +231,7 @@ float softShadow(vec3 ro, vec3 rd, float maxt, float k) {
 
 float calcAO(vec3 p, vec3 n) {
   float occ = 0.0, sca = 1.0;
-  for (int i = 0; i < 5; i++) {
+  for (int i = ZERO; i < 5; i++) {
     float h = 0.03 + 0.16 * float(i);
     occ += (h - mapObj(p + n * h).x) * sca;
     sca *= 0.85;
@@ -420,22 +429,20 @@ void main() {
   float pxr = 1.6 / (uRes.y * uFocal);
   vec3 edge;
   vec2 hit = marchAA(ro, rd, min(tG, 90.0), pxr, edge);
-  vec3 col;
-  float t;
-  if (hit.y > 0.0 && hit.x < tG) {
-    t = hit.x;
-    col = shadeObj(ro + rd * t, rd, hit.y, false);
-  } else if (tG < 1e8) {
-    t = tG;
-    col = shadeGround(ro + rd * t, ro, rd);
-  } else {
-    t = 1e4;
-    col = sky(rd);
+  bool onObj = hit.y > 0.0 && hit.x < tG;
+  float t = onObj ? hit.x : (tG < 1e8 ? tG : 1e4);
+  vec3 col = vec3(0.0);
+  float cover = 1.0;
+  if (!onObj) {
+    col = tG < 1e8 ? shadeGround(ro + rd * t, ro, rd) : sky(rd);
+    col = applyFog(col, ro, rd, min(t, 400.0));
+    cover = edge.y < t - 0.02 ? edge.x : 0.0;
   }
-  col = applyFog(col, ro, rd, min(t, 400.0));
-  if (edge.x > 0.0 && edge.y < t - 0.02) {
-    vec3 ec = shadeObj(ro + rd * edge.y, rd, edge.z, false);
-    col = mix(col, applyFog(ec, ro, rd, edge.y), edge.x);
+  if (cover > 0.0) {
+    // either a direct hit, or a silhouette edge blended by pixel coverage
+    float ts = onObj ? t : edge.y;
+    vec3 oc = applyFog(shadeObj(ro + rd * ts, rd, onObj ? hit.y : edge.z, false), ro, rd, ts);
+    col = mix(col, oc, cover);
   }
   col += orbLight(ro, rd, t);
   col += rocketLights(ro, rd, t);
@@ -451,24 +458,33 @@ void main() {
   fragColor = vec4(col * uFade, 1.0);
 }`;
 
-function compile(type, src) {
-  const s = gl.createShader(type);
-  gl.shaderSource(s, src);
-  gl.compileShader(s);
-  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s));
-  return s;
-}
+// Compile without blocking the page where the browser allows it, so the text
+// shows immediately and the scene fades in once the shader is ready.
+const parallel = gl.getExtension('KHR_parallel_shader_compile');
 const prog = gl.createProgram();
-gl.attachShader(prog, compile(gl.VERTEX_SHADER, VERT));
-gl.attachShader(prog, compile(gl.FRAGMENT_SHADER, FRAG));
+const vs = gl.createShader(gl.VERTEX_SHADER);
+const fs = gl.createShader(gl.FRAGMENT_SHADER);
+gl.shaderSource(vs, VERT);
+gl.shaderSource(fs, FRAG);
+gl.compileShader(vs);
+gl.compileShader(fs);
+gl.attachShader(prog, vs);
+gl.attachShader(prog, fs);
 gl.linkProgram(prog);
-if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(prog));
-gl.useProgram(prog);
-gl.bindVertexArray(gl.createVertexArray());
 
 const U = {};
-for (const name of ['uRes', 'uTime', 'uCam', 'uTarget', 'uFocal', 'uOrb', 'uOrbI', 'uEle', 'uEleZ', 'uTrunk', 'uRocket', 'uFire', 'uPulse', 'uSun', 'uFade', 'uFlare', 'uStartle']) {
-  U[name] = gl.getUniformLocation(prog, name);
+function finishProgram() {
+  if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
+    console.error(gl.getShaderInfoLog(fs) || gl.getProgramInfoLog(prog));
+    document.documentElement.classList.add('no-webgl');
+    return false;
+  }
+  gl.useProgram(prog);
+  gl.bindVertexArray(gl.createVertexArray());
+  for (const name of ['uRes', 'uTime', 'uCam', 'uTarget', 'uFocal', 'uOrb', 'uOrbI', 'uEle', 'uEleZ', 'uTrunk', 'uRocket', 'uFire', 'uPulse', 'uSun', 'uFade', 'uFlare', 'uStartle', 'uFrame']) {
+    U[name] = gl.getUniformLocation(prog, name);
+  }
+  return true;
 }
 
 /* ------------------------------------------------------------------ *
@@ -663,17 +679,20 @@ const state = {
 
 // ?scale=1 pins the render resolution (handy for screenshots).
 const pinnedScale = parseFloat(new URLSearchParams(location.search).get('scale'));
-let renderScale = pinnedScale > 0 ? pinnedScale : coarse ? 0.6 : 0.85;
+let renderScale = pinnedScale > 0 ? pinnedScale : 0.7;
 const maxScale = 1;
-const minScale = 0.55;
+const minScale = 0.45;
+// Never shade more than this many pixels per frame, whatever the screen size.
+const pixelBudget = coarse ? 900000 : 1500000;
 
 function layout() {
   const w = window.innerWidth;
   const h = window.innerHeight;
   const aspect = w / h;
   const dpr = Math.min(window.devicePixelRatio || 1, 1.5);
-  canvas.width = Math.round(w * dpr * renderScale);
-  canvas.height = Math.round(h * dpr * renderScale);
+  const budget = Math.min(1, Math.sqrt(pixelBudget / (w * dpr * h * dpr)));
+  canvas.width = Math.max(1, Math.round(w * dpr * renderScale * budget));
+  canvas.height = Math.max(1, Math.round(h * dpr * renderScale * budget));
   gl.viewport(0, 0, canvas.width, canvas.height);
 
   const tall = aspect < 1;
@@ -789,9 +808,10 @@ canvas.addEventListener('pointerdown', (e) => {
  *  Loop
  * ------------------------------------------------------------------ */
 
-const start = performance.now();
+let start = performance.now();
 let last = start;
 let frameTimes = [];
+let frameNo = 0;
 const motion = reduceMotion ? 0.35 : 1;
 
 function update(dt, t, now) {
@@ -863,7 +883,8 @@ function update(dt, t, now) {
 
 function frame(nowMs) {
   const now = nowMs / 1000;
-  const rawDt = Math.min(0.05, (nowMs - last) / 1000);
+  const realDt = (nowMs - last) / 1000;
+  const rawDt = Math.min(0.05, realDt);
   last = nowMs;
   const dt = rawDt * motion;
   const t = ((nowMs - start) / 1000) * motion;
@@ -885,23 +906,41 @@ function frame(nowMs) {
   gl.uniform1f(U.uFire, Math.max(R.fire, R.cough * 0.35));
   gl.uniform1f(U.uFlare, state.flare);
   gl.uniform1f(U.uStartle, state.ele.startle);
+  gl.uniform1i(U.uFrame, frameNo++);
   gl.uniform4fv(U.uPulse, state.pulse);
   gl.uniform3fv(U.uSun, state.sun);
   gl.uniform1f(U.uFade, Math.min(1, ((nowMs - start) / 1000) / 3) ** 2);
   gl.drawArrays(gl.TRIANGLES, 0, 3);
 
-  // Dynamic resolution: keep it smooth on slower GPUs.
-  frameTimes.push(rawDt);
-  if (!(pinnedScale > 0) && frameTimes.length >= 40) {
-    const avg = frameTimes.reduce((a, b) => a + b, 0) / frameTimes.length;
+  // Dynamic resolution: adapt within a few frames, proportionally to how far
+  // off a ~45 fps target we are.
+  if (frameNo > 3) frameTimes.push(realDt);
+  if (!(pinnedScale > 0) && frameTimes.length >= 10) {
+    const sorted = frameTimes.slice().sort((a, b) => a - b);
+    const typical = sorted[Math.floor(sorted.length / 2)];
     frameTimes = [];
-    const prev = renderScale;
-    if (avg > 0.03) renderScale = Math.max(minScale, renderScale - 0.1);
-    else if (avg < 0.018) renderScale = Math.min(maxScale, renderScale + 0.05);
-    if (renderScale !== prev) layout();
+    const next = clamp(renderScale * clamp(Math.sqrt((1 / 45) / typical), 0.6, 1.1), minScale, maxScale);
+    if (Math.abs(next - renderScale) > 0.03) {
+      renderScale = next;
+      layout();
+    }
   }
 
-  if (nowMs - start > 50) document.documentElement.classList.add('ready');
   requestAnimationFrame(frame);
 }
-requestAnimationFrame(frame);
+
+function begin() {
+  if (!finishProgram()) return;
+  start = last = performance.now();
+  document.documentElement.classList.add('ready');
+  requestAnimationFrame(frame);
+}
+if (parallel) {
+  (function wait() {
+    if (gl.getProgramParameter(prog, parallel.COMPLETION_STATUS_KHR)) begin();
+    else requestAnimationFrame(wait);
+  })();
+} else {
+  // Let the text paint first; linking blocks the thread here.
+  requestAnimationFrame(() => setTimeout(begin, 30));
+}
