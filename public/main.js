@@ -519,8 +519,11 @@ float rangeEnv(float x) {
   return (1.0 - 0.6 * exp(-pow((x - 0.25) / 0.28, 2.0))) * (0.75 + 0.45 * exp(-pow((x + 0.45) / 0.45, 2.0)));
 }
 
-float rangeHeight(int layer, float az) {
+// Also reports which flank of the dominant summit this azimuth is on:
+// lit = 1 on the flank turned toward the eclipse, 0 on the one turned away.
+float rangeHeight(int layer, float az, float sunAz, out float lit) {
   float L = float(layer);
+  float best = -1.0, bdx = 0.0, bxc = 0.0;
   float spacing = mix(0.19, 0.13, L / 3.0) * (L == 3.0 ? 1.4 : 1.0);
   float top = L == 0.0 ? 0.11 : L == 1.0 ? 0.072 : L == 2.0 ? 0.046 : 0.026;
   float slope = mix(0.62, 0.36, L / 3.0);
@@ -533,11 +536,18 @@ float rangeHeight(int layer, float az) {
     float hc = top * rangeEnv(xc) * (0.45 + 0.55 * hash11(seed + 1.7));
     float s = slope * (0.8 + 0.4 * hash11(seed + 3.1));
     float dx = az - xc;
-    h = smax(h, hc - s * sqrt(dx * dx + 0.0004), 0.014);
+    float v = hc - s * sqrt(dx * dx + 0.0004);
+    h = smax(h, v, 0.014);
+    if (v > best) { best = v; bdx = dx; bxc = xc; }
     // a lower shoulder summit beside each peak
-    float dx2 = az - (xc + (hash11(seed + 5.3) - 0.5) * spacing * 0.9);
-    h = smax(h, hc * (0.55 + 0.2 * hash11(seed + 6.1)) - s * sqrt(dx2 * dx2 + 0.0003), 0.01);
+    float xc2 = xc + (hash11(seed + 5.3) - 0.5) * spacing * 0.9;
+    float dx2 = az - xc2;
+    float v2 = hc * (0.55 + 0.2 * hash11(seed + 6.1)) - s * sqrt(dx2 * dx2 + 0.0003);
+    h = smax(h, v2, 0.01);
+    if (v2 > best) { best = v2; bdx = dx2; bxc = xc2; }
   }
+  // the ridgeline runs down from each peak; split the flanks there, softly
+  lit = smoothstep(-0.003, 0.003, bdx * sign(sunAz - bxc));
   return h;
 }
 
@@ -550,14 +560,22 @@ vec3 mountains(vec3 rd, vec3 col) {
   float px = 1.5 / (uRes.y * uFocal);
   // the colour of the sea where it meets the horizon: every range is a darker shade of it
   vec3 waterline = hazeColor(normalize(vec3(rd.x, 0.0, rd.z)));
+  float sunAz = atan(uSun.x, -uSun.z);
   for (int i = ZERO; i < 4; i++) {
     float fi = float(i);
     float depth = fi / 3.0;                                     // 0 far .. 1 near
-    float h = rangeHeight(i, az);
+    float lit;
+    float h = rangeHeight(i, az, sunAz, lit);
     float inside = smoothstep(h + px, h - px, rd.y);
     if (inside <= 0.0) continue;
     // shape by darkening: far ranges just below the waterline, near ones deeper
     vec3 tone = waterline * mix(0.84, 0.4, depth) * mix(vec3(1.0), vec3(0.94, 1.0, 1.07), depth);
+    // subtle form, by darkening only: the flank turned from the eclipse, a darker
+    // cap toward the crest, and faint vertical gullies
+    float below = h - rd.y;
+    tone *= mix(0.64, 1.0, lit);
+    tone *= mix(0.84, 1.0, smoothstep(0.0, 0.035, below));
+    tone *= 0.93 + 0.07 * vnoise(vec2(az * 150.0 + fi * 17.0, rd.y * 14.0));
     // at the foot, settle into exactly the waterline colour: never brighter below
     tone = mix(waterline, tone, smoothstep(0.0, 0.022, rd.y));
     col = mix(col, tone, inside);
