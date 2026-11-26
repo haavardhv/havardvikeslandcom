@@ -28,6 +28,80 @@ void main() {
   gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0);
 }`;
 
+// Shared colour grade (gamma space): gentle S-curve for punch, cool shadows,
+// warm highlights, and extra saturation only where colour already exists.
+const GRADE = `
+vec3 grade(vec3 c) {
+  c = clamp(c, 0.0, 1.0);
+  c = mix(c, c * c * (3.0 - 2.0 * c), 0.38);
+  float l = dot(c, vec3(0.2126, 0.7152, 0.0722));
+  c += vec3(-0.004, 0.003, 0.011) * (1.0 - smoothstep(0.0, 0.3, l));
+  c *= mix(vec3(1.0), vec3(1.035, 1.0, 0.955), smoothstep(0.35, 0.9, l));
+  float sat = length(c - l);
+  return max(mix(vec3(l), c, 1.0 + 0.45 * smoothstep(0.015, 0.1, sat)), 0.0);
+}`;
+
+// Temporal anti-aliasing: reproject last frame's history with the camera
+// (depth is in alpha), clip it to this frame's 3x3 neighbourhood in YCoCg,
+// then blend a little of the new jittered frame in.
+const TAA_FRAG = `#version 300 es
+precision highp float;
+uniform sampler2D uCur;
+uniform sampler2D uHist;
+uniform vec2 uRes, uJitter;
+uniform vec3 uCam, uWW, uUU, uVV;
+uniform vec3 uPCam, uPWW, uPUU, uPVV;
+uniform float uFocal, uPFocal, uReset;
+out vec4 o;
+vec3 toY(vec3 c) { return vec3(0.25 * c.r + 0.5 * c.g + 0.25 * c.b, 0.5 * c.r - 0.5 * c.b, -0.25 * c.r + 0.5 * c.g - 0.25 * c.b); }
+vec3 fromY(vec3 c) { return vec3(c.x + c.y - c.z, c.x + c.z, c.x - c.y - c.z); }
+void main() {
+  ivec2 ip = ivec2(gl_FragCoord.xy);
+  ivec2 hi = ivec2(uRes) - 1;
+  vec4 cur = texelFetch(uCur, ip, 0);
+  vec3 m1 = vec3(0.0), m2 = vec3(0.0);
+  for (int y = -1; y <= 1; y++) for (int x = -1; x <= 1; x++) {
+    vec3 c = toY(texelFetch(uCur, clamp(ip + ivec2(x, y), ivec2(0), hi), 0).rgb);
+    m1 += c; m2 += c * c;
+  }
+  m1 /= 9.0; m2 /= 9.0;
+  vec3 sigma = sqrt(max(m2 - m1 * m1, 0.0));
+
+  vec2 uv = (2.0 * (gl_FragCoord.xy + uJitter) - uRes) / uRes.y;
+  vec3 rd = normalize(uv.x * uUU + uv.y * uVV + uFocal * uWW);
+  vec3 v = uCam + rd * cur.a - uPCam;
+  float z = dot(v, uPWW);
+  vec2 puv = vec2(dot(v, uPUU), dot(v, uPVV)) / z * uPFocal;
+  vec2 tc = (puv * uRes.y + uRes) * 0.5 / uRes;
+  bool ok = uReset < 0.5 && z > 0.0 && tc.x > 0.0 && tc.y > 0.0 && tc.x < 1.0 && tc.y < 1.0;
+
+  vec3 hist = fromY(clamp(toY(texture(uHist, tc).rgb), m1 - 1.2 * sigma, m1 + 1.2 * sigma));
+  o = vec4(ok ? mix(hist, cur.rgb, 0.1) : cur.rgb, 1.0);
+}`;
+
+// Upscale to the display with a halo-free sharpen, then grade, vignette, grain.
+const OUT_FRAG = `#version 300 es
+precision highp float;
+uniform sampler2D uImg;
+uniform vec2 uSrc, uDst;
+uniform float uTime, uFade;
+out vec4 o;
+float hash12(vec2 p) { vec3 p3 = fract(vec3(p.xyx) * 0.1031); p3 += dot(p3, p3.yzx + 33.33); return fract((p3.x + p3.y) * p3.z); }
+${GRADE}
+void main() {
+  vec2 tc = gl_FragCoord.xy / uDst;
+  vec2 px = 1.0 / uSrc;
+  vec3 c = texture(uImg, tc).rgb;
+  vec3 n = texture(uImg, tc + vec2(0.0, px.y)).rgb, s = texture(uImg, tc - vec2(0.0, px.y)).rgb;
+  vec3 e = texture(uImg, tc + vec2(px.x, 0.0)).rgb, w = texture(uImg, tc - vec2(px.x, 0.0)).rgb;
+  vec3 mn = min(c, min(min(n, s), min(e, w))), mx = max(c, max(max(n, s), max(e, w)));
+  c = clamp(c + (4.0 * c - n - s - e - w) * 0.18, mn, mx);
+  c = grade(c);
+  c *= 0.32 + 0.68 * pow(16.0 * tc.x * tc.y * (1.0 - tc.x) * (1.0 - tc.y), 0.24);
+  c += (hash12(gl_FragCoord.xy + fract(uTime * 7.31) * 113.0) - 0.5) * 0.022;
+  o = vec4(c * uFade, 1.0);
+}`;
+
 // Wave equation on a height grid (height in r, velocity in g). Drops are
 // segments in uv space: a moving stick pushes the surface along its path.
 const SIM_FRAG = `#version 300 es
@@ -37,6 +111,7 @@ uniform vec2 uTexel;
 uniform int uDropCount;
 uniform vec4 uDropSeg[8];    // a.xy, b.xy (uv)
 uniform vec2 uDropParam[8];  // radius (uv), strength
+uniform vec4 uRing[4];       // shockwave fronts: centre.xy, radius (uv), strength
 out vec4 o;
 void main() {
   vec2 uv = gl_FragCoord.xy * uTexel;
@@ -57,6 +132,11 @@ void main() {
     float d = max(0.0, 1.0 - length(pa - ba * h) / uDropParam[i].x);
     info.r += (0.5 - 0.5 * cos(d * 3.14159265)) * uDropParam[i].y;
   }
+  for (int i = 0; i < 4; i++) {
+    if (uRing[i].w == 0.0) continue;
+    float d = abs(length(uv - uRing[i].xy) - uRing[i].z) / 0.004;
+    info.r += max(0.0, 1.0 - d) * uRing[i].w;
+  }
   o = vec4(info, 0.0, 1.0);
 }`;
 
@@ -65,6 +145,10 @@ precision highp float;
 out vec4 fragColor;
 
 uniform vec2  uRes;
+uniform vec2  uJitter;   // sub-pixel offset for temporal anti-aliasing
+uniform float uPost;     // 1: output colour + depth for the TAA pass
+uniform vec3  uOrbCol;   // the light's colour, breathing slowly
+uniform vec4  uShock[4]; // shockwave fronts: centre x, z, radius, strength
 uniform float uTime;
 uniform vec3  uCam;
 uniform vec3  uTarget;
@@ -96,7 +180,7 @@ uniform vec3  uMetB;           // meteor end direction
 // the scene function at every call site (keeps compile times sane, esp. ANGLE/D3D).
 #define ZERO min(uFrame, 0)
 
-const vec3 ORB_COL = vec3(1.0, 0.84, 0.68);
+#define ORB_COL uOrbCol
 const vec3 COR_COL = vec3(0.86, 0.9, 1.0);
 const float LEG = 4.2;
 
@@ -349,7 +433,8 @@ vec3 sky(vec3 rd) {
     float hh = clamp(dot(rd - tail, sg) / max(dot(sg, sg), 1e-9), 0.0, 1.0);
     float d = length(rd - (tail + sg * hh));
     float fade = smoothstep(0.0, 0.08, p) * (1.0 - smoothstep(0.75, 1.3, p)) * hh * hh;
-    col += vec3(0.85, 0.9, 1.0) * fade * (0.6 / (1.0 + d * d * 4e6) + 0.02 / (1.0 + d * d * 2e4));
+    vec3 mc = mix(vec3(0.35, 1.0, 0.8), vec3(0.95, 0.97, 1.0), hh * hh * hh);
+    col += mc * fade * (0.6 / (1.0 + d * d * 4e6) + 0.02 / (1.0 + d * d * 2e4));
   }
 
   // the eclipse: k/(x+e) glow shaped by moving radial streamers
@@ -360,9 +445,10 @@ vec3 sky(vec3 rd) {
   float st = 0.3 + 1.4 * streamers(n, xs);
   corona *= mix(1.0, st, smoothstep(0.0, 0.03, xs)) * br * (1.0 + uFlare * 1.4);
   corona += 0.0006 / (xs * xs * 40.0 + 0.0006) * 0.6;         // thin bright limb, 1/(1+x^2)
+  float chrom = 0.35 / (1.0 + (xs / 0.0022) * (xs / 0.0022)) * br;   // the pink chromosphere, a hairline
   vec3 ccol = mix(vec3(1.0, 0.96, 0.92), COR_COL * vec3(0.8, 0.85, 1.0), smoothstep(0.0, 0.12, xs));
   float prom = pow(vnoise(n * 6.0 + 3.0 + vec2(uTime * 0.02, 0.0)), 6.0) * (2.0 + sin(uTime * 1.3 + n.x * 3.0)) / (1.0 + xs * xs * 60000.0);
-  vec3 eclipse = ccol * corona * 0.55 + vec3(1.0, 0.35, 0.4) * prom;
+  vec3 eclipse = ccol * corona * 0.55 + vec3(1.0, 0.35, 0.4) * prom + vec3(1.0, 0.3, 0.45) * chrom;
   float px = 2.0 / (uRes.y * uFocal);
   float disk = smoothstep(-px, px, x);
   float hz = smoothstep(-0.02, 0.18, rd.y);                    // sinks into the haze near the horizon
@@ -419,7 +505,7 @@ vec3 rocketLights(vec3 ro, vec3 rd, float tmax) {
     vec2 ep = rayPoint(ro, rd, P);
     float fl = 0.8 + 0.2 * vnoise(vec2(uTime * 25.0, s * 6.0));
     float w = mix(1.0, 0.25, s);
-    vec3 fc = mix(vec3(1.0, 0.85, 0.7), vec3(1.0, 0.4, 0.15), s);
+    vec3 fc = mix(mix(vec3(1.0, 0.92, 0.8), vec3(1.0, 0.5, 0.14), smoothstep(0.0, 0.45, s)), vec3(0.85, 0.16, 0.05), smoothstep(0.45, 1.0, s));
     float occl = ep.y < tmax + 0.3 ? 1.0 : 0.0;
     col += fc * uFire * fl * occl * w * (0.9 / (1.0 + ep.x * ep.x * 1800.0) + 0.04 / (1.0 + ep.x * ep.x * 25.0));
   }
@@ -506,16 +592,23 @@ vec3 shadeGround(vec3 p, vec3 ro, vec3 rd) {
   vec3 alb = mix(vec3(0.05, 0.048, 0.05), vec3(0.02, 0.02, 0.022), wet);
   vec3 diff = alb * ORB_COL * max(dot(n, L), 0.0) * att * sh + alb * vec3(0.03, 0.03, 0.038) * ao;
   vec3 col = mix(diff, refl * ao, clamp(fre * mix(0.35, 1.0, wet) + wet * 0.12, 0.0, 1.0));
+  // shockwave fronts: a travelling ring of light, 1/(1+x^2) across its width
+  for (int i = ZERO; i < 4; i++) {
+    if (uShock[i].w <= 0.0) continue;
+    float dd = length(p.xz - uShock[i].xy) - uShock[i].z;
+    col += ORB_COL * uShock[i].w * 0.16 / (1.0 + dd * dd * 14.0);
+  }
   // wave slopes catch the light and the glow of the sky (1/(1+x^2) falloff with distance)
   float near = 1.0 / (1.0 + 0.004 * dot(p - ro, p - ro));
   col += ORB_COL * att * slope * 0.5 * sh + vec3(0.55, 0.57, 0.66) * min(slope, 1.5) * 0.045 * near;
   return col;
 }
 
+${GRADE}
 vec3 aces(vec3 x) { return clamp((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14), 0.0, 1.0); }
 
 void main() {
-  vec2 uv = (2.0 * gl_FragCoord.xy - uRes) / uRes.y;
+  vec2 uv = (2.0 * (gl_FragCoord.xy + uJitter) - uRes) / uRes.y;
   vec3 ww = normalize(uTarget - uCam);
   vec3 uu = normalize(cross(ww, vec3(0.0, 1.0, 0.0)));
   vec3 vv = cross(uu, ww);
@@ -544,11 +637,12 @@ void main() {
   col += orbLight(ro, rd, t);
   col += rocketLights(ro, rd, t);
 
-  col = aces(col * 1.5);
+  col = aces(col * 1.6);
   col = pow(col, vec3(1.0 / 2.2));
+  if (uPost > 0.5) { fragColor = vec4(col, t); return; }   // graded after TAA
 
-  // grade: cool the shadows a touch
-  col *= vec3(0.97, 0.985, 1.03);
+  // fallback without post-processing
+  col = grade(col);
   vec2 q = gl_FragCoord.xy / uRes;
   col *= 0.35 + 0.65 * pow(16.0 * q.x * q.y * (1.0 - q.x) * (1.0 - q.y), 0.22);
   col += (hash12(gl_FragCoord.xy + fract(uTime * 7.31) * 113.0) - 0.5) * 0.028;
@@ -578,7 +672,7 @@ function finishProgram() {
   }
   gl.useProgram(prog);
   gl.bindVertexArray(gl.createVertexArray());
-  for (const name of ['uRes', 'uTime', 'uCam', 'uTarget', 'uFocal', 'uOrb', 'uOrbI', 'uEle', 'uEleZ', 'uTrunk', 'uRocket', 'uFire', 'uSun', 'uFade', 'uFlare', 'uStartle', 'uFrame', 'uStone', 'uStoneB', 'uStoneR', 'uWater', 'uWaterRect', 'uWaterOn', 'uMetA', 'uMetB']) {
+  for (const name of ['uRes', 'uTime', 'uCam', 'uTarget', 'uFocal', 'uOrb', 'uOrbI', 'uEle', 'uEleZ', 'uTrunk', 'uRocket', 'uFire', 'uSun', 'uFade', 'uFlare', 'uStartle', 'uFrame', 'uStone', 'uStoneB', 'uStoneR', 'uWater', 'uWaterRect', 'uWaterOn', 'uMetA', 'uMetB', 'uJitter', 'uPost', 'uOrbCol', 'uShock']) {
     U[name] = gl.getUniformLocation(prog, name);
   }
   return true;
@@ -625,8 +719,28 @@ function initWater() {
   gl.bindFramebuffer(gl.FRAMEBUFFER, null);
   if (!ok) return null;
   const u = {};
-  for (const n of ['uPrev', 'uTexel', 'uDropCount', 'uDropSeg', 'uDropParam']) u[n] = gl.getUniformLocation(p, n);
+  for (const n of ['uPrev', 'uTexel', 'uDropCount', 'uDropSeg', 'uDropParam', 'uRing']) u[n] = gl.getUniformLocation(p, n);
   return { prog: p, u, src: a, dst: b, acc: 0, seg: new Float32Array(32), param: new Float32Array(16) };
+}
+
+// Shockwaves: a click sends a front outward; things react when it arrives.
+const SHOCK_SPEED = 6;
+const shocks = [];
+function shockRings() {
+  const a = new Float32Array(16);
+  shocks.slice(0, 4).forEach((sh, i) => {
+    const r = sh.age * SHOCK_SPEED;
+    a.set([(sh.o[0] - WATER.minX) / WATER.size, (sh.o[2] - WATER.minZ) / WATER.size, r / WATER.size, -0.012 * sh.str * Math.exp(-sh.age * 0.5)], i * 4);
+  });
+  return a;
+}
+function shockUniforms() {
+  const a = new Float32Array(16);
+  shocks.slice(0, 4).forEach((sh, i) => {
+    const r = sh.age * SHOCK_SPEED;
+    a.set([sh.o[0], sh.o[2], r, sh.str * Math.exp(-sh.age * 0.45) / (1 + r * 0.08) * Math.min(1, sh.age * 8)], i * 4);
+  });
+  return a;
 }
 
 // Push the water along a world-space segment (a stick dragged through it).
@@ -646,6 +760,7 @@ function stepWater(dt) {
   gl.useProgram(water.prog);
   gl.viewport(0, 0, SIM, SIM);
   gl.uniform2f(water.u.uTexel, 1 / SIM, 1 / SIM);
+  gl.uniform4fv(water.u.uRing, shockRings());
   gl.uniform1i(water.u.uPrev, 0);
   gl.activeTexture(gl.TEXTURE0);
   for (let k = 0; k < steps; k++) {
@@ -669,6 +784,68 @@ function stepWater(dt) {
   gl.viewport(0, 0, canvas.width, canvas.height);
   gl.useProgram(prog);
 }
+
+/* ------------------------------------------------------------------ *
+ *  Post: render the scene jittered into a float buffer, resolve with TAA,
+ *  then upscale to the display. Falls back to direct rendering.
+ * ------------------------------------------------------------------ */
+
+let post = null;
+
+function program(fragSrc, names) {
+  const p = gl.createProgram();
+  const v = gl.createShader(gl.VERTEX_SHADER);
+  const f = gl.createShader(gl.FRAGMENT_SHADER);
+  gl.shaderSource(v, VERT);
+  gl.shaderSource(f, fragSrc);
+  gl.compileShader(v);
+  gl.compileShader(f);
+  gl.attachShader(p, v);
+  gl.attachShader(p, f);
+  gl.linkProgram(p);
+  if (!gl.getProgramParameter(p, gl.LINK_STATUS)) { console.error(gl.getShaderInfoLog(f)); return null; }
+  const u = {};
+  for (const n of names) u[n] = gl.getUniformLocation(p, n);
+  return { p, u };
+}
+
+function floatTarget(w, h, filter) {
+  const tex = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, tex);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA16F, w, h, 0, gl.RGBA, gl.HALF_FLOAT, null);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, filter);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, filter);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  const fb = gl.createFramebuffer();
+  gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+  const ok = gl.checkFramebufferStatus(gl.FRAMEBUFFER) === gl.FRAMEBUFFER_COMPLETE;
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  return ok ? { tex, fb } : null;
+}
+
+function initPost() {
+  if (!gl.getExtension('EXT_color_buffer_float')) return null;
+  const taa = program(TAA_FRAG, ['uCur', 'uHist', 'uRes', 'uJitter', 'uCam', 'uWW', 'uUU', 'uVV', 'uPCam', 'uPWW', 'uPUU', 'uPVV', 'uFocal', 'uPFocal', 'uReset']);
+  const out = program(OUT_FRAG, ['uImg', 'uSrc', 'uDst', 'uTime', 'uFade']);
+  if (!taa || !out) return null;
+  return { taa, out, w: 0, h: 0, scene: null, hist: [null, null], cur: 0, reset: true, prev: null };
+}
+
+function sizePost(w, h) {
+  if (!post || (post.w === w && post.h === h)) return;
+  for (const t of [post.scene, ...post.hist]) if (t) { gl.deleteTexture(t.tex); gl.deleteFramebuffer(t.fb); }
+  post.scene = floatTarget(w, h, gl.NEAREST);
+  post.hist = [floatTarget(w, h, gl.LINEAR), floatTarget(w, h, gl.LINEAR)];
+  post.w = w;
+  post.h = h;
+  post.reset = true;
+  if (!post.scene || !post.hist[0] || !post.hist[1]) post = null;
+}
+
+// Halton (2, 3): well-spread sub-pixel offsets over 8 frames.
+function halton(i, b) { let f = 1, r = 0; while (i > 0) { f /= b; r += f * (i % b); i = Math.floor(i / b); } return r; }
 
 /* ------------------------------------------------------------------ *
  *  Small vector helpers (CPU side mirrors the shader camera)
@@ -868,6 +1045,7 @@ const state = {
   focal: 1.9,
   orb: [0, 1.8, -8],
   orbI: 0,
+  orbCol: [1, 0.8, 0.6],
   ele: { x: 1, phase: 0, yaw: 0, pitch: 0, trunk: 0, trunkT: 99, z: -12, startle: 0, snap: 0 },
   rocket: { x: 14, z: -34, lift: 0, fire: 0, mode: 'idle', t: 0, cough: 0, shake: 0 },
   flare: 0,
@@ -915,8 +1093,18 @@ function layout() {
   const aspect = w / h;
   const dpr = Math.min(window.devicePixelRatio || 1, 1.5);
   const budget = Math.min(1, Math.sqrt(pixelBudget / (w * dpr * h * dpr)));
-  canvas.width = Math.max(1, Math.round(w * dpr * renderScale * budget));
-  canvas.height = Math.max(1, Math.round(h * dpr * renderScale * budget));
+  state.rw = Math.max(1, Math.round(w * dpr * renderScale * budget));
+  state.rh = Math.max(1, Math.round(h * dpr * renderScale * budget));
+  if (post) {
+    // the scene renders at rw x rh; the final pass fills the display
+    const db = Math.min(1, Math.sqrt(3.2e6 / (w * dpr * h * dpr)));
+    canvas.width = Math.round(w * dpr * db);
+    canvas.height = Math.round(h * dpr * db);
+    sizePost(state.rw, state.rh);
+  } else {
+    canvas.width = state.rw;
+    canvas.height = state.rh;
+  }
   gl.viewport(0, 0, canvas.width, canvas.height);
 
   const tall = aspect < 1;
@@ -1027,17 +1215,9 @@ canvas.addEventListener('pointerdown', (e) => {
   state.orbI = Math.max(state.orbI, 2.6);
   state.flare = 1;
   audio.pulse();
-  for (const st of stones) {
-    const d = sub(st.p, state.orb);
-    const dist = Math.hypot(...d) || 1e-3;
-    if (dist > 6) continue;
-    const k = 7 / (1 + dist * 0.8);
-    for (let i = 0; i < 3; i++) {
-      st.v[i] += (d[i] / dist) * k;
-      st.w[i] += (Math.random() - 0.5) * 6 * k / 7;
-    }
-    st.v[1] += k * 0.25;
-  }
+  // the shockwave starts where you clicked: on the water, or under the light
+  shocks.push({ o: g ? [g[0], 0, g[1]] : [state.orb[0], state.orb[1], state.orb[2]], age: 0, str: 1, hit: new Set() });
+  if (shocks.length > 4) shocks.shift();
 
   if (target === 'elephant') {
     const E = state.ele;
@@ -1090,6 +1270,10 @@ function update(dt, t, now) {
   for (let i = 0; i < 3; i++) state.orb[i] += (want[i] - state.orb[i]) * k;
   const flick = 1 + Math.sin(t * 7.1) * 0.015 + Math.sin(t * 13.7) * 0.01;
   state.orbI += (1.0 * flick - state.orbI) * damp(1.8, dt);
+  // the light breathes between amber and a paler rose-gold; a click runs it hot
+  const hue = 0.5 + 0.5 * Math.sin(t * 0.55);
+  const hot = clamp(state.flare, 0, 1);
+  state.orbCol = [1.0, 0.76 + 0.08 * hue + 0.1 * hot, 0.5 + 0.16 * hue + 0.2 * hot];
 
   // the elephant walks left; feet stay planted (stride 0.64 per half cycle)
   const E = state.ele;
@@ -1172,7 +1356,44 @@ function update(dt, t, now) {
   } else drag.speed *= Math.exp(-dt * 8);
   audio.swish(drag.speed);
 
+  updateShocks(dt);
   updateStones(dt, t);
+}
+
+function updateShocks(dt) {
+  for (const sh of shocks) {
+    sh.age += dt;
+    const r = sh.age * SHOCK_SPEED;
+    const fall = Math.exp(-sh.age * 0.35);
+    const reached = (key, p) => {
+      if (sh.hit.has(key)) return -1;
+      const d = Math.hypot(p[0] - sh.o[0], p[1] - sh.o[1], p[2] - sh.o[2]);
+      if (d > r) return -1;
+      sh.hit.add(key);
+      return d;
+    };
+    stones.forEach((st, i) => {
+      const d = reached(i, st.p);
+      if (d < 0) return;
+      const dir = sub(st.p, sh.o);
+      const l = Math.hypot(...dir) || 1e-3;
+      const k = 7 * fall / (1 + d * 0.25);
+      for (let j = 0; j < 3; j++) {
+        st.v[j] += (dir[j] / l) * k;
+        st.w[j] += (Math.random() - 0.5) * 5 * k / 7;
+      }
+      st.v[1] += k * 0.3;
+    });
+    const E = state.ele;
+    const de = reached('ele', [E.x - 0.6, 3, E.z]);
+    if (de >= 0) {
+      E.startle = Math.max(E.startle, clamp(1.2 * fall / (1 + de * 0.08), 0.25, 1));
+      E.snap = Math.max(E.snap, 0.8);
+    }
+    const R = state.rocket;
+    if (reached('rocket', [R.x, R.lift + 2, R.z]) >= 0) R.shake = Math.max(R.shake, 0.8 * fall);
+  }
+  while (shocks.length && shocks[0].age * SHOCK_SPEED > 45) shocks.shift();
 }
 
 function updateStones(dt, t) {
@@ -1272,7 +1493,17 @@ function frame(nowMs) {
     stepWater(dt);
   }
 
-  gl.uniform2f(U.uRes, canvas.width, canvas.height);
+  if (post) {
+    gl.bindFramebuffer(gl.FRAMEBUFFER, post.scene.fb);
+    gl.viewport(0, 0, state.rw, state.rh);
+  }
+  const jx = post ? halton((frameNo % 8) + 1, 2) - 0.5 : 0;
+  const jy = post ? halton((frameNo % 8) + 1, 3) - 0.5 : 0;
+  gl.uniform2f(U.uJitter, jx, jy);
+  gl.uniform1f(U.uPost, post ? 1 : 0);
+  gl.uniform3fv(U.uOrbCol, state.orbCol);
+  gl.uniform4fv(U.uShock, shockUniforms());
+  gl.uniform2f(U.uRes, state.rw, state.rh);
   gl.uniform1f(U.uTime, t);
   gl.uniform3fv(U.uCam, state.cam);
   gl.uniform3fv(U.uTarget, state.target);
@@ -1298,8 +1529,10 @@ function frame(nowMs) {
   gl.uniform1f(U.uWaterOn, water ? 1 : 0);
   gl.uniform4f(U.uWaterRect, WATER.minX, WATER.minZ, WATER.size, 1 / SIM);
   gl.uniform3fv(U.uSun, state.sun);
-  gl.uniform1f(U.uFade, Math.min(1, ((nowMs - start) / 1000) / 3) ** 2);
+  const fade = Math.min(1, ((nowMs - start) / 1000) / 3) ** 2;
+  gl.uniform1f(U.uFade, fade);
   gl.drawArrays(gl.TRIANGLES, 0, 3);
+  if (post) resolve(t, fade, jx, jy);
 
   // Dynamic resolution: adapt within a few frames, proportionally to how far
   // off a ~45 fps target we are.
@@ -1322,9 +1555,61 @@ function frame(nowMs) {
   requestAnimationFrame(frame);
 }
 
+function resolve(t, fade, jx, jy) {
+  const { ww, uu, vv } = basis(state.cam, state.target);
+  const cur = { cam: state.cam.slice(), ww, uu, vv, focal: state.focal };
+  const prev = post.prev || cur;
+  const src = post.hist[post.cur];
+  const dst = post.hist[1 - post.cur];
+
+  const A = post.taa;
+  gl.useProgram(A.p);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, dst.fb);
+  gl.viewport(0, 0, state.rw, state.rh);
+  gl.activeTexture(gl.TEXTURE1);
+  gl.bindTexture(gl.TEXTURE_2D, post.scene.tex);
+  gl.activeTexture(gl.TEXTURE2);
+  gl.bindTexture(gl.TEXTURE_2D, src.tex);
+  gl.uniform1i(A.u.uCur, 1);
+  gl.uniform1i(A.u.uHist, 2);
+  gl.uniform2f(A.u.uRes, state.rw, state.rh);
+  gl.uniform2f(A.u.uJitter, jx, jy);
+  gl.uniform3fv(A.u.uCam, cur.cam);
+  gl.uniform3fv(A.u.uWW, cur.ww);
+  gl.uniform3fv(A.u.uUU, cur.uu);
+  gl.uniform3fv(A.u.uVV, cur.vv);
+  gl.uniform1f(A.u.uFocal, cur.focal);
+  gl.uniform3fv(A.u.uPCam, prev.cam);
+  gl.uniform3fv(A.u.uPWW, prev.ww);
+  gl.uniform3fv(A.u.uPUU, prev.uu);
+  gl.uniform3fv(A.u.uPVV, prev.vv);
+  gl.uniform1f(A.u.uPFocal, prev.focal);
+  gl.uniform1f(A.u.uReset, post.reset ? 1 : 0);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+  post.cur = 1 - post.cur;
+  post.reset = false;
+  post.prev = cur;
+
+  const O = post.out;
+  gl.useProgram(O.p);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  gl.viewport(0, 0, canvas.width, canvas.height);
+  gl.activeTexture(gl.TEXTURE3);
+  gl.bindTexture(gl.TEXTURE_2D, dst.tex);
+  gl.uniform1i(O.u.uImg, 3);
+  gl.uniform2f(O.u.uSrc, state.rw, state.rh);
+  gl.uniform2f(O.u.uDst, canvas.width, canvas.height);
+  gl.uniform1f(O.u.uTime, t);
+  gl.uniform1f(O.u.uFade, fade);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+  gl.useProgram(prog);
+}
+
 function begin() {
   if (!finishProgram()) return;
   water = initWater();
+  post = initPost();
+  layout();
   gl.useProgram(prog);
   start = last = performance.now();
   document.documentElement.classList.add('ready');
