@@ -68,7 +68,7 @@ void main() {
     vec4 c = texelFetch(uCur, ip, 0);
     vec2 d = vec2(ip) + 0.5 + uJitter - pr;
     float d2 = dot(d, d);
-    float w = exp(-2.2 * d2);
+    float w = exp(-1.6 * d2);
     sum += c.rgb * w; wsum += w; wmax = max(wmax, w);
     vec3 cy = toY(c.rgb); m1 += cy; m2 += cy * cy;
     if (d2 < dbest) { dbest = d2; depth = c.a; }
@@ -86,8 +86,14 @@ void main() {
   vec2 tc = (puv * uRes.y + uRes) * 0.5 / uRes;
   bool ok = uReset < 0.5 && z > 0.0 && tc.x > 0.0 && tc.y > 0.0 && tc.x < 1.0 && tc.y < 1.0;
 
-  vec3 hist = fromY(clamp(toY(texture(uHist, tc).rgb), m1 - 1.1 * sigma, m1 + 1.1 * sigma));
-  float a = 0.05 + 0.1 * wmax;                      // trust close samples more
+  vec3 hy = toY(texture(uHist, tc).rgb);
+  vec3 hc = clamp(hy, m1 - 1.0 * sigma, m1 + 1.0 * sigma);
+  vec3 hist = fromY(hc);
+  float a = 0.06 + 0.1 * wmax;                      // trust close samples more
+  // when the history disagrees with this frame (a light moved, something turned),
+  // let the new frame through faster instead of smearing the old shading
+  float diff = abs(hy.x - toY(cur).x) / (toY(cur).x + 0.04);
+  a = mix(a, 0.6, smoothstep(0.08, 0.4, diff));
   o = vec4(ok ? mix(hist, cur, a) : cur, 1.0);
 }`;
 
@@ -231,6 +237,16 @@ float sdRoundCone(vec3 p, vec3 a, vec3 b, float r1, float r2) {
   return (sqrt(x2 * a2 * il2) + y * rr) * il2 - r1;
 }
 
+// Ears: a thin rounded disk with an elliptical outline. The 2D ellipse distance is
+// scaled by its smaller radius, so it never overestimates (a flat ellipsoid's
+// estimate did, and shadow/AO rays slipped through the ears as streaks).
+float sdEar(vec3 q) {
+  vec2 r = vec2(0.44, 0.6);
+  float d2 = (length(q.xy / r) - 1.0) * r.x;
+  vec2 w = vec2(d2, abs(q.z) - 0.035);
+  return min(max(w.x, w.y), 0.0) + length(max(w, 0.0)) - 0.03;
+}
+
 float sdElephant(vec3 p) {
   float bb = sdBox(p - vec3(-0.7, 3.1, 0.0), vec3(2.9, 3.3, 1.4));
   if (bb > 0.4) return bb;
@@ -250,7 +266,7 @@ float sdElephant(vec3 p) {
   eq.z = abs(eq.z) - 0.48;
   eq.xy = rot(-0.15) * eq.xy;
   eq.xz = rot(uStartle * 0.7) * eq.xz;   // ears flare
-  d = smin(d, sdEllipsoid(eq, vec3(0.44, 0.6, 0.09)), 0.1);
+  d = smin(d, sdEar(eq), 0.1);
 
   vec3 tq = q; tq.z = abs(tq.z);
   d = min(d, sdCapsule(tq, vec3(-0.7, -0.32, 0.2), vec3(-1.05, -0.6, 0.24), 0.03));
@@ -729,7 +745,10 @@ vec3 shadeObj(vec3 p, vec3 rd, float id, bool cheap) {
   float att = uOrbI / (1.0 + 0.22 * dl * dl);
   float wrap = id < 1.5 ? 0.25 : 0.0;
   float dif = clamp((dot(n, L) + wrap) / (1.0 + wrap), 0.0, 1.0);
-  float sh = cheap ? 1.0 : softShadow(p + n * 0.06, L, dl, 8.0);
+  float sh = cheap ? 1.0 : softShadow(p + n * 0.05 + L * 0.04, L, dl, 8.0);
+  // near the terminator the shadow ray grazes the surface it starts on; let the
+  // (wrapped) diffuse falloff do that work, so no dark band crawls with the light
+  sh = mix(1.0, sh, smoothstep(0.0, 0.35, dot(n, L)));
   float ao = cheap ? 1.0 : calcAO(p, n);
   if (id < 1.5) alb *= 0.94 + 0.1 * vnoise(p.xy * 1.3 + p.z * 0.7);   // a gentle, large-scale variation in the skin
   vec3 tone = lightTone(att * 3.0);
@@ -1847,7 +1866,7 @@ function resolve(t, fade, jx, jy) {
 function begin() {
   if (!finishProgram()) return;
   water = initWater();
-  post = initPost();
+  post = params.get('post') === '0' ? null : initPost();   // ?post=0: raw frames, for debugging
   layout();
   gl.useProgram(prog);
   start = last = performance.now();
