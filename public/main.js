@@ -472,6 +472,8 @@ vec3 mountains(vec3 rd, vec3 col) {
     vec3 tone = base * mix(0.82, 0.26, depth) * mix(vec3(1.0), vec3(0.92, 1.0, 1.09), depth);
     tone = mix(tone, base * mix(0.97, 0.72, depth), smoothstep(0.0, 0.06, below) * 0.85);
     tone += COR_COL * 0.03 * fwd * (1.0 - 0.55 * depth) / (1.0 + (below / 0.0016) * (below / 0.0016));
+    // mist pools at the foot of every range: no hard base where it meets the water
+    tone = mix(base, tone, smoothstep(0.0, 0.028, rd.y));
     col = mix(col, tone, inside);
   }
   return col;
@@ -574,6 +576,12 @@ vec3 rocketLights(vec3 ro, vec3 rd, float tmax) {
   return col;
 }
 
+// Where water meets sky, both dissolve into the haze: a 1/(1+(y/w)^2) band.
+vec3 softHorizon(vec3 col, vec3 rd) {
+  float y = rd.y / 0.007;
+  return mix(col, hazeColor(rd), 0.85 / (1.0 + y * y));
+}
+
 vec3 applyFog(vec3 col, vec3 ro, vec3 rd, float t) {
   const float a = 0.04, b = 0.55;
   float k = rd.y * b;
@@ -613,6 +621,7 @@ vec3 traceReflection(vec3 ro, vec3 rd) {
   if (h.y > 0.0) col = shadeObj(ro + rd * t, rd, h.y, true);
   else { col = sky(rd); t = 1e4; }
   col = applyFog(col, ro, rd, h.y > 0.0 ? min(t, 400.0) : 30.0);
+  if (h.y < 0.0) col = softHorizon(col, rd);
   col += orbLight(ro, rd, t) * 0.9;
   col += rocketLights(ro, rd, t);
   return col;
@@ -689,7 +698,7 @@ void main() {
   float cover = 1.0;
   if (!onObj) {
     col = tG < 1e8 ? shadeGround(ro + rd * t, ro, rd) : sky(rd);
-    col = applyFog(col, ro, rd, tG < 1e8 ? min(t, 400.0) : 30.0);
+    col = softHorizon(applyFog(col, ro, rd, tG < 1e8 ? min(t, 400.0) : 30.0), rd);
     cover = edge.y < t - 0.02 ? edge.x : 0.0;
   }
   if (cover > 0.0) {
