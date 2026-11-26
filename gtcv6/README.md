@@ -11,9 +11,11 @@ It is a separate site from the main "something great is coming" page and is mean
   - *Upper floor (street level):* hall with the door mat and rug, a small study by the front door (desk, black chair, white bench), the steep white staircase with dark treads and a peg rack on the right, the galley kitchen with grey cabinets at the end of the hall, and the open dining and living room with two navy sofas, the pine wall and track lights. The bedroom with the pine wall opens off the living room.
   - *Lower floor (out to the terrace):* the stairs land on the grey and white block-pattern floor by the washer and dryer. The white-tiled bathroom has the shower and plant shelves. Three bedrooms on the uphill side have lightwell windows (blue cushions, white bed, desk with a black chair). A corridor leads to the glass door onto the terrace, between the bedroom with the black pillow and the study with the wardrobe and white chair.
   - *Outside:* the side passage with steps and plants runs down from the street to the raised, fenced terrace of stone slabs and weeds, which looks out over the roofs on Skivebakken.
+- **The people of Cappes vei 6.** You play Håvard. Øystein (in the kitchen), Theodor (on the sofa), Jaakko (downstairs) and Martin (on the terrace) live there too, and talk when you come close. They send the mission texts and gather on the terrace for the party at the end. Their faces and shirts come from photos in `public/img/people/`.
+- **Places that matter:** Magda, Trekroneren, Rema 1000 Marken, Johnny's Pizza and Guangdong House have signs over the street and labels on the minimap, at their OpenStreetMap positions. The first visit to each is worth 50 kr. Trekroneren and Johnny's restore your health, Rema 1000 helps a bit, and the gulls lose track of you at Magda.
 - **Weather** follows Bergen: rain showers come and go, with short sunny breaks.
 - **Måkealarm** is the wanted level, five seagull icons. Punch gulls or people and the gang dives at you. Hide indoors and the alarm drops faster.
-- **Four missions on real streets:** walk home from Bryggen, borrow the landlord's things around the house, steal an e-scooter and race the real route to the bakery on Torget, then carry the last skillingsbolle home. A GPS line on the minimap shows the route (A* over the OSM street graph), and the HUD shows which street you are on. Free roam follows, with 14 lost umbrellas at real spots. Progress is saved in the browser's `localStorage`.
+- **Five missions on real streets:** walk home from Bryggen, borrow the landlord's things around the house, steal an e-scooter and race the real route to the bakery on Torget, carry the last skillingsbolle home, then get dinner from Guangdong House before it closes. A GPS line on the minimap shows the route (A* over the OSM street graph), and the HUD shows which street you are on. Free roam follows, with 14 lost umbrellas at real spots. Progress is saved in the browser's `localStorage`.
 
 Controls: WASD to move, mouse to look, Shift to run, Space to jump, click or F to punch, E to get on and off scooters, Esc to pause. Phones and tablets get touch controls.
 
@@ -30,7 +32,8 @@ Plain static files with no build step. The only library is three.js, vendored.
 | `public/js/physics.js` | One collision interface over terrain, building polygons and the house's local box world |
 | `public/js/engine.js` | Geometry batching and the box collision world used for the house |
 | `public/js/actors.js`, `textures.js`, `audio.js` | Characters and props, procedural textures, synthesised sound |
-| `public/data/` | The packed map: `map.json` (buildings, streets, trees, funicular, walking graph, the house's frame), `terrain.bin` (2.5 m grid, about 900 × 960 m), `coarse.bin` (60 m grid for the mountains), `ground.bin` (ground types) |
+| `public/img/people/` | Face and shirt textures for Håvard, Øystein, Theodor, Martin and Jaakko |
+| `public/data/` | The packed map: `map.json` (buildings, streets, trees, funicular, walking graph, the house's frame), `terrain.bin` (2.5 m grid, about 900 × 1010 m), `coarse.bin` (60 m grid for the mountains), `ground.bin` (ground types) |
 | `tools/fetch_data.py`, `tools/build_map.py` | Download OSM and Kartverket data, then pack it into `public/data/` |
 | `public/vendor/three.module.min.js` | three.js r186.1, bundled and minified (MIT) |
 

@@ -4,7 +4,7 @@ import { buildTextures, textTexture } from './textures.js';
 import { loadMapData, buildCity } from './city.js';
 import { buildHouse6 } from './house6.js';
 import { Physics } from './physics.js';
-import { Humanoid, Gull, makeScooter, makeItem, makeMarker, makeArrow } from './actors.js';
+import { Humanoid, Gull, makeScooter, makeItem, makeMarker, makeArrow, PEOPLE } from './actors.js';
 import { Audio } from './audio.js';
 
 const $ = id => document.getElementById(id);
@@ -265,7 +265,7 @@ const state = { mode: 'title', alarm: 0, alarmMin: 0, alarmCool: 0, alarmFlash: 
 const RADIUS = 0.3, HEIGHT = 1.8, STEP = 0.5;
 const player = {
   pos: new THREE.Vector3(), vel: new THREE.Vector3(), heading: Math.PI / 2,
-  onGround: false, fig: new Humanoid(), stepAcc: 0, knockT: 0, riding: null,
+  onGround: false, fig: new Humanoid({ person: 'havard' }), stepAcc: 0, knockT: 0, riding: null,
   carrying: null, punchCd: 0, airT: 0, hurtT: 0, health: 100, regenT: 0,
 };
 scene.add(player.fig.root);
@@ -557,8 +557,13 @@ function drawMinimap(blips) {
     let [x, y] = toMap(b.x, b.z);
     const dx = x - c, dy = y - c, l = Math.hypot(dx, dy), R = c - 14;
     if (l > R) { if (!b.edge) continue; x = c + dx / l * R; y = c + dy / l * R; }
-    mg.fillStyle = b.c; mg.strokeStyle = '#101418'; mg.lineWidth = 3;
+    mg.fillStyle = b.c; mg.strokeStyle = b.label ? '#f4f1ea' : '#101418'; mg.lineWidth = 3;
     mg.beginPath(); mg.arc(x, y, b.r || 7, 0, 7); mg.fill(); mg.stroke();
+    if (b.label && l < R) {
+      mg.font = '700 19px Archivo, sans-serif'; mg.textAlign = 'center';
+      mg.lineWidth = 4; mg.strokeStyle = 'rgba(16,20,24,.85)'; mg.strokeText(b.label, x, y - 13);
+      mg.fillStyle = '#f4f1ea'; mg.fillText(b.label, x, y - 13);
+    }
   }
   mg.save(); mg.translate(c, c); mg.rotate(rot + Math.atan2(Math.cos(player.heading), Math.sin(player.heading)) + Math.PI / 2);
   mg.fillStyle = '#f2c12e'; mg.strokeStyle = '#101418'; mg.lineWidth = 3;
@@ -583,7 +588,10 @@ function updateDoors(dt) {
 // ------------------------------------------------------------------ speech bubbles
 const bubbleTex = new Map();
 function bubble(text) {
-  if (!bubbleTex.has(text)) bubbleTex.set(text, textTexture([text], { w: 384, h: 128, bg: '#f4f1ea', fg: '#101418', font: '800 58px "Archivo", sans-serif', radius: 40 }));
+  if (!bubbleTex.has(text)) {
+    const w = Math.max(384, Math.min(1100, text.length * 34 + 80));
+    bubbleTex.set(text, textTexture([text], { w, h: 128, bg: '#f4f1ea', fg: '#101418', font: '800 54px "Archivo", sans-serif', radius: 40 }));
+  }
   const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: bubbleTex.get(text), depthTest: false, fog: false }));
   s.scale.set(1.2, 0.4, 1);
   s.renderOrder = 10;
@@ -617,6 +625,34 @@ for (let k = 0; k < NPC_N; k++) {
   const n = { fig, a: 0, b: 0, t: 0, pos: new THREE.Vector3(), heading: 0, downT: 0, speed: 1.1 + Math.random() * 0.4, bubble: null, bubbleT: 0, fall: 0, off: 0 };
   npcs.push(n);
 }
+// ---- the people who live at Cappes vei 6
+const HOME_SPOTS = {
+  // person: [u, floor, v, local heading, pose]
+  oystein: [1.55, 'FU', 6.3, -Math.PI / 2, 'idle'],      // in the kitchen
+  theodor: [5.5, 'FU', 4.98, 0, 'sit'],                   // on the sofa
+  jaakko: [5.0, 'FL', 4.1, Math.PI / 2, 'idle'],          // downstairs
+  martin: [6.2, 'FL', 10.7, Math.PI, 'idle'],             // on the terrace
+};
+const HOME_LINES = {
+  oystein: ['Har du sett laderen min?', 'Det regner. Igjen.', 'Middag snart?', 'Hvem tok siste bolle?'],
+  theodor: ['Otters hold hands when they sleep.', 'Jeg har ikke tid, jeg spiller.', 'Kan du skru ned?', 'Rolig, rolig.'],
+  jaakko: ['Moi moi!', 'Skitur i morgen?', 'Swix, ikke Madshus.', 'Guangdong House i kveld?'],
+  martin: ['Fin utsikt, ikke sant?', 'Måkene ser på oss.', 'Hvem har vasket badet?', 'Kaffe?'],
+};
+const housemates = {};
+for (const id of ['oystein', 'theodor', 'jaakko', 'martin']) {
+  const fig = new Humanoid({ person: id });
+  scene.add(fig.root);
+  const [u, f, v, h, pose] = HOME_SPOTS[id];
+  const n = { fig, id, pos: L2V(u, H[f], v), heading: h + H.theta, party: pose, downT: 0, fall: 0, placed: true, talkT: 0, mate: true };
+  fig.root.position.copy(n.pos); fig.root.rotation.y = n.heading;
+  // name tag
+  const tag = new THREE.Sprite(new THREE.SpriteMaterial({ map: textTexture([PEOPLE[id].name], { w: 256, h: 64, bg: 'rgba(16,20,24,0.7)', fg: '#f2c12e', font: '800 40px "Archivo", sans-serif', radius: 30 }), depthTest: true, fog: false }));
+  tag.scale.set(0.8, 0.2, 1); tag.position.y = 2.25;
+  fig.root.add(tag);
+  npcs.push(n);
+  housemates[id] = n;
+}
 function knockNpc(n, from) {
   if (n.downT > 0) return;
   n.downT = 3;
@@ -627,7 +663,8 @@ function knockNpc(n, from) {
 function say(n, text) {
   if (n.bubble) n.fig.root.remove(n.bubble);
   n.bubble = bubble(text);
-  n.bubble.position.y = 2.35;
+  n.bubble.position.y = n.mate ? 2.6 : 2.35;
+  if (text.length > 9) n.bubble.scale.set(Math.min(3.2, text.length * 0.11), 0.4, 1);
   n.fig.root.add(n.bubble);
   n.bubbleT = 2.2;
 }
@@ -635,7 +672,22 @@ function updateNpcs(dt) {
   const focus = state.mode === 'title' ? camera.position : player.pos;
   for (const n of npcs) {
     if (n.bubble) { n.bubbleT -= dt; if (n.bubbleT <= 0) { n.fig.root.remove(n.bubble); n.bubble = null; } }
-    if (n.party) { n.fig.animate(dt, 0, n.party); n.fig.root.position.copy(n.pos); continue; }
+    if (n.party) {
+      n.fig.animate(dt, 0, n.party);
+      n.fig.root.position.copy(n.pos);
+      n.fig.root.rotation.set(0, n.heading, 0);
+      if (n.mate && state.mode === 'play') {
+        const dx = player.pos.x - n.pos.x, dz = player.pos.z - n.pos.z, d = Math.hypot(dx, dz);
+        n.talkT -= dt;
+        if (d < 2.2 && Math.abs(player.pos.y - n.pos.y) < 1.5 && n.talkT <= 0) {
+          const L = HOME_LINES[n.id];
+          say(n, L[Math.floor(Math.random() * L.length)]);
+          n.talkT = 7;
+        }
+        if (d < 0.55 && d > 1e-4 && Math.abs(player.pos.y - n.pos.y) < 1.2) { player.pos.x += dx / d * (0.55 - d); player.pos.z += dz / d * (0.55 - d); }
+      }
+      continue;
+    }
     if (!n.placed || n.pos.distanceTo(focus) > 140) { n.placed = placeNpc(n, focus); n.fig.root.visible = n.placed; if (!n.placed) continue; }
     if (n.downT > 0) {
       n.downT -= dt;
@@ -973,6 +1025,41 @@ function updateUmbrellas(dt, time) {
   }
 }
 
+// ------------------------------------------------------------------ places
+const PLACE_STYLE = {
+  bar: { bg: '#2a1f3d', fg: '#f4d35e', line: 'One beer at Magda. Just one. The gulls lose track of you in here.' },
+  hotdog: { bg: '#b3261e', fg: '#ffffff', line: 'A pølse from Trekroneren, with everything. Health restored.' },
+  shop: { bg: '#0d3a7a', fg: '#ffffff', line: 'Rema 1000 Marken: snacks for the party, and a little energy.' },
+  food: { bg: '#a3121b', fg: '#f6d46b', line: 'Guangdong House. The most important place in Bergen.' },
+  pizza: { bg: '#1f6a3a', fg: '#ffffff', line: 'A slice at Johnny’s. Health restored.' },
+};
+save.places = save.places || [];
+const PLACES = (map.places || []).map(pl => {
+  const st = PLACE_STYLE[pl.k];
+  const y = world.floorAt(pl.x, pl.z, 300);
+  const sign = new THREE.Sprite(new THREE.SpriteMaterial({ map: textTexture([pl.n], { w: 640, h: 128, bg: st.bg, fg: st.fg, font: '800 64px "Archivo", sans-serif', radius: 24, border: st.fg }), fog: false }));
+  sign.scale.set(5, 1, 1);
+  sign.position.set(pl.x, y + 6, pl.z);
+  scene.add(sign);
+  return { ...pl, y, sign, st, coolT: 0 };
+});
+function updatePlaces(dt, time) {
+  for (const pl of PLACES) {
+    pl.sign.position.y = pl.y + 6 + Math.sin(time * 1.5 + pl.x) * 0.15;
+    pl.coolT -= dt;
+    if (state.mode !== 'play' || pl.coolT > 0) continue;
+    if (Math.hypot(player.pos.x - pl.x, player.pos.z - pl.z) > 6 || Math.abs(player.pos.y - pl.y) > 4) continue;
+    pl.coolT = 45;
+    const first = !save.places.includes(pl.n);
+    if (first) { save.places.push(pl.n); save.money += 50; persist(); }
+    if (pl.k === 'hotdog' || pl.k === 'pizza') player.health = 100;
+    if (pl.k === 'shop') player.health = Math.min(100, player.health + 35);
+    if (pl.k === 'bar' && state.alarm > state.alarmMin) state.alarm = state.alarmMin;
+    audio.coin();
+    toast((first ? `Found: ${pl.n}  +50 kr · ` : '') + pl.st.line, 4);
+  }
+}
+
 // ------------------------------------------------------------------ punch
 function doPunch() {
   if (player.punchCd > 0 || player.knockT > 0 || player.riding) return;
@@ -1289,7 +1376,7 @@ const MISSIONS = [
   {
     id: 'home', title: 'Hjem, vått hjem', sub: 'Home, wet home', spawn: 'bryggen', reward: 100,
     start(m) {
-      showPhone('Ingrid (housemate)', 'Where ARE you? You have the only key and it’s pouring. Cappes vei 6, the black door. Now please.', 7);
+      showPhone('Øystein', 'Hvor ER du? You have the only key and it’s pouring. Cappes vei 6, the black door. Now please.', 7);
       m.step = 0;
     },
     update(m) {
@@ -1301,7 +1388,7 @@ const MISSIONS = [
   {
     id: 'inside', title: 'Innbrudd', sub: 'Inside job', spawn: 'home', reward: 300, timer: 150,
     start(m) {
-      showPhone('Ingrid', 'Party on the terrace tonight! The landlord stores “his” nice things all over the house. Borrow them. All six. He’s back in 2½ minutes.', 9);
+      showPhone('Theodor', 'Party on the terrace tonight! The landlord keeps “his” nice things all over the house. Borrow them. All six. He’s back in 2½ minutes.', 9);
       for (const it of itemObjs) { it.got = false; it.o.visible = true; it.o.position.set(...it.p); }
       m.step = 0;
     },
@@ -1329,7 +1416,7 @@ const MISSIONS = [
         m.blips = remaining.map(i => ({ x: i.o.position.x, z: i.o.position.z, c: '#f2c12e', r: 5, edge: false }));
         void best;
       } else {
-        if (!m.allGot) { m.allGot = true; showPhone('Ingrid', 'Perfect. Bring it all down to the terrace: downstairs, the glass door at the end of the corridor.', 6); }
+        if (!m.allGot) { m.allGot = true; showPhone('Martin', 'Perfect. Bring it all down to me on the terrace: downstairs, the glass door at the end of the corridor.', 6); }
         setObjective('Carry it all to the <em>terrace</em> (downstairs, out the glass door).');
         m.target = TERRACE;
         m.blips = null;
@@ -1343,7 +1430,7 @@ const MISSIONS = [
     id: 'scooter', title: 'Grand Theft Sparkesykkel', sub: 'The bakery on Torget is about to close', spawn: 'lane', reward: 500,
     noPunchAlarm: true,
     start(m) {
-      showPhone('Ingrid', 'DISASTER. No boller for the party. The bakery on Torget closes any minute. Grab a scooter. Go go go.', 8);
+      showPhone('Martin', 'KRISE. No boller for the party. The bakery on Torget closes any minute. Grab a scooter. Go go go.', 8);
       m.step = 0; m.cp = 0;
       m.len = planCheckpoints();
       const s = scooters[0];
@@ -1374,7 +1461,7 @@ const MISSIONS = [
     start(m) {
       m.step = 0;
       state.alarmMin = 0;
-      showPhone('Ingrid', 'Did you make it?? Get the LAST skillingsbolle. Every gull in Bergen is watching that counter.', 7);
+      showPhone('Jaakko', 'Did you make it?? Get the LAST skillingsbolle. Every gull in Bergen is watching that counter.', 7);
     },
     update(m, dt) {
       const door = _cpv.copy(BAKERY.door);
@@ -1411,6 +1498,47 @@ const MISSIONS = [
   },
 ];
 const _cpv = new THREE.Vector3();
+const GUANGDONG = PLACES.find(p => p.k === 'food');
+const takeaway = new THREE.Group();
+{
+  const bag = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.32, 0.18), new THREE.MeshStandardMaterial({ color: 0xf2efe6, roughness: 0.9 }));
+  bag.position.y = 0.16;
+  const logo = new THREE.Mesh(new THREE.BoxGeometry(0.31, 0.12, 0.19), new THREE.MeshStandardMaterial({ color: 0xa3121b, roughness: 0.8 }));
+  logo.position.y = 0.2;
+  takeaway.add(bag, logo);
+}
+MISSIONS.push({
+  id: 'guangdong', title: 'Guangdong House', sub: 'Dinner before they close at 19:00', spawn: 'lane', reward: 750,
+  start(m) {
+    m.step = 0;
+    state.alarmMin = 0;
+    showPhone('Jaakko', 'Bolle is dessert. DINNER is Guangdong House, obviously. They close at 19:00. Go, go, go!', 8);
+    const r = GUANGDONG ? route(player.pos.x, player.pos.z, GUANGDONG.x, GUANGDONG.z) : null;
+    let len = 0; if (r) for (let i = 1; i < r.length; i++) len += Math.hypot(r[i][0] - r[i - 1][0], r[i][1] - r[i - 1][1]);
+    m.timer = Math.round(len / 5.2 + 35);
+  },
+  update(m) {
+    if (!GUANGDONG) return 'done';
+    if (m.step === 0) {
+      setObjective('Get the takeaway from <em>Guangdong House</em> before they close.');
+      m.target = _cpv.set(GUANGDONG.x, GUANGDONG.y, GUANGDONG.z);
+      if (Math.hypot(player.pos.x - GUANGDONG.x, player.pos.z - GUANGDONG.z) < 4.5 && Math.abs(player.pos.y - GUANGDONG.y) < 4) {
+        m.step = 1; audio.pickup();
+        carryHold.add(takeaway); takeaway.position.set(0, -0.05, 0);
+        banner('Middag!', 'Now home to the terrace. Don’t let it get cold.', '', 2.5);
+        m.timer = Math.round(m.timer + 60);
+        state.alarmMin = 2; raiseAlarm(2);
+      }
+      if (m.timer <= 0) return 'fail:Guangdong House closed. Brødskive for dinner.';
+      return;
+    }
+    setObjective('Bring the takeaway home to the <em>terrace</em> before it gets cold.');
+    m.target = TERRACE;
+    if (player.pos.distanceTo(TERRACE) < 2.4) return 'done';
+    if (m.timer <= 0) return 'fail:The food got cold. Everyone is disappointed in you (it’s fine).';
+  },
+  cleanup() { takeaway.removeFromParent(); },
+});
 
 function startMission(i, { spawn = true, quiet = false } = {}) {
   if (mission && mission.def.cleanup) mission.def.cleanup(mission);
@@ -1516,22 +1644,26 @@ function ending() {
   state.mode = 'cut';
   state.alarm = 0; state.alarmMin = 0;
   weather.forced = 0;
-  const spots = [[1.5, 10.2, 2.4, 'wave', 0x2c4c7a, 0xc9a26b], [5.2, 9.6, -2.2, 'idle', 0x8a3b6b, 0x1d1d1d], [6.4, 11.4, -2.8, 'wave', 0x3f6b4a, 0x3a2618]];
-  if (!party.length) for (const [u, v, h, anim, jacket, hair] of spots) {
-    const fig = new Humanoid({ jacket, hair, hat: null });
-    scene.add(fig.root);
-    const n = { fig, pos: L2V(u, H.FL, v), heading: h + H.theta, party: anim, downT: 0, fall: 0, placed: true };
-    fig.root.position.copy(n.pos); fig.root.rotation.y = n.heading;
-    npcs.push(n); party.push(n);
+  // everyone out on the terrace
+  const spots = { oystein: [1.4, 10.0, 2.4, 'wave'], theodor: [4.6, 9.4, -2.6, 'idle'], jaakko: [6.6, 11.2, -2.4, 'wave'], martin: [5.2, 11.7, Math.PI, 'idle'] };
+  for (const id in spots) {
+    const [u, v, h, anim] = spots[id], n = housemates[id];
+    n.pos.copy(L2V(u, H.FL, v)); n.heading = h + H.theta; n.party = anim;
+    party.push(n);
   }
-  say(party[0], 'Bolle!!');
+  say(housemates.oystein, 'Bolle!!');
+  say(housemates.jaakko, 'Guangdong!!');
   hud.phone.hidden = true;
   setObjective('');
   const t0 = performance.now();
   state.cut = { t0, dur: 11000 };
   later('end1', 1.2, () => banner('Velkommen hjem', 'Cappes vei 6 · Fjellet · Bergen', 'pass', 6));
   later('end2', 7.5, () => banner('Takk for at du spilte', 'Free roam unlocked: find the lost umbrellas', '', 4));
-  later('end3', 11, () => { state.mode = 'play'; state.cut = null; weather.forced = null; save.done = true; persist(); freeRoam(); if (!locked) requestLock(); });
+  later('end3', 11, () => {
+    state.mode = 'play'; state.cut = null; weather.forced = null; save.done = true; persist(); freeRoam(); if (!locked) requestLock();
+    // back to their usual spots
+    for (const id in HOME_SPOTS) { const [u, f, v, h, pose] = HOME_SPOTS[id], n = housemates[id]; n.pos.copy(L2V(u, H[f], v)); n.heading = h + H.theta; n.party = pose; }
+  });
 }
 function updateCut(dt) {
   if (!state.cut) return;
@@ -1637,6 +1769,7 @@ function frame(now) {
       updateAlarm(dt);
       if (state.mode === 'play') updateMission(dt);
       updateUmbrellas(dt, time);
+      updatePlaces(dt, time);
       if (state.mode === 'cut') updateCut(dt); else updateCamera(dt);
     }
     updateHud(dt);
@@ -1646,6 +1779,7 @@ function frame(now) {
     if (!mission || mission.def.id === 'scooter') for (const s of scooters) if (s !== player.riding) blips.push({ x: s.pos.x, z: s.pos.z, c: '#2bb673', r: 5 });
     for (const a of gulls) if (['orbit', 'dive', 'climb', 'carry'].includes(a.state)) blips.push({ x: a.pos.x, z: a.pos.z, c: a.state === 'carry' ? '#f2c12e' : '#d2301f', r: 4 });
     { const [hx, hz] = L2W(4, 4.2); blips.push({ x: hx, z: hz, c: '#f4f1ea', r: 6, edge: true }); }
+    for (const pl of PLACES) blips.push({ x: pl.x, z: pl.z, c: pl.st.bg, r: 7, label: pl.n, edge: pl.k === 'food' });
     // GPS route to the current target, recomputed now and then
     gpsT -= dt;
     if (gpsT <= 0) {
@@ -1704,4 +1838,4 @@ $('play').disabled = false;
 $('play').textContent = save.mission > 0 ? (save.mission >= MISSIONS.length ? 'Free roam' : 'Continue') : 'Play';
 
 // debug hooks for testing
-window.__gt = { renderer, camera, player, cam, world, state, startMission, save, weather, scooters, gulls, mission: () => mission, startGame, raiseAlarm, ending, L2V, L2W, W2L, H, house, city, route, BAKERY, CHECKPOINTS: () => CHECKPOINTS, inHouse, hitPlayer, dropBolle, bolle: () => ({ drop: bolleDrop, carrying: !!player.carrying }) };
+window.__gt = { renderer, camera, player, cam, world, state, startMission, save, weather, scooters, gulls, mission: () => mission, startGame, raiseAlarm, ending, L2V, L2W, W2L, H, house, city, route, BAKERY, CHECKPOINTS: () => CHECKPOINTS, inHouse, housemates, PLACES, hitPlayer, dropBolle, bolle: () => ({ drop: bolleDrop, carrying: !!player.carrying }) };

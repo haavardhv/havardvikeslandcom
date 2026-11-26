@@ -5,8 +5,41 @@ import * as THREE from '../vendor/three.module.min.js';
 const mat = (color, o = {}) => new THREE.MeshStandardMaterial({ color, roughness: 0.75, ...o });
 const box = (w, h, d, m) => { const x = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), m); x.castShadow = true; return x; };
 
+// The people who live at Cappes vei 6, from their photos (public/img/people)
+export const PEOPLE = {
+  havard:  { name: 'Håvard',  hair: '#6a5039', skin: '#d9ab95', shirt: '#8a7666', sleeve: 'long',  sleeveCol: '#8a7666', pants: '#2b3140' },
+  oystein: { name: 'Øystein', hair: '#7c5f40', skin: '#e2ad97', shirt: '#141418', sleeve: 'short', sleeveCol: '#141418', pants: '#3b3b3b' },
+  theodor: { name: 'Theodor', hair: '#3b2b21', skin: '#e7b4a4', shirt: '#2a211e', sleeve: 'short', sleeveCol: '#2a211e', pants: '#26292e' },
+  martin:  { name: 'Martin',  hair: '#b89466', skin: '#e2a593', shirt: '#d9d1c6', sleeve: 'long',  sleeveCol: '#d9d1c6', pants: '#4a4f5a' },
+  jaakko:  { name: 'Jaakko',  hair: '#e3cf98', skin: '#eab5a0', shirt: '#1d2026', sleeve: 'long',  sleeveCol: '#e8e8ea', pants: '#1d1d1d' },
+};
+const texLoader = new THREE.TextureLoader();
+const texCache = new Map();
+function photoTex(url) {
+  if (!texCache.has(url)) {
+    const t = texLoader.load(url);
+    t.colorSpace = THREE.SRGBColorSpace;
+    t.anisotropy = 4;
+    texCache.set(url, t);
+  }
+  return texCache.get(url);
+}
+// a texture split horizontally: `top` colour above `split` (0..1 from the top), `bottom` below
+function splitTex(top, bottom, split) {
+  const c = document.createElement('canvas'); c.width = 8; c.height = 64;
+  const g = c.getContext('2d');
+  g.fillStyle = top; g.fillRect(0, 0, 8, Math.round(64 * split));
+  g.fillStyle = bottom; g.fillRect(0, Math.round(64 * split), 8, 64);
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  t.magFilter = THREE.NearestFilter;
+  return t;
+}
+
 export class Humanoid {
-  constructor({ jacket = 0xf2c12e, pants = 0x2b3140, skin = 0xe8c4a6, hat = 0xb3261e, hair = 0x5a3a22, umbrella = null, boots = 0x1b1b1b, scale = 1 } = {}) {
+  constructor({ jacket = 0xf2c12e, pants = 0x2b3140, skin = 0xe8c4a6, hat = 0xb3261e, hair = 0x5a3a22, umbrella = null, boots = 0x1b1b1b, scale = 1, person = null } = {}) {
+    const P = person ? PEOPLE[person] : null;
+    if (P) { pants = P.pants; skin = P.skin; hair = P.hair; hat = null; boots = 0x2a2522; jacket = P.shirt; }
     this.root = new THREE.Group();
     const body = new THREE.Group();
     body.scale.setScalar(scale);
@@ -29,19 +62,28 @@ export class Humanoid {
     torso.position.y = 0.9;
     body.add(torso);
     this.torso = torso;
-    const coat = box(0.48, 0.66, 0.28, mJ); coat.position.y = 0.33;
-    const hem = box(0.5, 0.16, 0.3, mJ); hem.position.y = 0.02;
-    const hood = box(0.32, 0.14, 0.12, mJ); hood.position.set(0, 0.62, -0.16);
-    torso.add(coat, hem, hood);
-    // zip line
-    const zip = box(0.02, 0.6, 0.01, mat(0x333333)); zip.position.set(0, 0.33, 0.145);
-    torso.add(zip);
+    if (P) {
+      const front = mat(0xffffff, { map: photoTex(`/img/people/${person}-shirt.jpg`), roughness: 0.9 });
+      const plain = mat(P.shirt, { roughness: 0.9 });
+      const shirt = new THREE.Mesh(new THREE.BoxGeometry(0.48, 0.74, 0.27), [plain, plain, plain, plain, front, plain]);
+      shirt.castShadow = true; shirt.position.y = 0.33;
+      torso.add(shirt);
+    } else {
+      const coat = box(0.48, 0.66, 0.28, mJ); coat.position.y = 0.33;
+      const hem = box(0.5, 0.16, 0.3, mJ); hem.position.y = 0.02;
+      const hood = box(0.32, 0.14, 0.12, mJ); hood.position.set(0, 0.62, -0.16);
+      torso.add(coat, hem, hood);
+      const zip = box(0.02, 0.6, 0.01, mat(0x333333)); zip.position.set(0, 0.33, 0.145);
+      torso.add(zip);
+    }
     // arms
     this.arms = [];
     for (const s of [-1, 1]) {
       const sh = new THREE.Group();
       sh.position.set(0.31 * s, 0.6, 0);
-      const arm = box(0.14, 0.58, 0.15, mJ); arm.position.y = -0.27;
+      let armMat = mJ;
+      if (P) armMat = P.sleeve === 'short' ? mat(0xffffff, { map: splitTex(P.sleeveCol, P.skin, 0.38), roughness: 0.85 }) : mat(P.sleeveCol, { roughness: 0.9 });
+      const arm = box(0.14, 0.58, 0.15, armMat); arm.position.y = -0.27;
       const hand = box(0.11, 0.12, 0.12, mS); hand.position.y = -0.62;
       sh.add(arm, hand);
       torso.add(sh);
@@ -52,11 +94,23 @@ export class Humanoid {
     head.position.y = 0.72;
     torso.add(head);
     this.head = head;
-    const face = box(0.27, 0.3, 0.27, mS); face.position.y = 0.15;
-    const hairM = box(0.29, 0.1, 0.29, mat(hair)); hairM.position.set(0, 0.24, -0.01);
-    const eyeM = mat(0x111111);
-    for (const s of [-1, 1]) { const e = box(0.04, 0.04, 0.01, eyeM); e.position.set(0.065 * s, 0.17, 0.137); head.add(e); }
-    head.add(face, hairM);
+    if (P) {
+      // the photo on the front, hair on top and at the back, hair over skin at the sides
+      const faceM = mat(0xffffff, { map: photoTex(`/img/people/${person}-face.jpg`), roughness: 0.7 });
+      const hairMat = mat(P.hair, { roughness: 0.95 });
+      const side = mat(0xffffff, { map: splitTex(P.hair, P.skin, 0.42), roughness: 0.8 });
+      const back = mat(0xffffff, { map: splitTex(P.hair, P.skin, 0.8), roughness: 0.9 });
+      const headBox = new THREE.Mesh(new THREE.BoxGeometry(0.36, 0.42, 0.34), [side, side, hairMat, mS, faceM, back]);
+      headBox.position.y = 0.2; headBox.castShadow = true;
+      head.add(headBox);
+      this.name = P.name;
+    } else {
+      const face = box(0.27, 0.3, 0.27, mS); face.position.y = 0.15;
+      const hairM = box(0.29, 0.1, 0.29, mat(hair)); hairM.position.set(0, 0.24, -0.01);
+      const eyeM = mat(0x111111);
+      for (const s of [-1, 1]) { const e = box(0.04, 0.04, 0.01, eyeM); e.position.set(0.065 * s, 0.17, 0.137); head.add(e); }
+      head.add(face, hairM);
+    }
     if (hat !== null) {
       const beanie = box(0.3, 0.14, 0.3, mat(hat, { roughness: 1 })); beanie.position.y = 0.32;
       const pom = box(0.09, 0.08, 0.09, mat(0xf3f2ee, { roughness: 1 })); pom.position.y = 0.43;

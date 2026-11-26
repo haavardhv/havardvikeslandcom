@@ -55,4 +55,4 @@ def grid(name, x0, x1, z0, z1, step):
     json.dump({'x0': x0, 'z0': z0, 'step': step, 'nx': nx, 'nz': nz, 'h': zs}, open(os.path.join(WORK, name + '.json'), 'w'))
 
 grid('coarse', -3000, 4000, -3000, 3000, 60)
-grid('fine', -700, 200, -760, 200, 2.5)
+grid('fine', -700, 200, -760, 250, 2.5)

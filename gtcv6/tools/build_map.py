@@ -25,7 +25,7 @@ OUT = sys.argv[2]
 LAT0, LON0 = 60.3931275, 5.3333919          # Cappes vei 6 (OSM address node 3126074741)
 MLAT = 111230.0
 MLON = 111320.0 * math.cos(math.radians(LAT0))
-X0, X1, Z0, Z1 = -690.0, 190.0, -750.0, 190.0   # playable area: Bryggen and Bergenhus to Fjellet
+X0, X1, Z0, Z1 = -690.0, 190.0, -750.0, 240.0   # playable area: Bryggen and Bergenhus to Fjellet and Marken
 
 def P(n): return ((n['lon'] - LON0) * MLON, -(n['lat'] - LAT0) * MLAT)
 
@@ -295,6 +295,22 @@ for k, poly in sorted(area_polys, key=lambda a: -a[1].area):
             if pp.contains(Point(gx0 + i * st, gz0 + j * st)): cls[j * nx + i] = order[k]
 open(os.path.join(OUT, 'ground.bin'), 'wb').write(bytes(cls))
 
+# ------------------------------------------------------------------ places that matter to the people who live at no. 6
+PLACES = [  # (label, OSM name, kind)
+    ('Magda', 'Magda', 'bar'),
+    ('Trekroneren', '3-kroneren', 'hotdog'),
+    ('Rema 1000 Marken', 'Rema 1000 Marken', 'shop'),
+    ('Guangdong House', 'Guangdong House', 'food'),
+    ("Johnny's Pizza", "Johnny's pizza", 'pizza'),
+]
+places = []
+for label, osm, kind in PLACES:
+    n = next((n for n in nodes.values() if n.get('tags', {}).get('name') == osm), None)
+    if not n: print('MISSING place', label); continue
+    x, z = P(n)
+    places.append({'n': label, 'k': kind, 'x': r1(x), 'z': r1(z), 'g': r1(ground(x, z))})
+print('places', [p['n'] for p in places])
+
 out = {
     'attribution': 'Map data © OpenStreetMap contributors (ODbL). Elevation © Kartverket (CC BY 4.0).',
     'origin': {'lat': LAT0, 'lon': LON0},
@@ -307,6 +323,7 @@ out = {
     'trees': trees,
     'funicular': funicular,
     'graph': graph,
+    'places': places,
 }
 json.dump(out, open(os.path.join(OUT, 'map.json'), 'w'), separators=(',', ':'))
 print('wrote', os.path.getsize(os.path.join(OUT, 'map.json')) // 1024, 'KB')
