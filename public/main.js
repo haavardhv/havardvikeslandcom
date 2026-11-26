@@ -89,6 +89,8 @@ uniform mat3  uStoneR[NSTONE];  // world -> local rotation
 uniform sampler2D uWater;       // wave simulation: r = height
 uniform vec4  uWaterRect;       // min x, min z, size, texel (uv)
 uniform float uWaterOn;
+uniform vec4  uMetA;           // meteor start direction, progress (<0: none)
+uniform vec3  uMetB;           // meteor end direction
 
 // A loop start the compiler cannot prove is 0, so it won't unroll or duplicate
 // the scene function at every call site (keeps compile times sane, esp. ANGLE/D3D).
@@ -282,18 +284,50 @@ float calcAO(vec3 p, vec3 n) {
 }
 
 /* ---------- sky, haze, glows ---------- */
+// Angle from the eclipse centre (x) and azimuth around it (y).
+vec2 sunAngles(vec3 rd) {
+  float ca = dot(rd, uSun);
+  vec3 up = normalize(cross(cross(uSun, vec3(0.0, 1.0, 0.0)), uSun));
+  vec3 rt = cross(uSun, up);
+  vec3 sd = rd - uSun * ca;
+  return vec2(acos(clamp(ca, -1.0, 1.0)), atan(dot(sd, up), dot(sd, rt)));
+}
+
+// The corona's slow breathing, shared by everything it lights.
+float breathe() { return 1.0 + 0.06 * sin(uTime * 0.37) + 0.04 * sin(uTime * 0.91); }
+
+// A slowly turning, slowly changing fan of light shafts around the eclipse:
+// two layers of angular noise drifting in opposite directions.
+float shafts(float az) {
+  float t = uTime;
+  vec2 r1 = vec2(cos(az + t * 0.011), sin(az + t * 0.011));
+  vec2 r2 = vec2(cos(az - t * 0.007), sin(az - t * 0.007));
+  float n = vnoise(r1 * 5.0 + vec2(t * 0.05, 0.0)) * 0.55 + vnoise(r2 * 13.0 + vec2(0.0, t * 0.08)) * 0.45;
+  return smoothstep(0.42, 0.85, n);
+}
+
 vec3 hazeColor(vec3 rd) {
+  vec2 sa = sunAngles(rd);
+  float a = sa.x;
   float c = max(dot(rd, uSun), 0.0);
-  float a = acos(clamp(dot(rd, uSun), -1.0, 1.0));
+  float br = breathe() * (1.0 + uFlare);
   vec3 col = vec3(0.0065, 0.0065, 0.009);
-  col += COR_COL * 0.06 * (1.0 + uFlare) / (1.0 + (a / 0.2) * (a / 0.2));   // forward scatter toward the eclipse
+  col += COR_COL * 0.06 * br / (1.0 + (a / 0.2) * (a / 0.2));   // forward scatter toward the eclipse
   col += vec3(0.05, 0.035, 0.04) * pow(c, 6.0) * 0.4;
+  // crepuscular rays in the haze, k/(1 + a/s): they reach far across the fog
+  col += COR_COL * 0.022 * br * shafts(sa.y) * smoothstep(0.07, 0.11, a) / (1.0 + a / 0.09);
   return col;
 }
 
 vec3 sky(vec3 rd) {
   float y = max(rd.y, 0.0);
   vec3 col = mix(hazeColor(rd), vec3(0.0012, 0.0014, 0.0026), pow(y, 0.5));
+  vec2 sa = sunAngles(rd);
+  float a = sa.x, az = sa.y;
+  float br = breathe();
+
+  // the shafts also reach up into the clear sky
+  col += COR_COL * 0.013 * br * shafts(az) * smoothstep(0.07, 0.11, a) / (1.0 + a / 0.12) * smoothstep(0.0, 0.3, y);
 
   // stars, each a tiny 1/(1+x^2) point
   vec3 q = rd * 260.0;
@@ -305,29 +339,50 @@ vec3 sky(vec3 rd) {
     col += vec3(0.8, 0.85, 1.0) * tw * 0.35 / (1.0 + dot(f, f) * 260.0) * smoothstep(0.05, 0.4, y);
   }
 
-  // the eclipse
-  float ca = dot(rd, uSun);
-  float a = acos(clamp(ca, -1.0, 1.0));
+  // a meteor now and then: a line light with a fading tail
+  if (uMetA.w >= 0.0) {
+    float p = uMetA.w;
+    vec3 head = normalize(mix(uMetA.xyz, uMetB, min(p, 1.0)));
+    vec3 tail = normalize(mix(uMetA.xyz, uMetB, max(p - 0.35, 0.0)));
+    vec3 sg = head - tail;
+    float hh = clamp(dot(rd - tail, sg) / max(dot(sg, sg), 1e-9), 0.0, 1.0);
+    float d = length(rd - (tail + sg * hh));
+    float fade = smoothstep(0.0, 0.08, p) * (1.0 - smoothstep(0.75, 1.3, p)) * hh * hh;
+    col += vec3(0.85, 0.9, 1.0) * fade * (0.6 / (1.0 + d * d * 4e6) + 0.02 / (1.0 + d * d * 2e4));
+  }
+
+  // the eclipse: corona turns slowly, streamers bend outward and evolve
   const float R = 0.083;
   float x = a - R;
-  vec3 up = normalize(cross(cross(uSun, vec3(0.0, 1.0, 0.0)), uSun));
-  vec3 rt = normalize(cross(uSun, up));
-  vec3 sd = rd - uSun * ca;
-  float az = atan(dot(sd, up), dot(sd, rt));
-  vec2 ring = vec2(cos(az), sin(az));
-  float streak = fbm(ring * 2.2 + vec2(uTime * 0.015, 0.0));
-  streak = 0.45 + 1.1 * streak * streak;
   float xs = max(x, 0.0);
+  float azr = az + uTime * 0.015 + xs * 4.0;
+  vec2 ring = vec2(cos(azr), sin(azr));
+  float streak = fbm(ring * 2.4 + vec2(uTime * 0.03, uTime * 0.02));
+  float fine = vnoise(ring * 24.0 + vec2(uTime * 0.12, 0.0));
+  streak = 0.4 + 1.15 * streak * streak + 0.3 * fine * smoothstep(0.005, 0.03, xs);
   float corona = 0.0025 / (xs + 0.0028);                      // k/(x+e)
-  corona *= mix(1.0, streak, smoothstep(0.0, 0.06, xs)) * (1.0 + uFlare * 1.4);
+  corona *= mix(1.0, streak, smoothstep(0.0, 0.06, xs)) * br * (1.0 + uFlare * 1.4);
   corona += 0.0006 / (xs * xs * 40.0 + 0.0006) * 0.6;         // thin bright limb, 1/(1+x^2)
   vec3 ccol = mix(vec3(1.0, 0.96, 0.92), COR_COL * vec3(0.8, 0.85, 1.0), smoothstep(0.0, 0.12, xs));
-  float prom = pow(vnoise(ring * 6.0 + 3.0), 6.0) * 2.5 / (1.0 + xs * xs * 60000.0);
+  vec2 pr = vec2(cos(az), sin(az));
+  float prom = pow(vnoise(pr * 6.0 + 3.0 + vec2(uTime * 0.02, 0.0)), 6.0) * (2.0 + sin(uTime * 1.3 + az * 3.0)) / (1.0 + xs * xs * 60000.0);
   vec3 eclipse = ccol * corona * 0.55 + vec3(1.0, 0.35, 0.4) * prom;
   float px = 2.0 / (uRes.y * uFocal);
   float disk = smoothstep(-px, px, x);
   float hz = smoothstep(-0.02, 0.18, rd.y);                    // sinks into the haze near the horizon
   col = col * disk + eclipse * disk * mix(0.35, 1.0, hz);
+
+  // thin drifting clouds low in the sky: dark, with silver edges near the eclipse
+  if (rd.y > 0.0) {
+    vec2 cp = rd.xz / (rd.y + 0.06) * vec2(0.35, 1.1) + vec2(uTime * 0.012, 0.0);
+    float dens = fbm(cp * 1.6 + vec2(0.0, uTime * 0.004));
+    dens = smoothstep(0.52, 0.8, dens) * smoothstep(0.02, 0.08, rd.y) * (1.0 - smoothstep(0.22, 0.45, rd.y));
+    // lit by the corona ring, not the dark disk: clouds over the disk stay dark
+    float xr = max(x, 0.0) / 0.05;
+    float lit = 0.22 / (1.0 + xr * xr) * smoothstep(-0.025, 0.006, x) + 0.025 / (1.0 + a / 0.3);
+    vec3 cc = vec3(0.004, 0.0042, 0.006) + COR_COL * lit * (0.3 + 0.7 * (1.0 - dens)) * br;
+    col = mix(col, cc, dens * 0.85);
+  }
   return col;
 }
 
@@ -524,7 +579,7 @@ function finishProgram() {
   }
   gl.useProgram(prog);
   gl.bindVertexArray(gl.createVertexArray());
-  for (const name of ['uRes', 'uTime', 'uCam', 'uTarget', 'uFocal', 'uOrb', 'uOrbI', 'uEle', 'uEleZ', 'uTrunk', 'uRocket', 'uFire', 'uSun', 'uFade', 'uFlare', 'uStartle', 'uFrame', 'uStone', 'uStoneB', 'uStoneR', 'uWater', 'uWaterRect', 'uWaterOn']) {
+  for (const name of ['uRes', 'uTime', 'uCam', 'uTarget', 'uFocal', 'uOrb', 'uOrbI', 'uEle', 'uEleZ', 'uTrunk', 'uRocket', 'uFire', 'uSun', 'uFade', 'uFlare', 'uStartle', 'uFrame', 'uStone', 'uStoneB', 'uStoneR', 'uWater', 'uWaterRect', 'uWaterOn', 'uMetA', 'uMetB']) {
     U[name] = gl.getUniformLocation(prog, name);
   }
   return true;
@@ -817,6 +872,7 @@ const state = {
   ele: { x: 1, phase: 0, yaw: 0, pitch: 0, trunk: 0, trunkT: 99, z: -12, startle: 0, snap: 0 },
   rocket: { x: 14, z: -34, lift: 0, fire: 0, mode: 'idle', t: 0, cough: 0, shake: 0 },
   flare: 0,
+  meteor: { a: [0, 1, 0], b: [0, 1, 0], p: -1, next: 5 },
   sun: norm([-0.1, 0.165, -1]),
   halfW: 16,
 };
@@ -1087,6 +1143,24 @@ function update(dt, t, now) {
 
   state.flare *= Math.exp(-dt * 2.2);
 
+  // a meteor every so often
+  const M = state.meteor;
+  if (M.p < 0) {
+    M.next -= dt;
+    if (M.next <= 0) {
+      const dir = (az, el) => [Math.sin(az) * Math.cos(el), Math.sin(el), -Math.cos(az) * Math.cos(el)];
+      const az = (Math.random() - 0.5) * 1.3;
+      const el = 0.3 + Math.random() * 0.35;
+      M.a = dir(az, el);
+      M.b = dir(az + (Math.random() < 0.5 ? -1 : 1) * (0.15 + Math.random() * 0.2), el - 0.1 - Math.random() * 0.12);
+      M.p = 0;
+      M.next = 8 + Math.random() * 16;
+    }
+  } else {
+    M.p += dt / 0.9;
+    if (M.p > 1.3) M.p = -1;
+  }
+
   // dragging: the pointer is a stick drawn through the water
   if (drag.down) {
     const g = groundAt([pointer.x, pointer.y]);
@@ -1217,6 +1291,8 @@ function frame(nowMs) {
   gl.uniform1f(U.uStartle, state.ele.startle);
   gl.uniform1i(U.uFrame, frameNo++);
   uploadStones();
+  gl.uniform4f(U.uMetA, ...state.meteor.a, state.meteor.p);
+  gl.uniform3fv(U.uMetB, state.meteor.b);
   gl.activeTexture(gl.TEXTURE0);
   gl.bindTexture(gl.TEXTURE_2D, water ? water.src.tex : null);
   gl.uniform1i(U.uWater, 0);
