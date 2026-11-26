@@ -159,6 +159,7 @@ uniform vec3  uOrb;
 uniform float uOrbI;
 uniform vec4  uEle;      // x, gait phase, head yaw, head pitch
 uniform float uEleZ;
+uniform float uEleTurn;  // elephant heading (0: facing -x, pi: facing +x)
 uniform float uTrunk;    // 0 hanging .. 1 raised
 uniform vec3  uRocket;   // x, lift, z
 uniform float uFire;
@@ -168,7 +169,7 @@ uniform float uFlare;    // brief brightening on any click
 uniform float uStartle;  // elephant flinch
 uniform int   uFrame;
 
-#define NSTONE 12
+#define NSTONE 7
 uniform vec4  uStone[NSTONE];   // centre xyz, bounding radius
 uniform vec3  uStoneB[NSTONE];  // half extents
 uniform mat3  uStoneR[NSTONE];  // world -> local rotation
@@ -299,7 +300,9 @@ vec2 sdStones(vec3 p) {
 }
 
 vec2 mapObj(vec3 p) {
-  vec2 res = vec2(sdElephant(p - vec3(uEle.x, 0.0, uEleZ)), 1.0);
+  vec3 pe = p - vec3(uEle.x, 0.0, uEleZ);
+  pe.xz = rot(uEleTurn) * pe.xz;
+  vec2 res = vec2(sdElephant(pe), 1.0);
   float r = sdRocket(p - vec3(uRocket.x, uRocket.y, uRocket.z));
   if (r < res.x) res = vec2(r, 2.0);
   vec2 st = sdStones(p);
@@ -479,7 +482,7 @@ vec3 sky(vec3 rd) {
   if (rd.y > 0.0) {
     vec2 cp = rd.xz / (rd.y + 0.06) * vec2(0.35, 1.1) + vec2(uTime * 0.012, 0.0);
     float dens = fbm(cp * 1.6 + vec2(0.0, uTime * 0.004));
-    dens = smoothstep(0.52, 0.8, dens) * smoothstep(0.02, 0.08, rd.y) * (1.0 - smoothstep(0.22, 0.45, rd.y));
+    dens = smoothstep(0.5, 0.8, dens) * smoothstep(0.012, 0.035, rd.y) * (1.0 - smoothstep(0.06, 0.1, rd.y));   // a thin band of mist on the horizon, below the eclipse
     // lit by the corona ring, not the dark disk: clouds over the disk stay dark
     float xr = max(x, 0.0) / 0.05;
     float lit = 0.22 / (1.0 + xr * xr) * smoothstep(-0.025, 0.006, x) + 0.025 / (1.0 + a / 0.3);
@@ -695,7 +698,7 @@ function finishProgram() {
   }
   gl.useProgram(prog);
   gl.bindVertexArray(gl.createVertexArray());
-  for (const name of ['uRes', 'uTime', 'uCam', 'uTarget', 'uFocal', 'uOrb', 'uOrbI', 'uEle', 'uEleZ', 'uTrunk', 'uRocket', 'uFire', 'uSun', 'uFade', 'uFlare', 'uStartle', 'uFrame', 'uStone', 'uStoneB', 'uStoneR', 'uWater', 'uWaterRect', 'uWaterOn', 'uMetA', 'uMetB', 'uJitter', 'uPost', 'uOrbCol', 'uShock']) {
+  for (const name of ['uRes', 'uTime', 'uCam', 'uTarget', 'uFocal', 'uOrb', 'uOrbI', 'uEle', 'uEleZ', 'uEleTurn', 'uTrunk', 'uRocket', 'uFire', 'uSun', 'uFade', 'uFlare', 'uStartle', 'uFrame', 'uStone', 'uStoneB', 'uStoneR', 'uWater', 'uWaterRect', 'uWaterOn', 'uMetA', 'uMetB', 'uJitter', 'uPost', 'uOrbCol', 'uShock']) {
     U[name] = gl.getUniformLocation(prog, name);
   }
   return true;
@@ -753,6 +756,7 @@ function shockRings() {
   const a = new Float32Array(16);
   shocks.slice(0, 4).forEach((sh, i) => {
     const r = sh.age * SHOCK_SPEED;
+    if (!sh.water) return;   // a shock through the air leaves the water alone
     a.set([(sh.o[0] - WATER.minX) / WATER.size, (sh.o[2] - WATER.minZ) / WATER.size, r / WATER.size, -0.012 * sh.str * Math.exp(-sh.age * 0.5)], i * 4);
   });
   return a;
@@ -761,6 +765,7 @@ function shockUniforms() {
   const a = new Float32Array(16);
   shocks.slice(0, 4).forEach((sh, i) => {
     const r = sh.age * SHOCK_SPEED;
+    if (!sh.water) return;
     a.set([sh.o[0], sh.o[2], r, sh.str * Math.exp(-sh.age * 0.45) / (1 + r * 0.08) * Math.min(1, sh.age * 8)], i * 4);
   });
   return a;
@@ -1069,8 +1074,8 @@ const state = {
   orb: [0, 1.8, -8],
   orbI: 0,
   orbCol: [1, 0.8, 0.6],
-  ele: { x: 1, phase: 0, yaw: 0, pitch: 0, trunk: 0, trunkT: 99, z: -12, startle: 0, snap: 0 },
-  rocket: { x: 14, z: -34, lift: 0, fire: 0, mode: 'idle', t: 0, cough: 0, shake: 0 },
+  ele: { x: -1, turn: 0, turnFrom: 0, turnTo: 0, turnT: -1, lane: [-4.8, 0.4], phase: 0, yaw: 0, pitch: 0, trunk: 0, trunkT: 99, z: -12, startle: 0, snap: 0 },
+  rocket: { x: -17, z: -34, lift: 0, fire: 0, mode: 'idle', t: 0, cough: 0, shake: 0 },
   flare: 0,
   meteor: { a: [0, 1, 0], b: [0, 1, 0], p: -1, next: 5 },
   sun: norm([-0.1, 0.165, -1]),
@@ -1088,26 +1093,24 @@ const minScale = 0.45;
 // Never shade more than this many pixels per frame, whatever the screen size.
 const pixelBudget = coarse ? 900000 : 1500000;
 
-// Floating slabs: simple rigid bodies drawn by the shader.
-const NSTONE = 12;
-const stones = (() => {
-  let seed = 7;
-  const rnd = () => { seed = (seed * 16807) % 2147483647; return (seed - 1) / 2147483646; };
-  const list = [];
-  for (let i = 0; i < NSTONE; i++) {
-    const s = 0.12 + rnd() * 0.34;
-    const b = [s * (0.55 + rnd() * 0.5), s * (0.8 + rnd() * 0.6), s * (0.08 + rnd() * 0.16)];
-    const home = [-9.5 + rnd() * 19, 1.0 + rnd() * 4.2, -14 + rnd() * 9];
-    const ax = norm([rnd() - 0.5, rnd() - 0.5, rnd() - 0.5]);
-    const ang = rnd() * Math.PI;
-    list.push({
-      b, r: Math.hypot(...b), home, p: home.slice(), v: [0, 0, 0],
-      q: [ax[0] * Math.sin(ang / 2), ax[1] * Math.sin(ang / 2), ax[2] * Math.sin(ang / 2), Math.cos(ang / 2)],
-      w: [(rnd() - 0.5) * 0.3, (rnd() - 0.5) * 0.3, (rnd() - 0.5) * 0.3], seed: rnd() * 10,
-    });
-  }
-  return list;
-})();
+// Floating slabs: upright monoliths hovering low over the water in a loose
+// procession, receding in size with distance. Homes are set per layout.
+const NSTONE = 7;
+const SLABS = {
+  // x, y, z, size
+  wide: [[-7.4, 1.7, -10.5, 0.22], [1.8, 1.25, -8.6, 0.3], [3.3, 1.9, -10.2, 0.4], [4.9, 1.35, -11.8, 0.27], [6.5, 2.2, -13.4, 0.46], [8.1, 1.55, -15.0, 0.3], [9.8, 2.0, -17.2, 0.36]],
+  tall: [[-3.2, 2.4, -14.0, 0.26], [0.9, 1.0, -6.5, 0.24], [1.9, 1.6, -8.4, 0.34], [2.8, 1.15, -10.4, 0.24], [3.7, 1.9, -12.6, 0.4], [4.6, 1.35, -14.8, 0.28], [5.6, 1.75, -17.4, 0.32]],
+};
+const stones = SLABS.wide.map(([x, y, z, s], i) => {
+  const b = [s * 0.58, s, s * 0.11];
+  const tilt = (i % 2 ? 1 : -1) * 0.05;
+  return {
+    b, r: Math.hypot(...b), home: [x, y, z], p: [x, y, z], v: [0, 0, 0],
+    q: [0, Math.sin(0.25 * i - 0.6) * Math.cos(tilt), Math.sin(tilt), Math.cos(0.25 * i - 0.6)],
+    w: [0, 0.03 * (i % 2 ? 1 : -1), 0], seed: i * 1.7,
+  };
+});
+stones.forEach((st) => { const l = Math.hypot(...st.q); st.q = st.q.map((c) => c / l); });
 const stoneBuf = { c: new Float32Array(NSTONE * 4), b: new Float32Array(NSTONE * 3), r: new Float32Array(NSTONE * 9) };
 
 function layout() {
@@ -1134,8 +1137,12 @@ function layout() {
   state.focal = tall ? 1.3 : 1.9;
   state.camBase = tall ? [0, 1.9, 7.5] : [0, 1.7, 6];
   state.target = tall ? [0, 3.1, -10] : [0, 2.7, -10];
-  state.sun = norm(tall ? [0.02, 0.2, -1] : [-0.1, 0.165, -1]);
-  state.rocket.x = tall ? 6 : 14;
+  // the eclipse alone in clean sky on the upper-right third (centred, higher, on phones)
+  state.sun = norm(tall ? [0.0, 0.34, -1] : [0.25, 0.2, -1]);
+  state.rocket.x = tall ? -9.5 : -17;   // far left on the horizon, balancing the eclipse
+  // the elephant paces a lane left of the eclipse, above the headline
+  state.ele.lane = tall ? [-1.8, 0.6] : [-4.8, 0.4];
+  (tall ? SLABS.tall : SLABS.wide).forEach(([x, y, z], i) => { stones[i].home = [x, y, z]; });
   state.ele.z = -12;
   const dist = state.camBase[2] - state.ele.z;
   state.halfW = (dist * aspect) / state.focal;
@@ -1231,15 +1238,14 @@ canvas.addEventListener('pointerdown', (e) => {
   // Every click: a drop in the water, a flare of the light and the corona,
   // and the slabs near the light are flung outward.
   const g = groundAt([pointer.x, pointer.y]);
-  const at = g || [state.orb[0], state.orb[2]];
-  addDrop(at[0], at[1], at[0], at[1], 0.45, -0.5);
+  if (g) addDrop(g[0], g[1], g[0], g[1], 0.45, -0.5);   // only a click on the water touches it
   drag.down = true;
   drag.last = g;
   state.orbI = Math.max(state.orbI, 2.6);
   state.flare = 1;
   audio.pulse();
   // the shockwave starts where you clicked: on the water, or under the light
-  shocks.push({ o: g ? [g[0], 0, g[1]] : [state.orb[0], state.orb[1], state.orb[2]], age: 0, str: 1, hit: new Set() });
+  shocks.push({ o: g ? [g[0], 0, g[1]] : [state.orb[0], state.orb[1], state.orb[2]], water: !!g, age: 0, str: 1, hit: new Set() });
   if (shocks.length > 4) shocks.shift();
 
   if (target === 'elephant') {
@@ -1271,12 +1277,8 @@ let frameNo = 0;
 const motion = reduceMotion ? 0.35 : 1;
 
 function update(dt, t, now) {
-  // camera drift
-  const px = pointer.active ? pointer.x : 0;
-  const py = pointer.active ? pointer.y : 0;
-  state.cam[0] += (state.camBase[0] + px * 0.35 - state.cam[0]) * damp(1.5, dt);
-  state.cam[1] += (state.camBase[1] + py * 0.15 - state.cam[1]) * damp(1.5, dt);
-  state.cam[2] = state.camBase[2];
+  // a fixed camera
+  state.cam = state.camBase.slice();
 
   // the light
   const idle = !pointer.active || now - pointer.last > 9;
@@ -1298,24 +1300,38 @@ function update(dt, t, now) {
   const hot = clamp(state.flare, 0, 1);
   state.orbCol = [1.0, 0.76 + 0.08 * hue + 0.1 * hot, 0.5 + 0.16 * hue + 0.2 * hot];
 
-  // the elephant walks left; feet stay planted (stride 0.64 per half cycle)
+  // the elephant paces its lane; at each end it turns slowly, head toward us
   const E = state.ele;
   const speed = 0.2;
-  E.x -= speed * dt;
+  const c = Math.cos(E.turn), sn = Math.sin(E.turn);
+  const toWorld = (lx, lz) => [E.x + c * lx + sn * lz, E.z - sn * lx + c * lz];
+  if (E.turnT >= 0) {
+    E.turnT += dt / 6;
+    const k2 = Math.min(1, E.turnT);
+    E.turn = E.turnFrom + (E.turnTo - E.turnFrom) * k2 * k2 * (3 - 2 * k2);
+    if (E.turnT >= 1) E.turnT = -1;
+  } else {
+    const heading = Math.cos(E.turn) > 0 ? -1 : 1;   // facing -x or +x
+    E.x += heading * speed * dt;
+    if ((heading < 0 && E.x < E.lane[0]) || (heading > 0 && E.x > E.lane[1])) {
+      E.turnFrom = E.turn;
+      E.turnTo = heading < 0 ? Math.PI : 0;
+      E.turnT = 0;
+    }
+  }
   const prevPhase = E.phase;
-  E.phase += (speed * Math.PI / 0.64) * dt;
+  E.phase += (speed * Math.PI / 0.64) * dt;   // keeps stepping while turning
   // footfalls ripple the water
   for (let i = 0; i < 4; i++) {
     const off = i === 0 || i === 3 ? 0 : Math.PI;
     if (Math.cos(prevPhase + off) < 0 && Math.cos(E.phase + off) >= 0) {
-      const fx = E.x + (i < 2 ? -0.82 : 0.88) + Math.sin(E.phase + off) * 0.32;
-      const fz = E.z + (i === 0 || i === 3 ? 0.38 : -0.38);
+      const [fx, fz] = toWorld((i < 2 ? -0.82 : 0.88) + Math.sin(E.phase + off) * 0.32, i === 0 || i === 3 ? 0.38 : -0.38);
       addDrop(fx, fz, fx, fz, 0.22, -0.12);
     }
   }
-  if (E.x < -state.halfW - 4) E.x = state.halfW + 4;
-  const head = [E.x - 1.55, 5.0, E.z];
-  const v = sub(state.orb, head);
+  const [hx, hz] = toWorld(-1.55, 0);
+  const v0 = sub(state.orb, [hx, 5.0, hz]);
+  const v = [c * v0[0] - sn * v0[2], v0[1], sn * v0[0] + c * v0[2]];   // into the elephant's own frame
   const yaw = clamp(Math.atan2(v[2], -v[0]), -0.85, 0.85);
   const pitch = clamp(Math.atan2(v[1], Math.hypot(v[0], v[2])), -0.45, 0.35);
   E.snap = Math.max(0, E.snap - dt);
@@ -1462,8 +1478,12 @@ function updateStones(dt, t) {
     }
     // tumble: spin picks up from motion, then settles
     const tq = cross([0, 1, 0], st.v);
-    const ad = Math.exp(-0.9 * dt);
-    for (let i = 0; i < 3; i++) st.w[i] = (st.w[i] + tq[i] * 0.5 * dt) * ad + (i === 1 ? 0.02 * dt : 0);
+    // and an upright-seeking torque brings order back after a disturbance
+    const [ux, uy, uz, uw] = st.q;
+    const up = [2 * (ux * uy - uz * uw), 1 - 2 * (ux * ux + uz * uz), 2 * (uy * uz + ux * uw)];
+    const right = cross(up, [0, 1, 0]);
+    const ad = Math.exp(-1.1 * dt);
+    for (let i = 0; i < 3; i++) st.w[i] = (st.w[i] + (tq[i] * 0.5 + right[i] * 2.2) * dt) * ad;
     const [qx, qy, qz, qw] = st.q;
     const [wx, wy, wz] = st.w;
     const nq = [
@@ -1535,6 +1555,7 @@ function frame(nowMs) {
   gl.uniform1f(U.uOrbI, state.orbI);
   gl.uniform4f(U.uEle, state.ele.x, state.ele.phase, state.ele.yaw, state.ele.pitch);
   gl.uniform1f(U.uEleZ, state.ele.z);
+  gl.uniform1f(U.uEleTurn, state.ele.turn);
   gl.uniform1f(U.uTrunk, state.ele.trunk);
   const R = state.rocket;
   const jitter = (Math.random() - 0.5) * 0.06 * R.shake;
