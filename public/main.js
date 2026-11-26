@@ -450,30 +450,36 @@ vec3 twilight(vec3 rd) {
   return mix(vec3(0.017, 0.012, 0.013), vec3(0.034, 0.019, 0.016), smoothstep(-0.2, 0.9, dot(rd, uSun))) * band;
 }
 
-// Mountains as composed curves rather than noise. Each peak is an inverse
-// falloff, h / (1 + |x/w|^1.3)^2: a firm crest with long concave flanks, with
-// its own width on each side; neighbours join with a smooth maximum.
-// Per peak: centre azimuth, height, left width, right width.
-const vec4 PEAKS[12] = vec4[12](
-  // far
-  vec4(-0.42, 0.13, 0.13, 0.2), vec4(-0.12, 0.068, 0.16, 0.22), vec4(0.62, 0.052, 0.3, 0.4),
-  // middle
-  vec4(-0.72, 0.078, 0.2, 0.16), vec4(0.06, 0.046, 0.22, 0.28), vec4(0.5, 0.058, 0.18, 0.24),
-  // nearer
-  vec4(-0.3, 0.042, 0.3, 0.24), vec4(0.34, 0.03, 0.34, 0.42), vec4(-1.0, 0.05, 0.3, 0.25),
-  // nearest, long and low
-  vec4(-0.85, 0.032, 0.36, 0.3), vec4(0.78, 0.03, 0.3, 0.36), vec4(-0.05, 0.016, 0.5, 0.5)
-);
-
+// Mountain ridgelines: each range is a chain of summits with straight flanks,
+// h - s * sqrt(dx^2 + r^2) (r rounds the crest), joined by a smooth maximum so
+// valleys stay soft. Summits are spaced along the azimuth with hashed jitter,
+// height and slope; ranges dip under the eclipse and rise toward the left.
+float hash11(float p) { p = fract(p * 0.1031); p *= p + 33.33; p *= p + p; return fract(p); }
 float smax(float a, float b, float k) { float h = max(k - abs(a - b), 0.0) / k; return max(a, b) + h * h * k * 0.25; }
 
+// quieter under the eclipse, a taller massif to the left
+float rangeEnv(float x) {
+  return (1.0 - 0.6 * exp(-pow((x - 0.25) / 0.28, 2.0))) * (0.75 + 0.45 * exp(-pow((x + 0.45) / 0.45, 2.0)));
+}
+
 float rangeHeight(int layer, float az) {
-  float h = 0.004;
-  for (int k = 0; k < 3; k++) {
-    vec4 pk = PEAKS[layer * 3 + k];
-    float x = (az - pk.x) / (az < pk.x ? pk.z : pk.w);
-    float f = 1.0 / (1.0 + pow(abs(x), 1.3));   // firm crest, long concave flanks
-    h = smax(h, pk.y * f * f, 0.01);
+  float L = float(layer);
+  float spacing = mix(0.19, 0.13, L / 3.0) * (L == 3.0 ? 1.4 : 1.0);
+  float top = L == 0.0 ? 0.11 : L == 1.0 ? 0.072 : L == 2.0 ? 0.046 : 0.026;
+  float slope = mix(0.62, 0.36, L / 3.0);
+  float h = top * 0.22 * rangeEnv(az);                  // a continuous base: one connected ridge
+  float cell = floor(az / spacing);
+  for (int k = -2; k <= 2; k++) {
+    float c = cell + float(k);
+    float seed = c * 7.13 + L * 31.7;
+    float xc = (c + 0.5 + 0.6 * (hash11(seed) - 0.5)) * spacing;
+    float hc = top * rangeEnv(xc) * (0.45 + 0.55 * hash11(seed + 1.7));
+    float s = slope * (0.8 + 0.4 * hash11(seed + 3.1));
+    float dx = az - xc;
+    h = smax(h, hc - s * sqrt(dx * dx + 0.0004), 0.014);
+    // a lower shoulder summit beside each peak
+    float dx2 = az - (xc + (hash11(seed + 5.3) - 0.5) * spacing * 0.9);
+    h = smax(h, hc * (0.55 + 0.2 * hash11(seed + 6.1)) - s * sqrt(dx2 * dx2 + 0.0003), 0.01);
   }
   return h;
 }
@@ -485,21 +491,18 @@ vec3 mountains(vec3 rd, vec3 col) {
   if (rd.y > 0.15 || rd.y < -0.01) return col;
   float az = atan(rd.x, -rd.z);
   float px = 1.5 / (uRes.y * uFocal);
-  float sa = acos(clamp(dot(rd, uSun), -1.0, 1.0)) / 0.35;
-  float fwd = 1.0 / (1.0 + sa * sa);
-  vec3 base = hazeColor(rd) + twilight(rd);
+  // the colour of the sea where it meets the horizon: every range is a darker shade of it
+  vec3 waterline = hazeColor(normalize(vec3(rd.x, 0.0, rd.z)));
   for (int i = ZERO; i < 4; i++) {
     float fi = float(i);
     float depth = fi / 3.0;                                     // 0 far .. 1 near
     float h = rangeHeight(i, az);
     float inside = smoothstep(h + px, h - px, rd.y);
     if (inside <= 0.0) continue;
-    float below = h - rd.y;
-    vec3 tone = base * mix(0.72, 0.18, depth) * mix(vec3(1.0), vec3(0.92, 1.0, 1.09), depth);
-    tone = mix(tone, base * mix(0.97, 0.72, depth), smoothstep(0.0, 0.06, below) * 0.85);
-    tone += COR_COL * 0.03 * fwd * (1.0 - 0.55 * depth) / (1.0 + (below / 0.0016) * (below / 0.0016));
-    // mist pools at the foot of every range: no hard base where it meets the water
-    tone = mix(base, tone, smoothstep(0.0, 0.028, rd.y));
+    // shape by darkening: far ranges just below the waterline, near ones deeper
+    vec3 tone = waterline * mix(0.84, 0.4, depth) * mix(vec3(1.0), vec3(0.94, 1.0, 1.07), depth);
+    // at the foot, settle into exactly the waterline colour: never brighter below
+    tone = mix(waterline, tone, smoothstep(0.0, 0.022, rd.y));
     col = mix(col, tone, inside);
   }
   return col;
