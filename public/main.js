@@ -178,6 +178,7 @@ uniform float uFire;
 uniform vec3  uSun;      // eclipse direction
 uniform float uFade;
 uniform float uFlare;    // brief brightening on any click
+uniform vec4  uDiamond;  // diamond ring: limb direction xy, -, strength w
 uniform float uStartle;  // elephant flinch
 uniform int   uFrame;
 
@@ -396,23 +397,78 @@ float sunAngle(vec3 rd, out vec2 n) {
 }
 
 // The corona's slow breathing, shared by everything it lights.
-float breathe() { return 1.0 + 0.06 * sin(uTime * 0.37) + 0.04 * sin(uTime * 0.91); }
+float breathe() { return 1.0 + 0.012 * sin(uTime * 0.37) + 0.008 * sin(uTime * 0.91); }
 
-// Corona streamers as radial lobes: for each direction d, pow(max(dot(n, d), 0), p)
-// gives a soft wedge, and 1/(1 + x/reach) fades it out from the limb. The
-// directions drift at their own speeds and the reaches pulse, so it moves.
-float streamers(vec2 n, float xs) {
-  n = rot(xs * 3.5) * n;   // streamers bend a little as they leave the limb
-  float s = 0.0;
-  for (int i = ZERO; i < 9; i++) {
-    float fi = float(i);
-    float ang = fi * 2.39996 + uTime * (0.018 + 0.014 * sin(fi * 1.7));   // golden-angle spread, own drift
-    vec2 d = vec2(cos(ang), sin(ang));
-    float sharp = 10.0 + 34.0 * fract(sin(fi * 12.9898) * 43758.5453);
-    float reach = 0.03 + 0.04 * (0.5 + 0.5 * sin(uTime * (0.17 + 0.05 * fi) + fi * 4.1));
-    s += pow(max(dot(n, d), 0.0), sharp) / (1.0 + xs / reach);
+// The corona, modelled the way it looks in eclipse photographs.
+//  - Brightness falls steeply from the limb: r^-7 (inner) + r^-3 + r^-2 (outer),
+//    with r in solar radii.
+//  - Structure follows a tilted magnetic dipole: field lines are r = L sin^2(theta)
+//    (theta from the pole), so any texture that depends only on L streaks
+//    along the field. Near the poles that gives fine plumes flaring outward;
+//    low over the equator it gives the arches of helmet streamers.
+//  - Helmet streamers are soft wedges pow(max(dot(n, d), 0), p * r) that
+//    narrow as they reach out along the equator.
+// It barely moves: only a faint atmospheric shimmer and very slow change.
+const float SUN_R = 0.062;
+
+vec3 corona(vec2 n, float r) {
+  vec2 pole = vec2(-0.34, 0.94);                        // tilted solar axis
+  vec2 eq = vec2(pole.y, -pole.x);
+  float c = dot(n, pole);
+  float s2 = max(1.0 - c * c, 1e-3);                    // sin^2(theta)
+  float L = r / s2;                                     // dipole field-line label
+  float slow = uTime * 0.004;
+
+  // seeing: the finest structure wobbles a hair
+  vec2 nw = normalize(n + 0.0016 * vec2(sin(uTime * 1.7 + r * 41.0), cos(uTime * 1.3 + r * 37.0)));
+
+  float inner = 1.0 * pow(r, -7.0);
+  float outer = 0.26 * pow(r, -3.0) + 0.085 * pow(r, -2.0);
+
+  // helmet streamers along the (tilted) equator, narrowing outward
+  float helm = 0.0;
+  for (int k = ZERO; k < 5; k++) {
+    float fk = float(k);
+    float off = fk == 0.0 ? -0.22 : fk == 1.0 ? 0.2 : fk == 2.0 ? 0.48 : fk == 3.0 ? -0.08 : 0.34;
+    vec2 base = fk < 2.5 ? eq : -eq;
+    vec2 d = rot(off) * base;
+    float amp = fk == 0.0 ? 1.0 : fk == 1.0 ? 0.7 : fk == 2.0 ? 0.45 : fk == 3.0 ? 0.9 : 0.5;
+    helm += amp * pow(max(dot(nw, d), 0.0), (6.0 + 4.0 * fk) * r);
   }
-  return s;
+  float eqw = pow(s2, 2.0);
+  float shape = 0.22 + 0.35 * eqw + 2.4 * helm;
+
+  // polar plumes and helmet arches: texture that only depends on the field line
+  float lines = vnoise(vec2(log(L) * 26.0 + slow, c > 0.0 ? 0.0 : 9.0));
+  float polar = pow(c * c, 2.5);
+  float plumes = mix(1.0, 0.55 + 0.9 * lines * lines, polar);
+  float arches = mix(1.0, 0.88 + 0.24 * lines, min(1.0, helm) * (1.0 - smoothstep(1.15, 1.7, r)));   // arches only inside helmets
+  // fine radial filaments everywhere beyond the limb
+  float fil = mix(1.0, 0.78 + 0.44 * vnoise(nw * 95.0 + vec2(slow, r * 0.6)), smoothstep(1.02, 1.25, r));
+
+  float I = inner * (0.85 + 0.15 * eqw) + outer * shape * plumes * arches * fil;
+  vec3 tint = mix(vec3(1.0, 0.97, 0.93), vec3(0.82, 0.86, 0.98), smoothstep(1.05, 2.6, r));   // warm rim, pearly grey further out
+  return tint * I;
+}
+
+// Prominences: small pink loops sitting on the limb, each an elliptical arc
+// with a 1/(1+x^2) cross-section, broken up a little by noise.
+float prominences(vec2 n, float r) {
+  float p = 0.0;
+  for (int k = ZERO; k < 3; k++) {
+    float fk = float(k);
+    float ang = fk == 0.0 ? 2.25 : fk == 1.0 ? -0.55 : 3.9;
+    vec2 d = vec2(cos(ang), sin(ang));
+    vec2 tn = vec2(-d.y, d.x);
+    float w = fk == 1.0 ? 0.11 : 0.075;
+    float hgt = fk == 1.0 ? 0.09 : 0.055 + 0.015 * fk;
+    vec2 q = vec2(dot(n, tn) * r / w, (r - 0.995) / hgt);
+    float e = length(q) - 1.0;
+    float arc = 1.0 / (1.0 + e * e * 60.0) * step(0.0, q.y) * smoothstep(1.4, 0.8, abs(q.x));
+    float body = exp(-dot(q, q) * 2.2) * 0.35;          // a little glowing body inside the loop
+    p += (arc + body) * (0.6 + 0.5 * vnoise(q * 3.0 + fk * 7.0));
+  }
+  return p;
 }
 
 // The light's colour by brightness: ember-rose in the dim falloff, amber in
@@ -437,8 +493,9 @@ vec3 hazeColor(vec3 rd) {
   float h = clamp(rd.y * 4.0, 0.0, 1.0);
   vec3 col = mix(vec3(0.0078, 0.0064, 0.0084), vec3(0.0058, 0.0066, 0.0098), h);
   col *= mix(vec3(0.94, 1.02, 1.04), vec3(1.05, 0.99, 0.96), smoothstep(-0.6, 0.9, dot(rd, uSun)));
-  col += COR_COL * 0.06 * breathe() * (1.0 + uFlare) / (1.0 + (a / 0.2) * (a / 0.2));   // forward scatter toward the eclipse
-  col += vec3(0.05, 0.035, 0.04) * pow(c, 6.0) * 0.4;
+  // scattered coronal light: tight, not a lamp in fog
+  col += COR_COL * (0.022 / (1.0 + (a / 0.11) * (a / 0.11)) + 0.006 / (1.0 + (a / 0.45) * (a / 0.45))) * breathe() * (1.0 + uFlare);
+  col += vec3(0.05, 0.035, 0.04) * pow(c, 6.0) * 0.12;
   return col;
 }
 
@@ -539,22 +596,42 @@ vec3 sky(vec3 rd) {
     col += mc * fade * (0.6 / (1.0 + d * d * 4e6) + 0.02 / (1.0 + d * d * 2e4));
   }
 
-  // the eclipse: k/(x+e) glow shaped by moving radial streamers
-  const float R = 0.083;
-  float x = a - R;
-  float xs = max(x, 0.0);
-  float corona = 0.0025 / (xs + 0.0028);                      // k/(x+e)
-  float st = 0.3 + 1.4 * streamers(n, xs);
-  corona *= mix(1.0, st, smoothstep(0.0, 0.03, xs)) * br * (1.0 + uFlare * 1.4);
-  corona += 0.0006 / (xs * xs * 40.0 + 0.0006) * 0.6;         // thin bright limb, 1/(1+x^2)
-  float chrom = 0.35 / (1.0 + (xs / 0.0022) * (xs / 0.0022)) * br;   // the pink chromosphere, a hairline
-  vec3 ccol = mix(vec3(1.0, 0.96, 0.92), COR_COL * vec3(0.8, 0.85, 1.0), smoothstep(0.0, 0.12, xs));
-  float prom = pow(vnoise(n * 6.0 + 3.0 + vec2(uTime * 0.02, 0.0)), 6.0) * (2.0 + sin(uTime * 1.3 + n.x * 3.0)) / (1.0 + xs * xs * 60000.0);
-  vec3 eclipse = ccol * corona * 0.55 + vec3(1.0, 0.35, 0.4) * prom + vec3(1.0, 0.3, 0.45) * chrom;
+  // the eclipse
+  float x = a - SUN_R;
+  float r = max(a / SUN_R, 1.0);
   float px = 2.0 / (uRes.y * uFocal);
-  float disk = smoothstep(-px, px, x);
+  float disk = smoothstep(-px, px, x);                         // crisp limb, anti-aliased to a pixel
+  float dia = uDiamond.w;
+  vec3 eclipse = corona(n, r) * 0.5 * br * (1.0 + uFlare * 0.6) * (1.0 - 0.5 * dia);
+  float xs = max(x, 0.0);
+  eclipse += vec3(1.0, 0.32, 0.42) * 0.45 / (1.0 + (xs / 0.0008) * (xs / 0.0008));   // chromosphere: a hairline
+  eclipse += vec3(1.0, 0.28, 0.38) * prominences(n, r) * 1.6;
+  // diamond ring and Baily's beads: the last sliver of sun at one point on the limb
+  if (dia > 0.001) {
+    vec2 bd = uDiamond.xy;
+    vec2 tn = vec2(-bd.y, bd.x);
+    vec2 q = n * a - bd * SUN_R;                                // offset from the limb point, in radians
+    float d2 = dot(q, q);
+    // a blinding core blooming over the limb, glare, and a wide soft wash: all 1/(1+x^2)
+    eclipse += vec3(1.0, 0.97, 0.92) * dia * (40.0 / (1.0 + d2 / 4e-6) + 3.0 / (1.0 + d2 / 4e-5) + 0.35 / (1.0 + d2 / 9e-4));
+    float beads = 0.0;
+    for (int k = ZERO; k < 4; k++) {
+      float o = (float(k) - 1.5) * 0.11 + (float(k) > 1.5 ? 0.12 : -0.12);
+      vec2 bp = (bd * cos(o) + tn * sin(o)) * SUN_R;
+      vec2 bq = n * a - bp;
+      beads += (6.0 - 1.2 * abs(float(k) - 1.5)) / (1.0 + dot(bq, bq) / 1.2e-6);
+    }
+    eclipse += vec3(1.0, 0.95, 0.9) * dia * beads;
+  }
+  // the moon: earthshine, a faint mottled grey, never pure black
+  vec2 mq = n * (a / SUN_R);
+  vec3 moon = vec3(0.0032, 0.0037, 0.0052) * (0.7 + 0.6 * fbm(mq * 3.5 + 2.0)) * (1.0 + 0.4 * dia);
   float hz = smoothstep(-0.02, 0.18, rd.y);                    // sinks into the haze near the horizon
-  col = col * disk + eclipse * disk * mix(0.35, 1.0, hz);
+  col = mix(moon, col + eclipse * mix(0.35, 1.0, hz), disk);
+  if (dia > 0.001) {
+    vec2 q2 = n * a - uDiamond.xy * SUN_R;
+    col += vec3(1.0, 0.97, 0.92) * dia * 12.0 / (1.0 + dot(q2, q2) / 3e-6) * (1.0 - disk);   // glare bleeding over the moon's edge
+  }
 
   col = mountains(rd, col);
 
@@ -773,7 +850,7 @@ function finishProgram() {
   }
   gl.useProgram(prog);
   gl.bindVertexArray(gl.createVertexArray());
-  for (const name of ['uRes', 'uTime', 'uCam', 'uTarget', 'uFocal', 'uOrb', 'uOrbI', 'uEle', 'uEleZ', 'uEleTurn', 'uTrunk', 'uRocket', 'uFire', 'uSun', 'uFade', 'uFlare', 'uStartle', 'uFrame', 'uStone', 'uStoneB', 'uStoneR', 'uWater', 'uWaterRect', 'uWaterOn', 'uMetA', 'uMetB', 'uJitter', 'uPost', 'uOrbCol', 'uShock']) {
+  for (const name of ['uRes', 'uTime', 'uCam', 'uTarget', 'uFocal', 'uOrb', 'uOrbI', 'uEle', 'uEleZ', 'uEleTurn', 'uTrunk', 'uRocket', 'uFire', 'uSun', 'uFade', 'uFlare', 'uDiamond', 'uStartle', 'uFrame', 'uStone', 'uStoneB', 'uStoneR', 'uWater', 'uWaterRect', 'uWaterOn', 'uMetA', 'uMetB', 'uJitter', 'uPost', 'uOrbCol', 'uShock']) {
     U[name] = gl.getUniformLocation(prog, name);
   }
   return true;
@@ -1154,6 +1231,7 @@ const state = {
   ele: { x: -1, turn: 0, turnFrom: 0, turnTo: 0, turnT: -1, lane: [-4.8, 0.4], phase: 0, yaw: 0, pitch: 0, trunk: 0, trunkT: 99, z: -12, startle: 0, snap: 0 },
   rocket: { x: -17, z: -34, lift: 0, fire: 0, mode: 'idle', t: 0, cough: 0, shake: 0 },
   flare: 0,
+  diamond: { dir: [0.7, 0.7], t: -1, w: 0 },
   meteor: { a: [0, 1, 0], b: [0, 1, 0], p: -1, next: 5 },
   sun: norm([-0.1, 0.165, -1]),
   halfW: 16,
@@ -1312,6 +1390,13 @@ canvas.addEventListener('pointerdown', (e) => {
   const target = targetAt([pointer.x, pointer.y]);
   try { canvas.setPointerCapture(e.pointerId); } catch { /* ignore */ }
 
+  // a click on the eclipse: the diamond ring, the last sliver of sun on the limb
+  const sp = project([state.cam[0] + state.sun[0] * 1000, state.cam[1] + state.sun[1] * 1000, state.cam[2] + state.sun[2] * 1000]);
+  if (Math.hypot(sp[0] - pointer.x, sp[1] - pointer.y) < 0.062 * state.focal * 1.8) {
+    const ang = Math.PI * 0.25 + (Math.random() - 0.5) * 1.4;
+    state.diamond = { dir: [Math.cos(ang), Math.sin(ang)], t: 0, w: 0 };
+  }
+
   // Every click: a drop in the water, a flare of the light and the corona,
   // and the slabs near the light are flung outward.
   const g = groundAt([pointer.x, pointer.y]);
@@ -1441,6 +1526,13 @@ function update(dt, t, now) {
   }
 
   state.flare *= Math.exp(-dt * 2.2);
+  const D = state.diamond;
+  if (D.t >= 0) {
+    D.t += dt;
+    D.w = D.t < 0.15 ? D.t / 0.15 : Math.exp(-(D.t - 0.5) * 1.3) * (D.t < 0.5 ? 1 : 1);
+    D.w = Math.min(1, D.w);
+    if (D.t > 5) { D.t = -1; D.w = 0; }
+  }
 
   // a meteor every so often
   const M = state.meteor;
@@ -1639,6 +1731,7 @@ function frame(nowMs) {
   gl.uniform3f(U.uRocket, R.x + jitter, R.lift + Math.abs(jitter) * 0.5, R.z);
   gl.uniform1f(U.uFire, Math.max(R.fire, R.cough * 0.35));
   gl.uniform1f(U.uFlare, state.flare);
+  gl.uniform4f(U.uDiamond, state.diamond.dir[0], state.diamond.dir[1], 0, state.diamond.w);
   gl.uniform1f(U.uStartle, state.ele.startle);
   gl.uniform1i(U.uFrame, frameNo++);
   uploadStones();
