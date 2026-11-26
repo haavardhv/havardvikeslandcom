@@ -323,11 +323,11 @@ vec2 mapObj(vec3 p) {
   return res;
 }
 
-vec3 calcNormal(vec3 p) {
+vec3 calcNormal(vec3 p, float eps) {
   vec3 n = vec3(0.0);
   for (int i = ZERO; i < 4; i++) {
     vec3 e = 0.5773 * (2.0 * vec3(float(((i + 3) >> 1) & 1), float((i >> 1) & 1), float(i & 1)) - 1.0);
-    n += e * mapObj(p + 0.0015 * e).x;
+    n += e * mapObj(p + eps * e).x;
   }
   return normalize(n);
 }
@@ -361,14 +361,14 @@ vec2 marchAA(vec3 ro, vec3 rd, float tmax, float pxr, out vec3 edge) {
 }
 
 float softShadow(vec3 ro, vec3 rd, float maxt, float k) {
-  float res = 1.0, t = 0.03, ph = 1e10;
-  for (int i = ZERO; i < 48; i++) {
+  float res = 1.0, t = 0.05, ph = 1e10;
+  for (int i = ZERO; i < 64; i++) {
     float h = mapObj(ro + rd * t).x;
     float y = h * h / (2.0 * ph);
     float d = sqrt(max(h * h - y * y, 0.0));
     res = min(res, k * d / max(0.0, t - y));
     ph = h;
-    t += clamp(h, 0.03, 0.6);
+    t += clamp(h * 0.85, 0.02, 0.45);
     if (res < 0.002 || t > maxt) break;
   }
   res = clamp(res, 0.0, 1.0);
@@ -715,7 +715,13 @@ vec3 applyFog(vec3 col, vec3 ro, vec3 rd, float t) {
 
 /* ---------- shading ---------- */
 vec3 shadeObj(vec3 p, vec3 rd, float id, bool cheap) {
-  vec3 n = calcNormal(p);
+  // normals sampled at a scale that suits the distance (no fine grain far away)
+  float eps = clamp(0.0004 * length(p - uCam), 0.0015, 0.02);
+  vec3 n = calcNormal(p, eps);
+  // snap onto the surface first: edge pixels arrive from a near miss, slightly
+  // outside, and shading there gave dark speckled fringes
+  p -= n * mapObj(p).x;
+  n = calcNormal(p, eps);
   vec3 alb = id < 1.5 ? vec3(0.4, 0.38, 0.36) : id < 2.5 ? vec3(0.07, 0.07, 0.075) : id < 3.5 ? vec3(0.035, 0.034, 0.036) : vec3(0.32, 0.3, 0.28);
   vec3 L = uOrb - p;
   float dl = length(L);
@@ -723,9 +729,9 @@ vec3 shadeObj(vec3 p, vec3 rd, float id, bool cheap) {
   float att = uOrbI / (1.0 + 0.22 * dl * dl);
   float wrap = id < 1.5 ? 0.25 : 0.0;
   float dif = clamp((dot(n, L) + wrap) / (1.0 + wrap), 0.0, 1.0);
-  float sh = cheap ? 1.0 : softShadow(p + n * 0.04, L, dl, 10.0);
+  float sh = cheap ? 1.0 : softShadow(p + n * 0.06, L, dl, 8.0);
   float ao = cheap ? 1.0 : calcAO(p, n);
-  if (id < 1.5) alb *= 0.8 + 0.35 * fbm(p.xy * 5.0 + p.z * 3.0);   // weathered skin
+  if (id < 1.5) alb *= 0.94 + 0.1 * vnoise(p.xy * 1.3 + p.z * 0.7);   // a gentle, large-scale variation in the skin
   vec3 tone = lightTone(att * 3.0);
   vec3 col = alb * tone * dif * att * sh;
   if (id > 1.5) {
