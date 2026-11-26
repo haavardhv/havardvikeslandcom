@@ -181,6 +181,8 @@ uniform float uEleTurn;  // elephant heading (0: facing -x, pi: facing +x)
 uniform float uTrunk;    // 0 hanging .. 1 raised
 uniform vec3  uRocket;   // x, lift, z
 uniform float uFire;
+uniform vec4  uTrail;    // launch trail: x, z, top height, strength
+uniform float uTrailAge; // seconds since launch
 uniform vec3  uSun;      // eclipse direction
 uniform float uFade;
 uniform float uFlare;    // brief brightening on any click
@@ -706,20 +708,70 @@ vec3 rocketLights(vec3 ro, vec3 rd, float tmax) {
   vec2 bp = rayPoint(ro, rd, base + vec3(0.0, 5.18, 0.0));
   float blink = pow(max(sin(uTime * 1.4), 0.0), 18.0);
   if (bp.y < tmax + 0.2) col += vec3(1.0, 0.18, 0.12) * blink * (0.6 / (1.0 + bp.x * bp.x * 9000.0) + 0.012 / (1.0 + bp.x * bp.x * 40.0));
-  // exhaust: a line light under the nozzle
+  // exhaust plume: a widening, turbulent jet with shock diamonds
   if (uFire > 0.001) {
-    vec3 A = base + vec3(0.0, 0.05, 0.0);
-    vec3 B = base - vec3(0.0, 1.6 + 0.6 * uFire, 0.0);
+    float len = (3.6 + 4.2 * uFire) * (1.0 + 0.06 * sin(uTime * 23.0) + 0.04 * sin(uTime * 37.0));
+    vec3 A = base + vec3(0.0, 0.08, 0.0);
+    vec3 B = A - vec3(0.0, len, 0.0);
+    vec3 ba = B - A, w0 = ro - A;
+    float bb = dot(rd, ba), c = dot(ba, ba), d = dot(rd, w0), e = dot(ba, w0);
+    float s = clamp((e - bb * d) / max(c - bb * bb, 1e-5), 0.0, 1.0);   // 0 at the nozzle .. 1 at the tail
+    vec2 ep = rayPoint(ro, rd, A + ba * s);
+    float occl = ep.y < tmax + 0.3 ? 1.0 : 0.0;
+    float r = mix(0.2, 1.0, pow(s, 0.8)) * (0.75 + 0.25 * uFire);    // the jet widens as it leaves the nozzle
+    float q = ep.x / r;
+    float turb = 0.6 + 0.8 * vnoise(vec2(s * 9.0 - uTime * 14.0, q * 2.0 + floor(uTime * 3.0)));
+    turb = mix(1.0, turb, smoothstep(0.1, 0.6, s));
+    float tail = 1.0 - smoothstep(0.55, 1.0, s);
+    float core = 1.0 / (1.0 + q * q * 18.0) * pow(1.0 - s, 4.0);
+    float body = 1.0 / (1.0 + q * q * 2.2) * tail * turb;
+    float halo = 1.0 / (1.0 + ep.x * ep.x * 1.2) * (1.0 - s);
+    // shock diamonds: evenly spaced bright nodes, fading down the jet
+    float dm = pow(0.5 + 0.5 * cos(s * 6.2831853 * 4.0), 12.0) * exp(-s * 2.6) / (1.0 + (ep.x / 0.17) * (ep.x / 0.17)) * smoothstep(0.04, 0.14, s);
+    vec3 hot = vec3(0.75, 0.86, 1.0);                                // blue-white at the nozzle
+    vec3 bodyCol = mix(mix(vec3(1.0, 0.78, 0.42), vec3(1.0, 0.45, 0.12), smoothstep(0.1, 0.5, s)), vec3(0.7, 0.12, 0.04), smoothstep(0.5, 1.0, s));
+    vec3 jet = hot * core * 1.1 + vec3(1.0, 0.92, 0.72) * dm * 1.3 + bodyCol * body * 0.3 + vec3(1.0, 0.5, 0.2) * halo * 0.015;
+    col += jet * uFire * occl;
+
+    // where the jet meets the water: a low, glowing billow of steam
+    float ground = smoothstep(len + 0.8, len * 0.4, base.y);
+    if (ground > 0.0) {
+      for (int k = ZERO; k < 3; k++) {
+        float fk = float(k) - 1.0;
+        vec3 G = vec3(base.x + fk * (0.9 + 0.3 * sin(uTime * 2.0 + fk)), 0.25 + 0.15 * abs(fk), base.z + 0.3 * fk);
+        vec2 gp = rayPoint(ro, rd, G);
+        if (gp.y > tmax + 1.0) continue;
+        float n = 0.7 + 0.6 * vnoise(vec2(gp.x * 3.0 + uTime * 1.5, fk * 4.0));
+        col += vec3(1.0, 0.5, 0.2) * uFire * ground * n * (0.05 / (1.0 + gp.x * gp.x * 1.5) + 0.25 / (1.0 + gp.x * gp.x * 12.0));
+      }
+    }
+  }
+
+  // the launch trail: a leaning column of smoke from the water up to the rocket,
+  // older (lower) parts wider, drifting and fading; lit orange near the flame
+  if (uTrail.w > 0.001 && uTrail.z > 0.2) {
+    float drift = 0.18 * uTrailAge;
+    vec3 A = vec3(uTrail.x + drift, 0.0, uTrail.y);
+    vec3 B = vec3(uTrail.x, uTrail.z, uTrail.y);
     vec3 ba = B - A, w0 = ro - A;
     float bb = dot(rd, ba), c = dot(ba, ba), d = dot(rd, w0), e = dot(ba, w0);
     float s = clamp((e - bb * d) / max(c - bb * bb, 1e-5), 0.0, 1.0);
     vec3 P = A + ba * s;
-    vec2 ep = rayPoint(ro, rd, P);
-    float fl = 0.8 + 0.2 * vnoise(vec2(uTime * 25.0, s * 6.0));
-    float w = mix(1.0, 0.25, s);
-    vec3 fc = mix(mix(vec3(1.0, 0.92, 0.8), vec3(1.0, 0.5, 0.14), smoothstep(0.0, 0.45, s)), vec3(0.85, 0.16, 0.05), smoothstep(0.45, 1.0, s));
-    float occl = ep.y < tmax + 0.3 ? 1.0 : 0.0;
-    col += fc * uFire * fl * occl * w * (0.9 / (1.0 + ep.x * ep.x * 1800.0) + 0.04 / (1.0 + ep.x * ep.x * 25.0));
+    vec2 tp = rayPoint(ro, rd, P);
+    if (tp.y < tmax + 1.0) {
+      float y = P.y;
+      float age = max(uTrailAge - (0.35 + sqrt(y / 1.1)), 0.0);   // when the rocket passed this height
+      float w = 0.22 + 0.1 * age;
+      float q = tp.x / w;
+      float dens = 1.0 / (1.0 + q * q * 3.0) * (0.55 + 0.9 * vnoise(vec2(y * 0.9 - uTime * 0.25, q * 1.5 + age * 0.3)));
+      dens *= exp(-age * 0.1) * uTrail.w / (1.0 + 0.4 * w) * 0.5;
+      float nearFlame = exp(-max(uRocket.y - y, 0.0) * 0.9) * uFire;
+      // grey smoke, faintly lit by the corona; warm only just below the flame
+      vec3 smoke = mix(vec3(0.03, 0.031, 0.037), vec3(0.6, 0.27, 0.1), nearFlame)
+                 + vec3(0.5, 0.2, 0.07) * exp(-y * 1.2) * uFire;   // the steam at the base, while it burns
+      // smoke also hides what is behind it a little
+      col = col * (1.0 - 0.35 * min(dens, 1.0)) + smoke * dens;
+    }
   }
   return col;
 }
@@ -819,6 +871,14 @@ vec3 shadeGround(vec3 p, vec3 ro, vec3 rd) {
   float ao = calcAO(p, vec3(0.0, 1.0, 0.0));
   vec3 alb = mix(vec3(0.052, 0.048, 0.046), vec3(0.019, 0.021, 0.024), wet);   // drier is warmer, wet leans cool
   vec3 diff = alb * lightTone(att * 3.0) * max(dot(n, L), 0.0) * att * sh + alb * fillLight(n.y) * ao;
+  // the rocket's flame lights the water around it, flickering
+  if (uFire > 0.001) {
+    vec3 F = vec3(uRocket.x, max(uRocket.y - 1.0, 0.4), uRocket.z);
+    vec3 LF = F - p;
+    float d2 = dot(LF, LF);
+    float fl = 0.85 + 0.15 * sin(uTime * 31.0) * sin(uTime * 17.0);
+    diff += alb * vec3(1.0, 0.5, 0.2) * uFire * fl * 26.0 / (1.0 + 0.35 * d2) * max(dot(n, LF * inversesqrt(d2)), 0.0);
+  }
   vec3 col = mix(diff, refl * ao, clamp(fre * mix(0.35, 1.0, wet) + wet * 0.12, 0.0, 1.0));
   // shockwave fronts: a travelling ring of light, 1/(1+x^2) across its width
   for (int i = ZERO; i < 4; i++) {
@@ -901,7 +961,7 @@ function finishProgram() {
   }
   gl.useProgram(prog);
   gl.bindVertexArray(gl.createVertexArray());
-  for (const name of ['uRes', 'uTime', 'uCam', 'uTarget', 'uFocal', 'uOrb', 'uOrbI', 'uEle', 'uEleZ', 'uEleTurn', 'uTrunk', 'uRocket', 'uFire', 'uSun', 'uFade', 'uFlare', 'uDiamond', 'uStartle', 'uFrame', 'uStone', 'uStoneB', 'uStoneR', 'uWater', 'uWaterRect', 'uWaterOn', 'uMetA', 'uMetB', 'uJitter', 'uPost', 'uOrbCol', 'uShock']) {
+  for (const name of ['uRes', 'uTime', 'uCam', 'uTarget', 'uFocal', 'uOrb', 'uOrbI', 'uEle', 'uEleZ', 'uEleTurn', 'uTrunk', 'uRocket', 'uFire', 'uTrail', 'uTrailAge', 'uSun', 'uFade', 'uFlare', 'uDiamond', 'uStartle', 'uFrame', 'uStone', 'uStoneB', 'uStoneR', 'uWater', 'uWaterRect', 'uWaterOn', 'uMetA', 'uMetB', 'uJitter', 'uPost', 'uOrbCol', 'uShock']) {
     U[name] = gl.getUniformLocation(prog, name);
   }
   return true;
@@ -1280,7 +1340,7 @@ const state = {
   orbI: 0,
   orbCol: [1, 0.8, 0.6],
   ele: { x: -1, turn: 0, turnFrom: 0, turnTo: 0, turnT: -1, lane: [-4.8, 0.4], phase: 0, yaw: 0, pitch: 0, trunk: 0, trunkT: 99, z: -12, startle: 0, snap: 0 },
-  rocket: { x: -17, z: -34, lift: 0, fire: 0, mode: 'idle', t: 0, cough: 0, shake: 0 },
+  rocket: { x: -17, z: -34, lift: 0, fire: 0, mode: 'idle', t: 0, cough: 0, shake: 0, trail: { age: 0, top: 0, str: 0 } },
   flare: 0,
   diamond: { dir: [0.7, 0.7], t: -1, w: 0 },
   meteor: { a: [0, 1, 0], b: [0, 1, 0], p: -1, next: 5 },
@@ -1472,6 +1532,7 @@ canvas.addEventListener('pointerdown', (e) => {
     if (R.mode === 'idle') {
       R.mode = 'launch';
       R.t = 0;
+      R.trail = { age: 0, top: 0, str: 1 };
       audio.launch();
     } else {
       R.shake = 1;
@@ -1561,6 +1622,12 @@ function update(dt, t, now) {
   R.t += dt;
   R.cough *= Math.exp(-dt * 4);
   R.shake *= Math.exp(-dt * 5);
+  const T = R.trail;
+  if (T.str > 0) {
+    T.age += dt;
+    if (R.mode === 'launch') T.top = Math.max(T.top, Math.min(R.lift, 45));
+    else T.str = Math.max(0, T.str - dt / 16);
+  }
   if (R.mode === 'launch') {
     R.fire = Math.min(1, R.t / 0.12);
     R.shake = Math.max(R.shake, R.t < 0.5 ? 1 : 0);
@@ -1781,6 +1848,8 @@ function frame(nowMs) {
   const jitter = (Math.random() - 0.5) * 0.06 * R.shake;
   gl.uniform3f(U.uRocket, R.x + jitter, R.lift + Math.abs(jitter) * 0.5, R.z);
   gl.uniform1f(U.uFire, Math.max(R.fire, R.cough * 0.35));
+  gl.uniform4f(U.uTrail, R.x, R.z, R.trail.top, R.trail.str);
+  gl.uniform1f(U.uTrailAge, R.trail.age);
   gl.uniform1f(U.uFlare, state.flare);
   gl.uniform4f(U.uDiamond, state.diamond.dir[0], state.diamond.dir[1], 0, state.diamond.w);
   gl.uniform1f(U.uStartle, state.ele.startle);
