@@ -97,6 +97,8 @@ void main() {
   vec3 mn = min(c, min(min(n, s), min(e, w))), mx = max(c, max(max(n, s), max(e, w)));
   c = clamp(c + (4.0 * c - n - s - e - w) * 0.18, mn, mx);
   c = grade(c);
+  // the white balance wanders by about 1% over a couple of minutes
+  c *= 1.0 + 0.011 * vec3(sin(uTime * 0.05), sin(uTime * 0.05 + 2.1), sin(uTime * 0.05 + 4.2));
   c *= 0.32 + 0.68 * pow(16.0 * tc.x * tc.y * (1.0 - tc.x) * (1.0 - tc.y), 0.24);
   c += (hash12(gl_FragCoord.xy + fract(uTime * 7.31) * 113.0) - 0.5) * 0.022;
   o = vec4(c * uFade, 1.0);
@@ -398,10 +400,28 @@ float streamers(vec2 n, float xs) {
   return s;
 }
 
+// The light's colour by brightness: ember-rose in the dim falloff, amber in
+// the body, white-gold where it is brightest. b is a brightness (0..inf);
+// b/(1+b) maps it to 0..1. Tones are luminance-matched so only hue shifts.
+vec3 lightTone(float b) {
+  float x = b / (1.0 + b);
+  vec3 c = mix(vec3(1.0, 0.6, 0.47), vec3(0.97, 0.79, 0.6), smoothstep(0.05, 0.45, x));
+  c = mix(c, vec3(0.9, 0.86, 0.8), smoothstep(0.45, 0.95, x));
+  return c / dot(c, vec3(0.2126, 0.7152, 0.0722)) * 0.8 * (uOrbCol / vec3(1.0, 0.8, 0.58));
+}
+
+// Fill light by facing: cool sky from above, a faint warm bounce from the water below.
+vec3 fillLight(float ny) {
+  return mix(vec3(0.034, 0.026, 0.024), vec3(0.026, 0.032, 0.046), 0.5 + 0.5 * ny);
+}
+
 vec3 hazeColor(vec3 rd) {
   float a = acos(clamp(dot(rd, uSun), -1.0, 1.0));
   float c = max(dot(rd, uSun), 0.0);
-  vec3 col = vec3(0.0065, 0.0065, 0.009);
+  // dusty mauve low, cool indigo higher; warmer toward the eclipse, a touch teal away from it
+  float h = clamp(rd.y * 4.0, 0.0, 1.0);
+  vec3 col = mix(vec3(0.0078, 0.0064, 0.0084), vec3(0.0058, 0.0066, 0.0098), h);
+  col *= mix(vec3(0.94, 1.02, 1.04), vec3(1.05, 0.99, 0.96), smoothstep(-0.6, 0.9, dot(rd, uSun)));
   col += COR_COL * 0.06 * breathe() * (1.0 + uFlare) / (1.0 + (a / 0.2) * (a / 0.2));   // forward scatter toward the eclipse
   col += vec3(0.05, 0.035, 0.04) * pow(c, 6.0) * 0.4;
   return col;
@@ -409,7 +429,8 @@ vec3 hazeColor(vec3 rd) {
 
 vec3 sky(vec3 rd) {
   float y = max(rd.y, 0.0);
-  vec3 col = mix(hazeColor(rd), vec3(0.0012, 0.0014, 0.0026), pow(y, 0.5));
+  vec3 zen = mix(vec3(0.0016, 0.0016, 0.003), vec3(0.0011, 0.0014, 0.0028), smoothstep(0.3, 0.9, y));
+  vec3 col = mix(hazeColor(rd), zen, pow(y, 0.5));
   vec2 n;
   float a = sunAngle(rd, n);
   float br = breathe();
@@ -484,7 +505,7 @@ vec3 orbLight(vec3 ro, vec3 rd, float tmax) {
   // haze in-scattering: integral of 1/(h^2 + (s-b)^2) ds over [0, tm]
   float tm = min(tmax, 80.0);
   float scat = (atan((tm - b) / h) + atan(b / h)) / h;
-  return ORB_COL * uOrbI * (vis * (core * 6.0 + halo * 0.06) + scat * 0.006);
+  return uOrbI * (vis * (lightTone(6.0) * core * 6.0 + lightTone(0.9) * halo * 0.06) + lightTone(0.12) * scat * 0.006);
 }
 
 vec3 rocketLights(vec3 ro, vec3 rd, float tmax) {
@@ -532,12 +553,13 @@ vec3 shadeObj(vec3 p, vec3 rd, float id, bool cheap) {
   float sh = cheap ? 1.0 : softShadow(p + n * 0.04, L, dl, 10.0);
   float ao = cheap ? 1.0 : calcAO(p, n);
   if (id < 1.5) alb *= 0.8 + 0.35 * fbm(p.xy * 5.0 + p.z * 3.0);   // weathered skin
-  vec3 col = alb * ORB_COL * dif * att * sh;
+  vec3 tone = lightTone(att * 3.0);
+  vec3 col = alb * tone * dif * att * sh;
   if (id > 1.5) {
     vec3 hv = normalize(L - rd);
-    col += ORB_COL * att * sh * pow(max(dot(n, hv), 0.0), 48.0) * 0.5;
+    col += lightTone(att * 8.0) * att * sh * pow(max(dot(n, hv), 0.0), 48.0) * 0.5;
   }
-  col += alb * (vec3(0.03, 0.031, 0.04) * (0.55 + 0.45 * n.y)) * ao;
+  col += alb * fillLight(n.y) * ao;
   float rim = pow(clamp(1.0 + dot(n, rd), 0.0, 1.0), 3.0) * ao;
   col += COR_COL * rim * (0.1 * smoothstep(0.6, 1.0, dot(rd, uSun)) + 0.015);
   return col;
@@ -589,18 +611,19 @@ vec3 shadeGround(vec3 p, vec3 ro, vec3 rd) {
   float att = uOrbI / (1.0 + 0.22 * dl * dl);
   float sh = softShadow(p + vec3(0.0, 0.01, 0.0), L, dl, 9.0);
   float ao = calcAO(p, vec3(0.0, 1.0, 0.0));
-  vec3 alb = mix(vec3(0.05, 0.048, 0.05), vec3(0.02, 0.02, 0.022), wet);
-  vec3 diff = alb * ORB_COL * max(dot(n, L), 0.0) * att * sh + alb * vec3(0.03, 0.03, 0.038) * ao;
+  vec3 alb = mix(vec3(0.052, 0.048, 0.046), vec3(0.019, 0.021, 0.024), wet);   // drier is warmer, wet leans cool
+  vec3 diff = alb * lightTone(att * 3.0) * max(dot(n, L), 0.0) * att * sh + alb * fillLight(n.y) * ao;
   vec3 col = mix(diff, refl * ao, clamp(fre * mix(0.35, 1.0, wet) + wet * 0.12, 0.0, 1.0));
   // shockwave fronts: a travelling ring of light, 1/(1+x^2) across its width
   for (int i = ZERO; i < 4; i++) {
     if (uShock[i].w <= 0.0) continue;
     float dd = length(p.xz - uShock[i].xy) - uShock[i].z;
-    col += ORB_COL * uShock[i].w * 0.16 / (1.0 + dd * dd * 14.0);
+    float ring = 1.0 / (1.0 + dd * dd * 14.0);
+    col += lightTone(ring * uShock[i].w * 2.0) * uShock[i].w * 0.16 * ring;   // hotter at the crest
   }
   // wave slopes catch the light and the glow of the sky (1/(1+x^2) falloff with distance)
   float near = 1.0 / (1.0 + 0.004 * dot(p - ro, p - ro));
-  col += ORB_COL * att * slope * 0.5 * sh + vec3(0.55, 0.57, 0.66) * min(slope, 1.5) * 0.045 * near;
+  col += lightTone(att * 5.0) * att * slope * 0.5 * sh + vec3(0.55, 0.57, 0.66) * min(slope, 1.5) * 0.045 * near;
   return col;
 }
 
