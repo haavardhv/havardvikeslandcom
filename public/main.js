@@ -41,14 +41,16 @@ vec3 grade(vec3 c) {
   return max(mix(vec3(l), c, 1.0 + 0.45 * smoothstep(0.015, 0.1, sat)), 0.0);
 }`;
 
-// Temporal anti-aliasing: reproject last frame's history with the camera
-// (depth is in alpha), clip it to this frame's 3x3 neighbourhood in YCoCg,
-// then blend a little of the new jittered frame in.
+// Temporal upsampling (TAAU): the history lives at display resolution. Each
+// display pixel gathers the jittered low-res samples around it, weighted by
+// how close each landed (a Gaussian in render pixels), clips the reprojected
+// history to that neighbourhood in YCoCg, and blends. With a still camera the
+// image converges to real display-resolution detail.
 const TAA_FRAG = `#version 300 es
 precision highp float;
 uniform sampler2D uCur;
 uniform sampler2D uHist;
-uniform vec2 uRes, uJitter;
+uniform vec2 uRes, uOut, uJitter;
 uniform vec3 uCam, uWW, uUU, uVV;
 uniform vec3 uPCam, uPWW, uPUU, uPVV;
 uniform float uFocal, uPFocal, uReset;
@@ -56,27 +58,37 @@ out vec4 o;
 vec3 toY(vec3 c) { return vec3(0.25 * c.r + 0.5 * c.g + 0.25 * c.b, 0.5 * c.r - 0.5 * c.b, -0.25 * c.r + 0.5 * c.g - 0.25 * c.b); }
 vec3 fromY(vec3 c) { return vec3(c.x + c.y - c.z, c.x + c.z, c.x - c.y - c.z); }
 void main() {
-  ivec2 ip = ivec2(gl_FragCoord.xy);
+  vec2 pr = gl_FragCoord.xy * uRes / uOut;          // this display pixel, in render pixels
+  ivec2 base = ivec2(floor(pr - uJitter));          // nearest jittered sample
   ivec2 hi = ivec2(uRes) - 1;
-  vec4 cur = texelFetch(uCur, ip, 0);
-  vec3 m1 = vec3(0.0), m2 = vec3(0.0);
+  vec3 sum = vec3(0.0), m1 = vec3(0.0), m2 = vec3(0.0);
+  float wsum = 0.0, wmax = 0.0, depth = 0.0, dbest = 1e9;
   for (int y = -1; y <= 1; y++) for (int x = -1; x <= 1; x++) {
-    vec3 c = toY(texelFetch(uCur, clamp(ip + ivec2(x, y), ivec2(0), hi), 0).rgb);
-    m1 += c; m2 += c * c;
+    ivec2 ip = clamp(base + ivec2(x, y), ivec2(0), hi);
+    vec4 c = texelFetch(uCur, ip, 0);
+    vec2 d = vec2(ip) + 0.5 + uJitter - pr;
+    float d2 = dot(d, d);
+    float w = exp(-2.2 * d2);
+    sum += c.rgb * w; wsum += w; wmax = max(wmax, w);
+    vec3 cy = toY(c.rgb); m1 += cy; m2 += cy * cy;
+    if (d2 < dbest) { dbest = d2; depth = c.a; }
   }
+  vec3 cur = sum / max(wsum, 1e-5);
   m1 /= 9.0; m2 /= 9.0;
   vec3 sigma = sqrt(max(m2 - m1 * m1, 0.0));
 
-  vec2 uv = (2.0 * (gl_FragCoord.xy + uJitter) - uRes) / uRes.y;
+  // reproject the pixel centre (not the jittered ray) through the previous camera
+  vec2 uv = (2.0 * pr - uRes) / uRes.y;
   vec3 rd = normalize(uv.x * uUU + uv.y * uVV + uFocal * uWW);
-  vec3 v = uCam + rd * cur.a - uPCam;
+  vec3 v = uCam + rd * depth - uPCam;
   float z = dot(v, uPWW);
   vec2 puv = vec2(dot(v, uPUU), dot(v, uPVV)) / z * uPFocal;
   vec2 tc = (puv * uRes.y + uRes) * 0.5 / uRes;
   bool ok = uReset < 0.5 && z > 0.0 && tc.x > 0.0 && tc.y > 0.0 && tc.x < 1.0 && tc.y < 1.0;
 
-  vec3 hist = fromY(clamp(toY(texture(uHist, tc).rgb), m1 - 1.2 * sigma, m1 + 1.2 * sigma));
-  o = vec4(ok ? mix(hist, cur.rgb, 0.1) : cur.rgb, 1.0);
+  vec3 hist = fromY(clamp(toY(texture(uHist, tc).rgb), m1 - 1.1 * sigma, m1 + 1.1 * sigma));
+  float a = 0.05 + 0.1 * wmax;                      // trust close samples more
+  o = vec4(ok ? mix(hist, cur, a) : cur, 1.0);
 }`;
 
 // Upscale to the display with a halo-free sharpen, then grade, vignette, grain.
@@ -95,7 +107,7 @@ void main() {
   vec3 n = texture(uImg, tc + vec2(0.0, px.y)).rgb, s = texture(uImg, tc - vec2(0.0, px.y)).rgb;
   vec3 e = texture(uImg, tc + vec2(px.x, 0.0)).rgb, w = texture(uImg, tc - vec2(px.x, 0.0)).rgb;
   vec3 mn = min(c, min(min(n, s), min(e, w))), mx = max(c, max(max(n, s), max(e, w)));
-  c = clamp(c + (4.0 * c - n - s - e - w) * 0.18, mn, mx);
+  c = clamp(c + (4.0 * c - n - s - e - w) * 0.12, mn, mx);
   c = grade(c);
   // the white balance wanders by about 1% over a couple of minutes
   c *= 1.0 + 0.011 * vec3(sin(uTime * 0.05), sin(uTime * 0.05 + 2.1), sin(uTime * 0.05 + 4.2));
@@ -702,7 +714,7 @@ void main() {
   vec3 ro = uCam;
 
   float tG = rd.y < 0.0 ? -ro.y / rd.y : 1e9;
-  float pxr = 1.6 / (uRes.y * uFocal);
+  float pxr = 1.0 / (uRes.y * uFocal);
   vec3 edge;
   vec2 hit = marchAA(ro, rd, min(tG, 90.0), pxr, edge);
   bool onObj = hit.y > 0.0 && hit.x < tG;
@@ -915,19 +927,21 @@ function floatTarget(w, h, filter) {
 
 function initPost() {
   if (!gl.getExtension('EXT_color_buffer_float')) return null;
-  const taa = program(TAA_FRAG, ['uCur', 'uHist', 'uRes', 'uJitter', 'uCam', 'uWW', 'uUU', 'uVV', 'uPCam', 'uPWW', 'uPUU', 'uPVV', 'uFocal', 'uPFocal', 'uReset']);
+  const taa = program(TAA_FRAG, ['uCur', 'uHist', 'uRes', 'uOut', 'uJitter', 'uCam', 'uWW', 'uUU', 'uVV', 'uPCam', 'uPWW', 'uPUU', 'uPVV', 'uFocal', 'uPFocal', 'uReset']);
   const out = program(OUT_FRAG, ['uImg', 'uSrc', 'uDst', 'uTime', 'uFade']);
   if (!taa || !out) return null;
   return { taa, out, w: 0, h: 0, scene: null, hist: [null, null], cur: 0, reset: true, prev: null };
 }
 
-function sizePost(w, h) {
-  if (!post || (post.w === w && post.h === h)) return;
+function sizePost(w, h, dw, dh) {
+  if (!post || (post.w === w && post.h === h && post.dw === dw && post.dh === dh)) return;
   for (const t of [post.scene, ...post.hist]) if (t) { gl.deleteTexture(t.tex); gl.deleteFramebuffer(t.fb); }
   post.scene = floatTarget(w, h, gl.NEAREST);
-  post.hist = [floatTarget(w, h, gl.LINEAR), floatTarget(w, h, gl.LINEAR)];
+  post.hist = [floatTarget(dw, dh, gl.LINEAR), floatTarget(dw, dh, gl.LINEAR)];
   post.w = w;
   post.h = h;
+  post.dw = dw;
+  post.dh = dh;
   post.reset = true;
   if (!post.scene || !post.hist[0] || !post.hist[1]) post = null;
 }
@@ -1147,11 +1161,11 @@ const params = new URLSearchParams(location.search);
 const pinnedScale = parseFloat(params.get('scale'));
 // ?substeps=N runs the simulation N times per frame (for testing on slow machines).
 const substeps = Math.min(20, Math.max(1, parseInt(params.get('substeps'), 10) || 1));
-let renderScale = pinnedScale > 0 ? pinnedScale : 0.7;
+let renderScale = pinnedScale > 0 ? pinnedScale : 0.75;
 const maxScale = 1;
 const minScale = 0.45;
 // Never shade more than this many pixels per frame, whatever the screen size.
-const pixelBudget = coarse ? 900000 : 1500000;
+const pixelBudget = coarse ? 900000 : 1700000;
 
 // Floating slabs: upright monoliths hovering low over the water in a loose
 // procession, receding in size with distance. Homes are set per layout.
@@ -1177,16 +1191,16 @@ function layout() {
   const w = window.innerWidth;
   const h = window.innerHeight;
   const aspect = w / h;
-  const dpr = Math.min(window.devicePixelRatio || 1, 1.5);
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
   const budget = Math.min(1, Math.sqrt(pixelBudget / (w * dpr * h * dpr)));
   state.rw = Math.max(1, Math.round(w * dpr * renderScale * budget));
   state.rh = Math.max(1, Math.round(h * dpr * renderScale * budget));
   if (post) {
     // the scene renders at rw x rh; the final pass fills the display
-    const db = Math.min(1, Math.sqrt(3.2e6 / (w * dpr * h * dpr)));
+    const db = Math.min(1, Math.sqrt(4.2e6 / (w * dpr * h * dpr)));
     canvas.width = Math.round(w * dpr * db);
     canvas.height = Math.round(h * dpr * db);
-    sizePost(state.rw, state.rh);
+    sizePost(state.rw, state.rh, canvas.width, canvas.height);
   } else {
     canvas.width = state.rw;
     canvas.height = state.rh;
@@ -1600,8 +1614,8 @@ function frame(nowMs) {
     gl.bindFramebuffer(gl.FRAMEBUFFER, post.scene.fb);
     gl.viewport(0, 0, state.rw, state.rh);
   }
-  const jx = post ? halton((frameNo % 8) + 1, 2) - 0.5 : 0;
-  const jy = post ? halton((frameNo % 8) + 1, 3) - 0.5 : 0;
+  const jx = post ? halton((frameNo % 16) + 1, 2) - 0.5 : 0;
+  const jy = post ? halton((frameNo % 16) + 1, 3) - 0.5 : 0;
   gl.uniform2f(U.uJitter, jx, jy);
   gl.uniform1f(U.uPost, post ? 1 : 0);
   gl.uniform3fv(U.uOrbCol, state.orbCol);
@@ -1669,7 +1683,7 @@ function resolve(t, fade, jx, jy) {
   const A = post.taa;
   gl.useProgram(A.p);
   gl.bindFramebuffer(gl.FRAMEBUFFER, dst.fb);
-  gl.viewport(0, 0, state.rw, state.rh);
+  gl.viewport(0, 0, canvas.width, canvas.height);
   gl.activeTexture(gl.TEXTURE1);
   gl.bindTexture(gl.TEXTURE_2D, post.scene.tex);
   gl.activeTexture(gl.TEXTURE2);
@@ -1677,6 +1691,7 @@ function resolve(t, fade, jx, jy) {
   gl.uniform1i(A.u.uCur, 1);
   gl.uniform1i(A.u.uHist, 2);
   gl.uniform2f(A.u.uRes, state.rw, state.rh);
+  gl.uniform2f(A.u.uOut, canvas.width, canvas.height);
   gl.uniform2f(A.u.uJitter, jx, jy);
   gl.uniform3fv(A.u.uCam, cur.cam);
   gl.uniform3fv(A.u.uWW, cur.ww);
@@ -1701,7 +1716,7 @@ function resolve(t, fade, jx, jy) {
   gl.activeTexture(gl.TEXTURE3);
   gl.bindTexture(gl.TEXTURE_2D, dst.tex);
   gl.uniform1i(O.u.uImg, 3);
-  gl.uniform2f(O.u.uSrc, state.rw, state.rh);
+  gl.uniform2f(O.u.uSrc, canvas.width, canvas.height);
   gl.uniform2f(O.u.uDst, canvas.width, canvas.height);
   gl.uniform1f(O.u.uTime, t);
   gl.uniform1f(O.u.uFade, fade);
