@@ -427,49 +427,63 @@ vec3 hazeColor(vec3 rd) {
   col *= mix(vec3(0.94, 1.02, 1.04), vec3(1.05, 0.99, 0.96), smoothstep(-0.6, 0.9, dot(rd, uSun)));
   col += COR_COL * 0.06 * breathe() * (1.0 + uFlare) / (1.0 + (a / 0.2) * (a / 0.2));   // forward scatter toward the eclipse
   col += vec3(0.05, 0.035, 0.04) * pow(c, 6.0) * 0.4;
-  // eclipse twilight: a 360-degree sunset glow hugging the horizon, warmer toward the eclipse
-  float band = exp(-max(rd.y, 0.0) / 0.045);
-  col += mix(vec3(0.011, 0.0078, 0.0085), vec3(0.022, 0.0125, 0.0105), smoothstep(-0.2, 0.9, dot(rd, uSun))) * band;
   return col;
 }
 
-float hash11(float p) { p = fract(p * 0.1031); p *= p + 33.33; p *= p + p; return fract(p); }
-float noise1(float x) { float i = floor(x), f = fract(x); return mix(hash11(i), hash11(i + 1.0), f * f * (3.0 - 2.0 * f)); }
-// Mountain profile: smooth value noise blended with a mild ridge (1 - |2n - 1|)^2
-// for clean crests; octaves fall off fast (0.38) so the forms stay broad.
-float range1(float x) {
-  float s = 0.0, a = 0.55, f = 1.0;
-  for (int i = ZERO; i < 5; i++) {
-    float n = noise1(x * f);
-    float r = 1.0 - abs(2.0 * n - 1.0);
-    s += a * mix(noise1(x * f + 7.3), r * r, 0.6);
-    f *= 2.15;
-    a *= 0.38;
-  }
-  return s;
+// Eclipse twilight: a 360-degree sunset glow above the horizon, warmer toward the
+// eclipse. Sky only: it rises from zero at the horizon, so the water is untouched.
+vec3 twilight(vec3 rd) {
+  if (rd.y <= 0.0) return vec3(0.0);
+  float band = smoothstep(0.0, 0.014, rd.y) * exp(-rd.y / 0.06);
+  return mix(vec3(0.017, 0.012, 0.013), vec3(0.034, 0.019, 0.016), smoothstep(-0.2, 0.9, dot(rd, uSun))) * band;
 }
 
-// Distant ranges, far to near: each a silhouette line over the horizon, paler
+// Mountains as composed curves rather than noise. Each peak is an inverse
+// falloff, h / (1 + |x/w|^1.3)^2: a firm crest with long concave flanks, with
+// its own width on each side; neighbours join with a smooth maximum.
+// Per peak: centre azimuth, height, left width, right width.
+const vec4 PEAKS[12] = vec4[12](
+  // far
+  vec4(-0.42, 0.13, 0.13, 0.2), vec4(-0.12, 0.068, 0.16, 0.22), vec4(0.62, 0.052, 0.3, 0.4),
+  // middle
+  vec4(-0.72, 0.078, 0.2, 0.16), vec4(0.06, 0.046, 0.22, 0.28), vec4(0.5, 0.058, 0.18, 0.24),
+  // nearer
+  vec4(-0.3, 0.042, 0.3, 0.24), vec4(0.34, 0.03, 0.34, 0.42), vec4(-1.0, 0.05, 0.3, 0.25),
+  // nearest, long and low
+  vec4(-0.85, 0.032, 0.36, 0.3), vec4(0.78, 0.03, 0.3, 0.36), vec4(-0.05, 0.016, 0.5, 0.5)
+);
+
+float smax(float a, float b, float k) { float h = max(k - abs(a - b), 0.0) / k; return max(a, b) + h * h * k * 0.25; }
+
+float rangeHeight(int layer, float az) {
+  float h = 0.004;
+  for (int k = 0; k < 3; k++) {
+    vec4 pk = PEAKS[layer * 3 + k];
+    float x = (az - pk.x) / (az < pk.x ? pk.z : pk.w);
+    float f = 1.0 / (1.0 + pow(abs(x), 1.3));   // firm crest, long concave flanks
+    h = smax(h, pk.y * f * f, 0.01);
+  }
+  return h;
+}
+
+// Distant ranges, far to near: each a clean silhouette over the horizon, paler
 // with distance (aerial perspective), fading into valley mist below its crest,
 // with crests facing the eclipse catching a thin 1/(1+x^2) line of light.
 vec3 mountains(vec3 rd, vec3 col) {
-  if (rd.y > 0.26 || rd.y < -0.01) return col;
+  if (rd.y > 0.15 || rd.y < -0.01) return col;
   float az = atan(rd.x, -rd.z);
   float px = 1.5 / (uRes.y * uFocal);
   float sa = acos(clamp(dot(rd, uSun), -1.0, 1.0)) / 0.35;
   float fwd = 1.0 / (1.0 + sa * sa);
-  vec3 base = hazeColor(rd);
+  vec3 base = hazeColor(rd) + twilight(rd);
   for (int i = ZERO; i < 4; i++) {
     float fi = float(i);
     float depth = fi / 3.0;                                     // 0 far .. 1 near
-    // each range has its own massif, staggered so the layers overlap like terrain
-    float centre = fi == 0.0 ? -0.45 : fi == 1.0 ? -0.05 : fi == 2.0 ? -0.75 : 0.5;
-    float env = 0.22 + 0.78 * exp(-pow((az - centre) / 0.42, 2.0));
-    float h = 0.004 + mix(0.34, 0.1, depth) * env * range1(az * mix(1.7, 3.4, depth) + fi * 13.7);
+    float h = rangeHeight(i, az);
     float inside = smoothstep(h + px, h - px, rd.y);
     if (inside <= 0.0) continue;
     float below = h - rd.y;
-    vec3 tone = base * mix(0.82, 0.26, depth) * mix(vec3(1.0), vec3(0.92, 1.0, 1.09), depth);
+    vec3 tone = base * mix(0.72, 0.18, depth) * mix(vec3(1.0), vec3(0.92, 1.0, 1.09), depth);
     tone = mix(tone, base * mix(0.97, 0.72, depth), smoothstep(0.0, 0.06, below) * 0.85);
     tone += COR_COL * 0.03 * fwd * (1.0 - 0.55 * depth) / (1.0 + (below / 0.0016) * (below / 0.0016));
     // mist pools at the foot of every range: no hard base where it meets the water
@@ -482,7 +496,7 @@ vec3 mountains(vec3 rd, vec3 col) {
 vec3 sky(vec3 rd) {
   float y = max(rd.y, 0.0);
   vec3 zen = mix(vec3(0.0016, 0.0016, 0.003), vec3(0.0011, 0.0014, 0.0028), smoothstep(0.3, 0.9, y));
-  vec3 col = mix(hazeColor(rd), zen, pow(y, 0.5));
+  vec3 col = mix(hazeColor(rd), zen, pow(y, 0.5)) + twilight(rd);
   vec2 n;
   float a = sunAngle(rd, n);
   float br = breathe();
@@ -620,8 +634,7 @@ vec3 traceReflection(vec3 ro, vec3 rd) {
   float t = h.x;
   if (h.y > 0.0) col = shadeObj(ro + rd * t, rd, h.y, true);
   else { col = sky(rd); t = 1e4; }
-  col = applyFog(col, ro, rd, h.y > 0.0 ? min(t, 400.0) : 30.0);
-  if (h.y < 0.0) col = softHorizon(col, rd);
+  col = applyFog(col, ro, rd, min(t, 400.0));
   col += orbLight(ro, rd, t) * 0.9;
   col += rocketLights(ro, rd, t);
   return col;
