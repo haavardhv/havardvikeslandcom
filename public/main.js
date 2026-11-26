@@ -43,10 +43,10 @@ void main() {
   vec2 info = texture(uPrev, uv).rg;
   float avg = (texture(uPrev, uv + vec2(uTexel.x, 0.0)).r + texture(uPrev, uv - vec2(uTexel.x, 0.0)).r +
                texture(uPrev, uv + vec2(0.0, uTexel.y)).r + texture(uPrev, uv - vec2(0.0, uTexel.y)).r) * 0.25;
-  info.g += (avg - info.r) * 2.0;
-  info.g *= 0.994;
+  info.g += (avg - info.r) * 0.3;   // coupling: waves travel at ~sqrt(0.3/2) of the old speed
+  info.g *= 0.997;
   info.r += info.g;
-  info.r *= 0.9985;
+  info.r *= 0.9993;
   vec2 e = min(uv, 1.0 - uv);
   info *= mix(0.86, 1.0, smoothstep(0.0, 0.07, min(e.x, e.y)));   // absorbing shore, no echoes
   for (int i = 0; i < 8; i++) {
@@ -875,7 +875,7 @@ function layout() {
   state.halfW = (dist * aspect) / state.focal;
 }
 layout();
-window.addEventListener('resize', layout);
+window.addEventListener('resize', () => { pendingScale = renderScale; });
 
 /* ------------------------------------------------------------------ *
  *  Pointer & interaction
@@ -1177,7 +1177,17 @@ function uploadStones() {
   gl.uniformMatrix3fv(U.uStoneR, false, stoneBuf.r);
 }
 
+let pendingScale = 0;
+let lastScaleChange = 0;
+
 function frame(nowMs) {
+  // Apply a resolution change before drawing: resizing clears the canvas, and
+  // doing it after the draw would present a black frame.
+  if (pendingScale) {
+    renderScale = pendingScale;
+    pendingScale = 0;
+    layout();
+  }
   const now = nowMs / 1000;
   const realDt = (nowMs - last) / 1000;
   const rawDt = Math.min(0.05, realDt);
@@ -1219,14 +1229,18 @@ function frame(nowMs) {
   // Dynamic resolution: adapt within a few frames, proportionally to how far
   // off a ~45 fps target we are.
   if (frameNo > 3) frameTimes.push(realDt);
-  if (!(pinnedScale > 0) && frameTimes.length >= 10) {
+  if (!(pinnedScale > 0) && frameTimes.length >= 12) {
     const sorted = frameTimes.slice().sort((a, b) => a - b);
     const typical = sorted[Math.floor(sorted.length / 2)];
     frameTimes = [];
     const next = clamp(renderScale * clamp(Math.sqrt((1 / 45) / typical), 0.6, 1.1), minScale, maxScale);
-    if (Math.abs(next - renderScale) > 0.03) {
-      renderScale = next;
-      layout();
+    // Settle quickly at first, then only change for clear reasons, and not often.
+    const settled = nowMs - start > 6000;
+    const minStep = settled ? 0.12 : 0.04;
+    const cooldown = settled ? 4000 : 400;
+    if (Math.abs(next - renderScale) > minStep && nowMs - lastScaleChange > cooldown) {
+      pendingScale = next;
+      lastScaleChange = nowMs;
     }
   }
 
