@@ -471,7 +471,7 @@ function updateHud(dt) {
 }
 
 // ------------------------------------------------------------------ minimap
-const MAP = { x0: AX0 - 60, z0: AZ0 - 60, x1: AX1 + 60, z1: AZ1 + 60, ppm: 2 };
+const MAP = { x0: AX0 - 60, z0: AZ0 - 60, x1: AX1 + 60, z1: AZ1 + 60, ppm: 1.5 };
 const mapBase = document.createElement('canvas');
 mapBase.width = (MAP.x1 - MAP.x0) * MAP.ppm; mapBase.height = (MAP.z1 - MAP.z0) * MAP.ppm;
 {
@@ -688,6 +688,7 @@ addScooter(-183, -80, 0.3);           // Domkirkeplassen
 addScooter(-425, -205, 2.5);          // Torget
 addScooter(40, -265, -1.2);           // Fjellveien, by the funicular halt
 addScooter(-58, 40, 0.8);             // Asylplassen
+addScooter(-552, -410, 0.8);          // Bryggen
 const scInfo = {};
 function updateScooter(s, dt, input) {
   const fwd = _v2.set(Math.sin(s.heading), 0, Math.cos(s.heading));
@@ -752,7 +753,7 @@ function updateScooter(s, dt, input) {
 const gulls = [];
 const GULL_N = 12;
 // on the quay at Fisketorget
-const groundSpots = [[-452, -222], [-449, -230], [-455, -214], [-446, -238], [-441, -209], [-458, -228]].map(([x, z]) => [x, world.floorAt(x, z, 50), z]);
+const groundSpots = [[-452, -222], [-449, -230], [-455, -214], [-446, -238], [-562, -421], [-577, -436], [-541, -400]].map(([x, z]) => [x, world.floorAt(x, z, 50), z]);
 for (let i = 0; i < GULL_N; i++) {
   const g = new Gull();
   scene.add(g.root);
@@ -941,6 +942,9 @@ const UMBRELLA_SPOTS = [
   ['the shower', ...L2W(2.2, 6.1), H.FL],
   ['Brattlien steps', ...snapToStreet(42, -31)],
   ['Korskirken', ...snapToStreet(-300, -190)],
+  ['Bryggestredet, among the wharf houses', ...snapToStreet(-479, -484)],
+  ['Mariakirken', ...snapToStreet(-553, -660)],
+  ['Bergenhus', ...snapToStreet(-640, -715)],
 ];
 const UMBRELLAS = UMBRELLA_SPOTS;
 const umbrellaObjs = UMBRELLAS.map(([name, x, z, yy], i) => {
@@ -1249,6 +1253,7 @@ for (const [x, z, c] of [[-449, -219, 0xd23a2b], [-445, -228, 0xf4f1ea], [-452, 
 const intoHouse = Math.atan2(HVX, HVZ);           // facing from the street into the house
 const SPAWN = {
   torget: [-430, 0, -207, Math.PI / 2],
+  bryggen: [-546, 0, -413, 0.8],
   home: [...(([x, z]) => [x, H.FU + 0.5, z])(L2W(1.95, -1.6)), intoHouse],
   lane: [...(([x, z]) => [x, H.FU + 0.5, z])(L2W(9.5, -2.3)), Math.atan2(HUX, HUZ)],
   bakery: [BAKERY.door.x, BAKERY.door.y, BAKERY.door.z, BAKERY.heading + Math.PI],
@@ -1282,13 +1287,13 @@ function planCheckpoints() {
 
 const MISSIONS = [
   {
-    id: 'home', title: 'Hjem, vått hjem', sub: 'Home, wet home', spawn: 'torget', reward: 100,
+    id: 'home', title: 'Hjem, vått hjem', sub: 'Home, wet home', spawn: 'bryggen', reward: 100,
     start(m) {
       showPhone('Ingrid (housemate)', 'Where ARE you? You have the only key and it’s pouring. Cappes vei 6, the black door. Now please.', 7);
       m.step = 0;
     },
     update(m) {
-      setObjective('Get home to <em>Cappes vei 6</em>. Follow the yellow route: up past the cathedral, Heggebakken and Skivebakken.');
+      setObjective('Get home from Bryggen to <em>Cappes vei 6</em>. Follow the yellow route: past Torget, up by the cathedral, Heggebakken and Skivebakken.');
       m.target = DOOR;
       if (player.pos.distanceTo(DOOR) < 1.4 || inHouse(player.pos)) return 'done';
     },

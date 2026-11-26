@@ -312,9 +312,31 @@ export function buildCity(scene, map, T, opts) {
     bg.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
     bg.setIndex(idx);
     bg.computeVertexNormals();
-    const m = new THREE.Mesh(bg, new THREE.MeshStandardMaterial({ vertexColors: true, map: detailTexture(256, 9, 200, 70), roughness: 0.9 }));
-    m.receiveShadow = true;
-    scene.add(m);
+    // split into ~150 m tiles so the camera can skip what it cannot see
+    const tmat = new THREE.MeshStandardMaterial({ vertexColors: true, map: detailTexture(256, 9, 200, 70), roughness: 0.9 });
+    const nrm = bg.attributes.normal.array, TS = 60;
+    for (let tj = 0; tj < nz - 1; tj += TS) for (let ti = 0; ti < nx - 1; ti += TS) {
+      const i1 = Math.min(nx - 1, ti + TS), j1 = Math.min(nz - 1, tj + TS), w = i1 - ti + 1, h = j1 - tj + 1;
+      const P = new Float32Array(w * h * 3), N = new Float32Array(w * h * 3), Cc = new Float32Array(w * h * 3), U = new Float32Array(w * h * 2);
+      for (let j = 0; j < h; j++) for (let i = 0; i < w; i++) {
+        const src = (tj + j) * nx + ti + i, dst = j * w + i;
+        for (let k = 0; k < 3; k++) { P[dst * 3 + k] = pos[src * 3 + k]; N[dst * 3 + k] = nrm[src * 3 + k]; Cc[dst * 3 + k] = colr[src * 3 + k]; }
+        U[dst * 2] = uv[src * 2]; U[dst * 2 + 1] = uv[src * 2 + 1];
+      }
+      const ix = [];
+      for (let j = 0; j < h - 1; j++) for (let i = 0; i < w - 1; i++) { const a = j * w + i, b = a + 1, c = a + w, d = c + 1; ix.push(a, c, b, b, c, d); }
+      const tg = new THREE.BufferGeometry();
+      tg.setAttribute('position', new THREE.BufferAttribute(P, 3));
+      tg.setAttribute('normal', new THREE.BufferAttribute(N, 3));
+      tg.setAttribute('color', new THREE.BufferAttribute(Cc, 3));
+      tg.setAttribute('uv', new THREE.BufferAttribute(U, 2));
+      tg.setIndex(ix);
+      tg.computeBoundingSphere();
+      const m = new THREE.Mesh(tg, tmat);
+      m.receiveShadow = true;
+      m.matrixAutoUpdate = false;
+      scene.add(m);
+    }
   }
 
   // -------------------------------------------------------------- distant terrain (coarse)
@@ -377,7 +399,13 @@ export function buildCity(scene, map, T, opts) {
   const roofMat = new THREE.MeshStandardMaterial({ vertexColors: true, map: T.roof.clone(), roughness: 0.6 });
   roofMat.map.repeat.set(1, 1); roofMat.map.needsUpdate = true;
   const flatRoofMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.9 });
-  const bp = { p: [], n: [], u: [], c: [] }, rp = { p: [], n: [], u: [], c: [] }, fp = { p: [], n: [], c: [] };
+  const tiles = new Map();
+  const tileOf = (x, z) => {
+    const k = Math.floor(x / 150) * 1000 + Math.floor(z / 150);
+    if (!tiles.has(k)) tiles.set(k, { bp: { p: [], n: [], u: [], c: [] }, rp: { p: [], n: [], u: [], c: [] }, fp: { p: [], n: [], c: [] } });
+    return tiles.get(k);
+  };
+  let bp, rp, fp;
   const pushTri = (dst, a, b, c, n, ua, ub, uc, colr) => {
     for (const [P, U] of [[a, ua], [b, ub], [c, uc]]) {
       dst.p.push(P[0], P[1], P[2]); dst.n.push(n[0], n[1], n[2]);
@@ -396,6 +424,7 @@ export function buildCity(scene, map, T, opts) {
   const named = [];
   for (const b of map.buildings) {
     const pts = b.p, n = pts.length / 2;
+    ({ bp, rp, fp } = tileOf(pts[0], pts[1]));
     let area2 = 0;
     for (let i = 0; i < n; i++) { const j = (i + 1) % n; area2 += pts[i * 2] * pts[j * 2 + 1] - pts[j * 2] * pts[i * 2 + 1]; }
     const sgn = area2 > 0 ? 1 : -1;
@@ -428,7 +457,7 @@ export function buildCity(scene, map, T, opts) {
       // ridge runs along the long side
       const [p0, p1, p2, p3] = l01 >= l12 ? c : [c[1], c[2], c[3], c[0]];
       const short = Math.min(l01, l12);
-      const rise = Math.min(5.5, short / 2 * Math.tan(0.66));
+      const rise = b.k === 'bryggen' ? Math.min(7.5, short / 2 * Math.tan(0.95)) : Math.min(5.5, short / 2 * Math.tan(0.66));
       const m03 = [(p0[0] + p3[0]) / 2, (p0[1] + p3[1]) / 2], m12 = [(p1[0] + p2[0]) / 2, (p1[1] + p2[1]) / 2];
       const ov = 0.35;
       const ex = (p, q) => { const dx = p[0] - q[0], dz = p[1] - q[1], l = Math.hypot(dx, dz) || 1; return [p[0] + dx / l * ov, p[1] + dz / l * ov]; };
@@ -486,15 +515,18 @@ export function buildCity(scene, map, T, opts) {
     bg.setAttribute('normal', new THREE.Float32BufferAttribute(src.n, 3));
     if (hasUv) bg.setAttribute('uv', new THREE.Float32BufferAttribute(src.u, 2));
     bg.setAttribute('color', new THREE.Float32BufferAttribute(src.c, 3));
+    bg.computeBoundingSphere();
     const m = new THREE.Mesh(bg, mat);
     m.castShadow = true; m.receiveShadow = true;
     m.matrixAutoUpdate = false;
     scene.add(m);
     return m;
   };
-  mk(bp, facade);
-  mk(rp, roofMat);
-  mk(fp, flatRoofMat, false);
+  for (const t of tiles.values()) {
+    if (t.bp.p.length) mk(t.bp, facade);
+    if (t.rp.p.length) mk(t.rp, roofMat);
+    if (t.fp.p.length) mk(t.fp, flatRoofMat, false);
+  }
 
   // -------------------------------------------------------------- roads, lanes, steps
   const roadMats = {
@@ -518,8 +550,12 @@ export function buildCity(scene, map, T, opts) {
   }
   const stepsMask = new Map();          // 1 m cells on steps
   const roadMask = new Map();           // 2 m cells on any road
-  const rg = {};
-  for (const k in roadMats) rg[k] = { p: [], n: [], u: [] };
+  const rgTiles = new Map();
+  const rgOf = (x, z, k) => {
+    const key = Math.floor(x / 150) * 1000 + Math.floor(z / 150) + ':' + k;
+    if (!rgTiles.has(key)) rgTiles.set(key, { k, p: [], n: [], u: [] });
+    return rgTiles.get(key);
+  };
   for (const r of map.roads) {
     const p = r.p, w = r.w / 2;
     // resample
@@ -530,7 +566,7 @@ export function buildCity(scene, map, T, opts) {
       for (let s = 0; s < n; s++) pts.push([ax + (bx - ax) * s / n, az + (bz - az) * s / n]);
     }
     pts.push([p[p.length - 2], p[p.length - 1]]);
-    const g = rg[r.k];
+    const g = rgOf(p[0], p[1], r.k);
     let dist = 0;
     let prevL = null, prevR = null, prevD = 0;
     for (let i = 0; i < pts.length; i++) {
@@ -570,15 +606,17 @@ export function buildCity(scene, map, T, opts) {
       }
     }
   }
-  for (const k in rg) {
-    if (!rg[k].p.length) continue;
+  for (const g of rgTiles.values()) {
+    if (!g.p.length) continue;
     const bg = new THREE.BufferGeometry();
-    bg.setAttribute('position', new THREE.Float32BufferAttribute(rg[k].p, 3));
-    bg.setAttribute('normal', new THREE.Float32BufferAttribute(rg[k].n, 3));
-    bg.setAttribute('uv', new THREE.Float32BufferAttribute(rg[k].u, 2));
-    const m = new THREE.Mesh(bg, roadMats[k]);
+    bg.setAttribute('position', new THREE.Float32BufferAttribute(g.p, 3));
+    bg.setAttribute('normal', new THREE.Float32BufferAttribute(g.n, 3));
+    bg.setAttribute('uv', new THREE.Float32BufferAttribute(g.u, 2));
+    bg.computeBoundingSphere();
+    const m = new THREE.Mesh(bg, roadMats[g.k]);
     m.receiveShadow = true;
     m.renderOrder = 1;
+    m.matrixAutoUpdate = false;
     scene.add(m);
   }
   const onSteps = (x, z) => stepsMask.has(Math.round(x) * 100003 + Math.round(z));

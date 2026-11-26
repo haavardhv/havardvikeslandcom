@@ -25,7 +25,7 @@ OUT = sys.argv[2]
 LAT0, LON0 = 60.3931275, 5.3333919          # Cappes vei 6 (OSM address node 3126074741)
 MLAT = 111230.0
 MLON = 111320.0 * math.cos(math.radians(LAT0))
-X0, X1, Z0, Z1 = -490.0, 190.0, -410.0, 190.0   # playable area
+X0, X1, Z0, Z1 = -690.0, 190.0, -750.0, 190.0   # playable area: Bryggen and Bergenhus to Fjellet
 
 def P(n): return ((n['lon'] - LON0) * MLON, -(n['lat'] - LAT0) * MLAT)
 
@@ -96,6 +96,7 @@ def building_polys():
 WOOD = ['#efede6', '#efede6', '#f2efe6', '#e7e3d6', '#dcdcd4', '#e9ddb1', '#c8d6dd', '#d9cfc0', '#b9c6c9', '#e8e2cf']
 PLASTER = ['#e8e1d2', '#d9cdb5', '#cdbf9f', '#e2d6bd', '#bfb7a8', '#d8c3a5', '#a9a49b', '#e9e4d8']
 BRICK = ['#8a4a37', '#7b3f30', '#94533c']
+BRYGGEN = ['#96321f', '#c98f2e', '#e8e2d2', '#d9b75a', '#6e4a30', '#b0452a', '#a33a24', '#e3cf9a']
 ROOF_DARK, ROOF_RED, ROOF_BLACK, ROOF_FLAT, ROOF_COPPER = '#41444a', '#8d3f2d', '#2d2f33', '#5d5f62', '#5f8a76'
 default_levels = {'house': 2, 'detached': 2, 'semidetached_house': 2, 'apartments': 3, 'garage': 1, 'garages': 1, 'shed': 1, 'carport': 1,
                   'retail': 4, 'commercial': 4, 'office': 5, 'hotel': 5, 'civic': 3, 'public': 3, 'school': 3, 'university': 3,
@@ -141,6 +142,12 @@ for bid, t, poly in building_polys():
     else: col = WOOD[int(hv * 97) % len(WOOD)]
     roof = ROOF_RED if hv > 0.8 else (ROOF_BLACK if hv > 0.55 else ROOF_DARK)
     name = t.get('name', '')
+    # the old wooden wharf houses of Bryggen (listed buildings between Torget and Mariakirken)
+    bryggen = t.get('heritage') and -620 < cx < -420 and -620 < cz < -280 and kind not in ('church', 'civic')
+    if bryggen:
+        col = BRYGGEN[int(hv * 97) % len(BRYGGEN)]
+        roof = ROOF_RED if hv > 0.35 else '#6b3a2a'
+        if short < 16 and poly.area / rect.area > 0.7: gabled = True
     if kind in ('cathedral', 'church') or 'kirke' in name.lower():
         col, roof = '#b9b4a6', ROOF_COPPER
     if not gabled: roof = ROOF_FLAT if centre or kind in ('garage', 'garages') else roof
@@ -148,6 +155,7 @@ for bid, t, poly in building_polys():
     if gabled: b['g'] = flat(rc)
     if name: b['n'] = name
     if kind in ('cathedral', 'church'): b['k'] = 'church'
+    if bryggen: b['k'] = 'bryggen'
     buildings.append((bid, b))
 
 # neighbours of no. 6 coloured as in the video: the green house on the passage side
