@@ -1,6 +1,6 @@
 # havardvikesland.com
 
-A "something great is coming" page: one raymarched scene (an eclipse on the horizon, a long-legged elephant walking across a wet salt flat, a rocket waiting in the distance) lit by a light that follows the cursor. Click to send a pulse; click the elephant or the rocket for more.
+A "something great is coming" page: one raymarched scene (an eclipse on the horizon, a long-legged elephant walking across a wet salt flat, a rocket waiting in the distance) lit by a light that follows the cursor. There are no instructions on the page: what reacts, and how, is left to be discovered.
 
 Plain static files, no build step and no libraries:
 

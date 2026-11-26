@@ -8,11 +8,9 @@
  */
 
 const canvas = document.getElementById('scene');
-const hint = document.getElementById('hint');
 const soundBtn = document.getElementById('sound');
 const coarse = matchMedia('(pointer: coarse)').matches;
 const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
-if (coarse) hint.textContent = 'Touch to guide the light. Tap to send a pulse.';
 
 const gl = canvas.getContext('webgl2', { antialias: false, alpha: false, depth: false, powerPreference: 'high-performance' });
 if (!gl) {
@@ -696,7 +694,6 @@ window.addEventListener('resize', layout);
  * ------------------------------------------------------------------ */
 
 const pointer = { x: 0, y: 0, active: false, last: -99 };
-let poked = false;
 
 function toUv(clientX, clientY) {
   const w = window.innerWidth;
@@ -740,29 +737,21 @@ function targetAt(uv) {
   return null;
 }
 
-const tag = document.getElementById('tag');
 let hovered = null;
-function setHover(target, e) {
+function setHover(target) {
   if (target !== hovered) {
     hovered = target;
-    canvas.style.cursor = target ? 'pointer' : '';
-    tag.classList.toggle('on', !!target);
-    if (target === 'elephant') {
-      tag.textContent = 'Call the elephant';
-      state.ele.startle = Math.max(state.ele.startle, 0.35);
-    } else if (target === 'rocket') {
-      tag.textContent = state.rocket.mode === 'idle' ? 'Launch' : 'In flight';
-      if (state.rocket.mode === 'idle') state.rocket.cough = 1;
-    }
+    // No labels: things just stir when you come near.
+    if (target === 'elephant') state.ele.startle = Math.max(state.ele.startle, 0.35);
+    else if (target === 'rocket' && state.rocket.mode === 'idle') state.rocket.cough = 1;
   }
-  if (target && e) tag.style.transform = `translate(${e.clientX + 18}px, ${e.clientY + 14}px)`;
 }
 
 window.addEventListener('pointermove', (e) => {
   [pointer.x, pointer.y] = toUv(e.clientX, e.clientY);
   pointer.active = true;
   pointer.last = performance.now() / 1000;
-  setHover(e.pointerType === 'mouse' ? targetAt([pointer.x, pointer.y]) : null, e);
+  setHover(e.pointerType === 'mouse' ? targetAt([pointer.x, pointer.y]) : null);
 }, { passive: true });
 document.documentElement.addEventListener('mouseleave', () => { pointer.active = false; setHover(null); });
 
@@ -789,13 +778,11 @@ canvas.addEventListener('pointerdown', (e) => {
     if (R.mode === 'idle') {
       R.mode = 'launch';
       R.t = 0;
-      tag.textContent = 'In flight';
       audio.launch();
     } else {
       R.shake = 1;
     }
   }
-  if (!poked) { poked = true; hint.classList.add('gone'); }
 });
 
 /* ------------------------------------------------------------------ *
