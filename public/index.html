@@ -4,47 +4,38 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>havardvikesland.com · something great is coming</title>
-  <meta name="description" content="Something great is coming to havardvikesland.com. It isn't here yet. Keep your light steady.">
-  <meta name="theme-color" content="#08070c">
+  <meta name="description" content="Something great is coming to havardvikesland.com.">
+  <meta name="theme-color" content="#07070a">
   <link rel="icon" href="/favicon.svg" type="image/svg+xml">
 
   <meta property="og:type" content="website">
   <meta property="og:url" content="https://havardvikesland.com/">
   <meta property="og:title" content="Something great is coming">
-  <meta property="og:description" content="It isn't here yet. Keep your light steady; something is watching.">
+  <meta property="og:description" content="havardvikesland.com is in preparation.">
   <meta property="og:image" content="https://havardvikesland.com/og-image.png">
   <meta name="twitter:card" content="summary_large_image">
 
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Instrument+Serif:ital@0;1&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Geist:wght@300;400&family=Geist+Mono:wght@400&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/styles.css">
-
-  <script type="importmap">
-    {
-      "imports": {
-        "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
-        "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
-      }
-    }
-  </script>
   <script type="module" src="/main.js"></script>
 </head>
 <body>
   <canvas id="scene" aria-hidden="true"></canvas>
 
+  <header class="bar top">
+    <span>havardvikesland.com</span>
+    <span class="status"><i aria-hidden="true"></i>In preparation</span>
+  </header>
+
   <main class="hero">
-    <span class="kicker">havardvikesland.com</span>
-    <h1>Something <em>great</em><br>is coming.</h1>
-    <p>It isn&rsquo;t here yet. Keep your light steady; something is watching.</p>
+    <h1>Something great<br>is coming.</h1>
+    <p class="hint" id="hint">Move to guide the light. Click to send a pulse.</p>
   </main>
 
-  <div class="corner">
-    <p class="hint" id="hint">you are holding the only light</p>
-    <button class="mute" id="mute" type="button" aria-pressed="false" aria-label="Mute sounds" title="Mute sounds">
-      <svg class="on" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9v6h4l5 4V5L8 9H4z"/><path d="M16 8.5a5 5 0 0 1 0 7M18.5 6a8.5 8.5 0 0 1 0 12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
-      <svg class="off" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9v6h4l5 4V5L8 9H4z"/><path d="M16.5 9.5l5 5m0-5l-5 5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
-    </button>
-  </div>
+  <footer class="bar bottom">
+    <button id="sound" type="button" aria-pressed="false">Sound <span>off</span></button>
+  </footer>
 </body>
 </html>

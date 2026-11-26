@@ -1,15 +1,17 @@
 # havardvikesland.com
 
-A "something great is coming" landing page with a goofy 3D crew (an elephant, a rocket, a duck and a UFO) whose googly eyes follow your cursor. Hover to make them excited; click/tap to poke them.
+A "something great is coming" page: one raymarched scene (an eclipse on the horizon, a long-legged elephant walking across a wet salt flat, a rocket waiting in the distance) lit by a light that follows the cursor. Click to send a pulse; click the elephant or the rocket for more.
 
-Plain static files, no build step:
+Plain static files, no build step and no libraries:
 
 | File | What it is |
 | --- | --- |
-| `public/index.html` | Markup, meta tags, import map for Three.js (loaded from jsDelivr) |
-| `public/styles.css` | Page styling |
-| `public/main.js` | The 3D scene, characters, interactions and tiny Web Audio sound effects |
+| `public/index.html` | Markup and meta tags |
+| `public/styles.css` | Type, layout, film grain |
+| `public/main.js` | WebGL2 setup, the fragment shader (signed distance fields, soft shadows, height fog, analytic glows), interaction and synthesized sound |
 | `public/favicon.svg`, `public/og-image.png` | Tab icon and social share preview |
+
+Add `?scale=1` to the URL to pin the render resolution (it otherwise adapts to the GPU).
 
 ## Run locally
 
