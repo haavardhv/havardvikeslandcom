@@ -427,6 +427,53 @@ vec3 hazeColor(vec3 rd) {
   col *= mix(vec3(0.94, 1.02, 1.04), vec3(1.05, 0.99, 0.96), smoothstep(-0.6, 0.9, dot(rd, uSun)));
   col += COR_COL * 0.06 * breathe() * (1.0 + uFlare) / (1.0 + (a / 0.2) * (a / 0.2));   // forward scatter toward the eclipse
   col += vec3(0.05, 0.035, 0.04) * pow(c, 6.0) * 0.4;
+  // eclipse twilight: a 360-degree sunset glow hugging the horizon, warmer toward the eclipse
+  float band = exp(-max(rd.y, 0.0) / 0.045);
+  col += mix(vec3(0.011, 0.0078, 0.0085), vec3(0.022, 0.0125, 0.0105), smoothstep(-0.2, 0.9, dot(rd, uSun))) * band;
+  return col;
+}
+
+float hash11(float p) { p = fract(p * 0.1031); p *= p + 33.33; p *= p + p; return fract(p); }
+float noise1(float x) { float i = floor(x), f = fract(x); return mix(hash11(i), hash11(i + 1.0), f * f * (3.0 - 2.0 * f)); }
+// Mountain profile: smooth value noise blended with a mild ridge (1 - |2n - 1|)^2
+// for clean crests; octaves fall off fast (0.38) so the forms stay broad.
+float range1(float x) {
+  float s = 0.0, a = 0.55, f = 1.0;
+  for (int i = ZERO; i < 5; i++) {
+    float n = noise1(x * f);
+    float r = 1.0 - abs(2.0 * n - 1.0);
+    s += a * mix(noise1(x * f + 7.3), r * r, 0.6);
+    f *= 2.15;
+    a *= 0.38;
+  }
+  return s;
+}
+
+// Distant ranges, far to near: each a silhouette line over the horizon, paler
+// with distance (aerial perspective), fading into valley mist below its crest,
+// with crests facing the eclipse catching a thin 1/(1+x^2) line of light.
+vec3 mountains(vec3 rd, vec3 col) {
+  if (rd.y > 0.26 || rd.y < -0.01) return col;
+  float az = atan(rd.x, -rd.z);
+  float px = 1.5 / (uRes.y * uFocal);
+  float sa = acos(clamp(dot(rd, uSun), -1.0, 1.0)) / 0.35;
+  float fwd = 1.0 / (1.0 + sa * sa);
+  vec3 base = hazeColor(rd);
+  for (int i = ZERO; i < 4; i++) {
+    float fi = float(i);
+    float depth = fi / 3.0;                                     // 0 far .. 1 near
+    // each range has its own massif, staggered so the layers overlap like terrain
+    float centre = fi == 0.0 ? -0.45 : fi == 1.0 ? -0.05 : fi == 2.0 ? -0.75 : 0.5;
+    float env = 0.22 + 0.78 * exp(-pow((az - centre) / 0.42, 2.0));
+    float h = 0.004 + mix(0.34, 0.1, depth) * env * range1(az * mix(1.7, 3.4, depth) + fi * 13.7);
+    float inside = smoothstep(h + px, h - px, rd.y);
+    if (inside <= 0.0) continue;
+    float below = h - rd.y;
+    vec3 tone = base * mix(0.82, 0.26, depth) * mix(vec3(1.0), vec3(0.92, 1.0, 1.09), depth);
+    tone = mix(tone, base * mix(0.97, 0.72, depth), smoothstep(0.0, 0.06, below) * 0.85);
+    tone += COR_COL * 0.03 * fwd * (1.0 - 0.55 * depth) / (1.0 + (below / 0.0016) * (below / 0.0016));
+    col = mix(col, tone, inside);
+  }
   return col;
 }
 
@@ -478,17 +525,8 @@ vec3 sky(vec3 rd) {
   float hz = smoothstep(-0.02, 0.18, rd.y);                    // sinks into the haze near the horizon
   col = col * disk + eclipse * disk * mix(0.35, 1.0, hz);
 
-  // thin drifting clouds low in the sky: dark, with silver edges near the eclipse
-  if (rd.y > 0.0) {
-    vec2 cp = rd.xz / (rd.y + 0.06) * vec2(0.35, 1.1) + vec2(uTime * 0.012, 0.0);
-    float dens = fbm(cp * 1.6 + vec2(0.0, uTime * 0.004));
-    dens = smoothstep(0.5, 0.8, dens) * smoothstep(0.012, 0.035, rd.y) * (1.0 - smoothstep(0.06, 0.1, rd.y));   // a thin band of mist on the horizon, below the eclipse
-    // lit by the corona ring, not the dark disk: clouds over the disk stay dark
-    float xr = max(x, 0.0) / 0.05;
-    float lit = 0.22 / (1.0 + xr * xr) * smoothstep(-0.025, 0.006, x) + 0.025 / (1.0 + a / 0.3);
-    vec3 cc = vec3(0.004, 0.0042, 0.006) + COR_COL * lit * (0.3 + 0.7 * (1.0 - dens)) * br;
-    col = mix(col, cc, dens * 0.85);
-  }
+  col = mountains(rd, col);
+
   return col;
 }
 
@@ -574,7 +612,7 @@ vec3 traceReflection(vec3 ro, vec3 rd) {
   float t = h.x;
   if (h.y > 0.0) col = shadeObj(ro + rd * t, rd, h.y, true);
   else { col = sky(rd); t = 1e4; }
-  col = applyFog(col, ro, rd, min(t, 400.0));
+  col = applyFog(col, ro, rd, h.y > 0.0 ? min(t, 400.0) : 30.0);
   col += orbLight(ro, rd, t) * 0.9;
   col += rocketLights(ro, rd, t);
   return col;
@@ -651,7 +689,7 @@ void main() {
   float cover = 1.0;
   if (!onObj) {
     col = tG < 1e8 ? shadeGround(ro + rd * t, ro, rd) : sky(rd);
-    col = applyFog(col, ro, rd, min(t, 400.0));
+    col = applyFog(col, ro, rd, tG < 1e8 ? min(t, 400.0) : 30.0);
     cover = edge.y < t - 0.02 ? edge.x : 0.0;
   }
   if (cover > 0.0) {
