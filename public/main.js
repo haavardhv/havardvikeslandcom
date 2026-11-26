@@ -284,50 +284,51 @@ float calcAO(vec3 p, vec3 n) {
 }
 
 /* ---------- sky, haze, glows ---------- */
-// Angle from the eclipse centre (x) and azimuth around it (y).
-vec2 sunAngles(vec3 rd) {
+// Angle from the eclipse centre, and the unit direction around it (n).
+float sunAngle(vec3 rd, out vec2 n) {
   float ca = dot(rd, uSun);
   vec3 up = normalize(cross(cross(uSun, vec3(0.0, 1.0, 0.0)), uSun));
   vec3 rt = cross(uSun, up);
   vec3 sd = rd - uSun * ca;
-  return vec2(acos(clamp(ca, -1.0, 1.0)), atan(dot(sd, up), dot(sd, rt)));
+  n = normalize(vec2(dot(sd, rt), dot(sd, up)) + 1e-6);
+  return acos(clamp(ca, -1.0, 1.0));
 }
 
 // The corona's slow breathing, shared by everything it lights.
 float breathe() { return 1.0 + 0.06 * sin(uTime * 0.37) + 0.04 * sin(uTime * 0.91); }
 
-// A slowly turning, slowly changing fan of light shafts around the eclipse:
-// two layers of angular noise drifting in opposite directions.
-float shafts(float az) {
-  float t = uTime;
-  vec2 r1 = vec2(cos(az + t * 0.011), sin(az + t * 0.011));
-  vec2 r2 = vec2(cos(az - t * 0.007), sin(az - t * 0.007));
-  float n = vnoise(r1 * 5.0 + vec2(t * 0.05, 0.0)) * 0.55 + vnoise(r2 * 13.0 + vec2(0.0, t * 0.08)) * 0.45;
-  return smoothstep(0.42, 0.85, n);
+// Corona streamers as radial lobes: for each direction d, pow(max(dot(n, d), 0), p)
+// gives a soft wedge, and 1/(1 + x/reach) fades it out from the limb. The
+// directions drift at their own speeds and the reaches pulse, so it moves.
+float streamers(vec2 n, float xs) {
+  n = rot(xs * 3.5) * n;   // streamers bend a little as they leave the limb
+  float s = 0.0;
+  for (int i = ZERO; i < 9; i++) {
+    float fi = float(i);
+    float ang = fi * 2.39996 + uTime * (0.018 + 0.014 * sin(fi * 1.7));   // golden-angle spread, own drift
+    vec2 d = vec2(cos(ang), sin(ang));
+    float sharp = 10.0 + 34.0 * fract(sin(fi * 12.9898) * 43758.5453);
+    float reach = 0.03 + 0.04 * (0.5 + 0.5 * sin(uTime * (0.17 + 0.05 * fi) + fi * 4.1));
+    s += pow(max(dot(n, d), 0.0), sharp) / (1.0 + xs / reach);
+  }
+  return s;
 }
 
 vec3 hazeColor(vec3 rd) {
-  vec2 sa = sunAngles(rd);
-  float a = sa.x;
+  float a = acos(clamp(dot(rd, uSun), -1.0, 1.0));
   float c = max(dot(rd, uSun), 0.0);
-  float br = breathe() * (1.0 + uFlare);
   vec3 col = vec3(0.0065, 0.0065, 0.009);
-  col += COR_COL * 0.06 * br / (1.0 + (a / 0.2) * (a / 0.2));   // forward scatter toward the eclipse
+  col += COR_COL * 0.06 * breathe() * (1.0 + uFlare) / (1.0 + (a / 0.2) * (a / 0.2));   // forward scatter toward the eclipse
   col += vec3(0.05, 0.035, 0.04) * pow(c, 6.0) * 0.4;
-  // crepuscular rays in the haze, k/(1 + a/s): they reach far across the fog
-  col += COR_COL * 0.022 * br * shafts(sa.y) * smoothstep(0.07, 0.11, a) / (1.0 + a / 0.09);
   return col;
 }
 
 vec3 sky(vec3 rd) {
   float y = max(rd.y, 0.0);
   vec3 col = mix(hazeColor(rd), vec3(0.0012, 0.0014, 0.0026), pow(y, 0.5));
-  vec2 sa = sunAngles(rd);
-  float a = sa.x, az = sa.y;
+  vec2 n;
+  float a = sunAngle(rd, n);
   float br = breathe();
-
-  // the shafts also reach up into the clear sky
-  col += COR_COL * 0.013 * br * shafts(az) * smoothstep(0.07, 0.11, a) / (1.0 + a / 0.12) * smoothstep(0.0, 0.3, y);
 
   // stars, each a tiny 1/(1+x^2) point
   vec3 q = rd * 260.0;
@@ -351,21 +352,16 @@ vec3 sky(vec3 rd) {
     col += vec3(0.85, 0.9, 1.0) * fade * (0.6 / (1.0 + d * d * 4e6) + 0.02 / (1.0 + d * d * 2e4));
   }
 
-  // the eclipse: corona turns slowly, streamers bend outward and evolve
+  // the eclipse: k/(x+e) glow shaped by moving radial streamers
   const float R = 0.083;
   float x = a - R;
   float xs = max(x, 0.0);
-  float azr = az + uTime * 0.015 + xs * 4.0;
-  vec2 ring = vec2(cos(azr), sin(azr));
-  float streak = fbm(ring * 2.4 + vec2(uTime * 0.03, uTime * 0.02));
-  float fine = vnoise(ring * 24.0 + vec2(uTime * 0.12, 0.0));
-  streak = 0.4 + 1.15 * streak * streak + 0.3 * fine * smoothstep(0.005, 0.03, xs);
   float corona = 0.0025 / (xs + 0.0028);                      // k/(x+e)
-  corona *= mix(1.0, streak, smoothstep(0.0, 0.06, xs)) * br * (1.0 + uFlare * 1.4);
+  float st = 0.3 + 1.4 * streamers(n, xs);
+  corona *= mix(1.0, st, smoothstep(0.0, 0.03, xs)) * br * (1.0 + uFlare * 1.4);
   corona += 0.0006 / (xs * xs * 40.0 + 0.0006) * 0.6;         // thin bright limb, 1/(1+x^2)
   vec3 ccol = mix(vec3(1.0, 0.96, 0.92), COR_COL * vec3(0.8, 0.85, 1.0), smoothstep(0.0, 0.12, xs));
-  vec2 pr = vec2(cos(az), sin(az));
-  float prom = pow(vnoise(pr * 6.0 + 3.0 + vec2(uTime * 0.02, 0.0)), 6.0) * (2.0 + sin(uTime * 1.3 + az * 3.0)) / (1.0 + xs * xs * 60000.0);
+  float prom = pow(vnoise(n * 6.0 + 3.0 + vec2(uTime * 0.02, 0.0)), 6.0) * (2.0 + sin(uTime * 1.3 + n.x * 3.0)) / (1.0 + xs * xs * 60000.0);
   vec3 eclipse = ccol * corona * 0.55 + vec3(1.0, 0.35, 0.4) * prom;
   float px = 2.0 / (uRes.y * uFocal);
   float disk = smoothstep(-px, px, x);
