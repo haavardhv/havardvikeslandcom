@@ -1,7 +1,9 @@
 // Grand Theft Cappes Vei 6 — main loop, player, camera, seagulls, missions, HUD.
 import * as THREE from '../vendor/three.module.min.js';
 import { buildTextures, textTexture } from './textures.js';
-import { buildWorld, laneY, H6 } from './world.js';
+import { loadMapData, buildCity } from './city.js';
+import { buildHouse6 } from './house6.js';
+import { Physics } from './physics.js';
 import { Humanoid, Gull, makeScooter, makeItem, makeMarker, makeArrow } from './actors.js';
 import { Audio } from './audio.js';
 
@@ -121,14 +123,98 @@ function updateWeather(dt) {
 
 // ------------------------------------------------------------------ world
 const T = buildTextures();
-const W = buildWorld(scene, T);
-const world = W.world;
-for (const [x, y, z] of W.lights.slice(0, 3)) {
+const map = await loadMapData();
+const H = map.house6;
+const [OX, OZ] = H.origin, [HUX, HUZ] = H.u, [HVX, HVZ] = H.v;
+// house-local (u along the street, v into the house) <-> world
+const L2W = (u, v) => [OX + HUX * u + HVX * v, OZ + HUZ * u + HVZ * v];
+const W2L = (x, z) => { const dx = x - OX, dz = z - OZ; return [dx * HUX + dz * HUZ, dx * HVX + dz * HVZ]; };
+const L2V = (u, y, v) => { const [x, z] = L2W(u, v); return new THREE.Vector3(x, y, z); };
+const cityMats = {
+  stone: new THREE.MeshStandardMaterial({ color: 0xb9b4a6, roughness: 0.9 }),
+  copper: new THREE.MeshStandardMaterial({ color: 0x4f7a68, roughness: 0.6 }),
+};
+const city = buildCity(scene, map, T, {
+  ...cityMats,
+  // the rendered terrain is lowered around the house so it never shows inside it
+  carve: (x, z) => { const [u, v] = W2L(x, z); return (u > -2.6 && u < 10.6 && v > -2.6 && v < 8.4) ? H.FL - 0.5 : null; },
+  keepClear: (x, z) => { const [u, v] = W2L(x, z); return u > -4 && u < 12 && v > -4 && v < 14; },
+});
+// the house, its side passage and the terrace replace the ground there
+city.terrain.masks.push((x, z) => { const [u, v] = W2L(x, z); return u > -1.3 && u < 8.05 && v > -0.3 && v < H.D + 3.95; });
+const houseGroup = new THREE.Group();
+houseGroup.position.set(OX, 0, OZ);
+houseGroup.rotation.y = H.theta;
+scene.add(houseGroup);
+const house = buildHouse6(houseGroup, T, H);
+houseGroup.updateMatrixWorld(true);
+const phys = new Physics(city.terrain, city.polys);
+phys.addLocal(house.world, OX, OZ, HUX, HUZ);
+const world = phys;
+for (const d of house.doors) d.pos = L2V(d.local.x, d.local.y, d.local.z);
+for (const [x, y, z] of house.lights.slice(0, 3)) {
   const l = new THREE.PointLight(0xffd6a0, 5, 9, 1.6);
-  l.position.set(x, y, z);
+  l.position.copy(L2V(x, y, z));
   scene.add(l);
 }
-const inHouse = p => p.x > H6.x0 && p.x < H6.x1 && p.z > H6.z0 && p.z < H6.z1 && p.y < H6.C + 0.1 && p.y > -1;
+const inHouse = p => { const [u, v] = W2L(p.x, p.z); return house.inside(u, p.y, v); };
+const [AX0, AZ0, AX1, AZ1] = map.area;
+
+// walking graph (OSM streets, lanes, steps)
+const GN = map.graph.n, GE = map.graph.e;
+const gAdj = Array.from({ length: GN.length / 2 }, () => []);
+for (let i = 0; i < GE.length; i += 2) { gAdj[GE[i]].push(GE[i + 1]); gAdj[GE[i + 1]].push(GE[i]); }
+const gx = i => GN[i * 2], gz = i => GN[i * 2 + 1];
+function nearestNode(x, z, maxD = 80) {
+  let best = -1, bd = maxD * maxD;
+  for (let i = 0; i < gAdj.length; i++) {
+    if (!gAdj[i].length) continue;
+    const d = (gx(i) - x) ** 2 + (gz(i) - z) ** 2;
+    if (d < bd) { bd = d; best = i; }
+  }
+  return best;
+}
+// A* over the street graph
+function route(ax, az, bx, bz) {
+  const s = nearestNode(ax, az, 120), t = nearestNode(bx, bz, 120);
+  if (s < 0 || t < 0) return null;
+  const n = gAdj.length, g = new Float64Array(n).fill(Infinity), prev = new Int32Array(n).fill(-1), closed = new Uint8Array(n);
+  const heap = [[0, s]]; g[s] = 0;
+  const push = (f, i) => { heap.push([f, i]); let k = heap.length - 1; while (k > 0) { const pk = (k - 1) >> 1; if (heap[pk][0] <= heap[k][0]) break; [heap[pk], heap[k]] = [heap[k], heap[pk]]; k = pk; } };
+  const pop = () => { const top = heap[0], last = heap.pop(); if (heap.length) { heap[0] = last; let k = 0; for (;;) { const l = 2 * k + 1, r = l + 1; let m = k; if (l < heap.length && heap[l][0] < heap[m][0]) m = l; if (r < heap.length && heap[r][0] < heap[m][0]) m = r; if (m === k) break; [heap[m], heap[k]] = [heap[k], heap[m]]; k = m; } } return top; };
+  while (heap.length) {
+    const [, i] = pop();
+    if (closed[i]) continue;
+    closed[i] = 1;
+    if (i === t) break;
+    for (const j of gAdj[i]) {
+      const ng = g[i] + Math.hypot(gx(i) - gx(j), gz(i) - gz(j));
+      if (ng < g[j]) { g[j] = ng; prev[j] = i; push(ng + Math.hypot(gx(j) - gx(t), gz(j) - gz(t)), j); }
+    }
+  }
+  if (prev[t] < 0 && s !== t) return null;
+  const path = [];
+  for (let i = t; i >= 0; i = prev[i]) { path.push([gx(i), gz(i)]); if (i === s) break; }
+  path.reverse();
+  path.push([bx, bz]);
+  return path;
+}
+// the street you are on, for the HUD
+const namedRoads = map.roads.filter(r => r.n);
+function streetName(x, z) {
+  let best = null, bd = 12 * 12;
+  for (const r of namedRoads) {
+    const p = r.p;
+    for (let i = 0; i < p.length - 2; i += 2) {
+      const ax = p[i], az = p[i + 1], bx = p[i + 2], bz = p[i + 3];
+      const dx = bx - ax, dz = bz - az, l2 = dx * dx + dz * dz || 1;
+      const t = clamp(((x - ax) * dx + (z - az) * dz) / l2, 0, 1);
+      const d = (ax + dx * t - x) ** 2 + (az + dz * t - z) ** 2;
+      if (d < bd) { bd = d; best = r.n; }
+    }
+  }
+  return best;
+}
 
 // ------------------------------------------------------------------ rain
 const RAIN_N = isTouch ? 1400 : 2600;
@@ -156,7 +242,7 @@ function updateRain(dt) {
     let x = cx + d.x, y = cy + d.y, z = cz + d.z;
     // wrap to the camera so the rain box follows smoothly
     x = cx + ((x - cx + 25) % 50 + 50) % 50 - 25;
-    if (x > H6.x0 && x < H6.x1 && z > H6.z0 && z < H6.z1 && y < H6.C + 0.6) y = -9999;
+    { const dx = x - OX, dz = z - OZ, u = dx * HUX + dz * HUZ, v = dx * HVX + dz * HVZ; if (u > -0.5 && u < 8.5 && v > -0.5 && v < 8.9 && y < H.FU + 6) y = -9999; }
     const k = i * 6;
     rainPos[k] = x; rainPos[k + 1] = y; rainPos[k + 2] = z;
     rainPos[k + 3] = x - wind * 0.04; rainPos[k + 4] = y + 0.55; rainPos[k + 5] = z;
@@ -172,6 +258,8 @@ const SAVE_KEY = 'gtcv6-save-v1';
 const save = { mission: 0, money: 0, umbrellas: [], done: false };
 try { Object.assign(save, JSON.parse(localStorage.getItem(SAVE_KEY) || '{}')); } catch (e) { /* no storage */ }
 const persist = () => { try { localStorage.setItem(SAVE_KEY, JSON.stringify(save)); } catch (e) { /* ignore */ } };
+
+const state = { mode: 'title', alarm: 0, alarmMin: 0, alarmCool: 0, alarmFlash: 0 };
 
 // ------------------------------------------------------------------ player
 const RADIUS = 0.3, HEIGHT = 1.8, STEP = 0.5;
@@ -327,7 +415,7 @@ function moveInput() {
 const hud = {
   money: $('money'), alarm: $('alarm'), health: $('health').firstElementChild, timer: $('timer'),
   objective: $('objective'), prompt: $('prompt'), phone: $('phone'), toast: $('toast'), banner: $('banner'),
-  umbrellas: $('umbrellas'),
+  umbrellas: $('umbrellas'), street: $('street'),
 };
 const gullSvg = '<svg viewBox="0 0 32 18" aria-hidden="true"><path d="M1 6c5-3 10-2 15 4 5-6 10-7 15-4-4 0-9 3-11 8l-4 1-4-1C10 9 5 6 1 6z"/></svg>';
 hud.alarm.innerHTML = gullSvg.repeat(5);
@@ -383,22 +471,67 @@ function updateHud(dt) {
 }
 
 // ------------------------------------------------------------------ minimap
-const MAP = { x0: -130, z0: -85, x1: 75, z1: 85, ppm: 3 };
+const MAP = { x0: AX0 - 60, z0: AZ0 - 60, x1: AX1 + 60, z1: AZ1 + 60, ppm: 2 };
 const mapBase = document.createElement('canvas');
 mapBase.width = (MAP.x1 - MAP.x0) * MAP.ppm; mapBase.height = (MAP.z1 - MAP.z0) * MAP.ppm;
 {
   const g = mapBase.getContext('2d');
-  g.fillStyle = '#3f4a3a'; g.fillRect(0, 0, mapBase.width, mapBase.height);
-  const rects = [...W.mapRects].sort((a, b) => a.h - b.h);
-  for (const r of rects) {
-    const x = (r.x0 - MAP.x0) * MAP.ppm, y = (r.z0 - MAP.z0) * MAP.ppm, w = (r.x1 - r.x0) * MAP.ppm, h = (r.z1 - r.z0) * MAP.ppm;
-    g.fillStyle = r.c; g.fillRect(x, y, w, h);
-    if (r.house) { g.strokeStyle = 'rgba(0,0,0,.45)'; g.lineWidth = 2; g.strokeRect(x + 1, y + 1, w - 2, h - 2); }
+  const W = mapBase.width, Hh = mapBase.height;
+  // ground: water, green, paved, with hill shading from the terrain
+  const img = g.createImageData(W, Hh);
+  const clsCol = [[78, 92, 66], [74, 104, 58], [52, 82, 46], [104, 104, 106], [34, 64, 77]];
+  for (let j = 0; j < Hh; j++) for (let i = 0; i < W; i++) {
+    const x = MAP.x0 + i / MAP.ppm, z = MAP.z0 + j / MAP.ppm;
+    const h = city.terrain.height(x, z);
+    let c;
+    if (h < 0.2) c = [34, 64, 77];
+    else {
+      c = clsCol[city.terrain.cls(x, z)] || clsCol[0];
+      if (city.terrain.cls(x, z) === 0 && x < -230) c = clsCol[3];
+      const hx = city.terrain.height(x + 2, z) - city.terrain.height(x - 2, z), hz = city.terrain.height(x, z + 2) - city.terrain.height(x, z - 2);
+      const k = clamp(1 - hx * 0.05 - hz * 0.03, 0.6, 1.3);
+      c = c.map(v => v * k);
+    }
+    const o = (j * W + i) * 4;
+    img.data[o] = c[0]; img.data[o + 1] = c[1]; img.data[o + 2] = c[2]; img.data[o + 3] = 255;
   }
+  g.putImageData(img, 0, 0);
+  g.lineCap = 'round'; g.lineJoin = 'round';
+  const tx = x => (x - MAP.x0) * MAP.ppm, tz = z => (z - MAP.z0) * MAP.ppm;
+  const roadCol = { road: '#c9c6bd', sett: '#b9ad97', ped: '#c3b9a8', side: '#a6a39b', foot: '#a39d8e', steps: '#d07a5a' };
+  for (const pass of ['road', 'sett', 'ped', 'side', 'foot', 'steps']) {
+    for (const r of map.roads) {
+      if (r.k !== pass) continue;
+      g.strokeStyle = roadCol[r.k];
+      g.lineWidth = Math.max(1.5, r.w * MAP.ppm * (r.k === 'steps' ? 0.8 : 1));
+      if (r.k === 'steps') g.setLineDash([2, 2]); else g.setLineDash([]);
+      g.beginPath();
+      for (let i = 0; i < r.p.length; i += 2) (i ? g.lineTo : g.moveTo).call(g, tx(r.p[i]), tz(r.p[i + 1]));
+      g.stroke();
+    }
+  }
+  g.setLineDash([]);
+  for (const b of map.buildings) {
+    g.fillStyle = b.rc; g.strokeStyle = 'rgba(0,0,0,.45)'; g.lineWidth = 1;
+    g.beginPath();
+    for (let i = 0; i < b.p.length; i += 2) (i ? g.lineTo : g.moveTo).call(g, tx(b.p[i]), tz(b.p[i + 1]));
+    g.closePath(); g.fill(); g.stroke();
+  }
+  // home in raincoat yellow
+  g.fillStyle = '#f2c12e'; g.strokeStyle = '#101418'; g.lineWidth = 2;
+  g.beginPath();
+  for (const [u, v] of [[0, 0], [8, 0], [8, 8.4], [0, 8.4]]) { const [x, z] = L2W(u, v); g.lineTo(tx(x), tz(z)); }
+  g.closePath(); g.fill(); g.stroke();
+  // Fløibanen
+  g.strokeStyle = '#7b4fb0'; g.lineWidth = 3;
+  g.beginPath();
+  for (let i = 0; i < map.funicular.length; i += 2) (i ? g.lineTo : g.moveTo).call(g, tx(map.funicular[i]), tz(map.funicular[i + 1]));
+  g.stroke();
 }
 const mm = $('minimap'), mg = mm.getContext('2d'), northEl = $('north');
+let gps = null;   // [[x,z], ...] route shown on the map
 function drawMinimap(blips) {
-  const S = mm.width, c = S / 2, scale = 2.4 * (S / 360) * 1.5 / MAP.ppm;
+  const S = mm.width, c = S / 2, scale = 2.6 * (S / 360) / MAP.ppm * 1.0;
   const p = player.pos;
   const fx = -Math.sin(cam.yaw), fz = -Math.cos(cam.yaw);
   const rot = -Math.PI / 2 - Math.atan2(fz, fx);
@@ -406,6 +539,14 @@ function drawMinimap(blips) {
   mg.fillStyle = '#22404d'; mg.fillRect(0, 0, S, S);
   mg.translate(c, c); mg.rotate(rot); mg.scale(scale, scale);
   mg.drawImage(mapBase, -(p.x - MAP.x0) * MAP.ppm, -(p.z - MAP.z0) * MAP.ppm);
+  if (gps && gps.length > 1) {
+    mg.strokeStyle = '#f2c12e'; mg.lineWidth = 5 / scale * 1.4; mg.lineCap = 'round'; mg.lineJoin = 'round';
+    mg.globalAlpha = 0.9;
+    mg.beginPath();
+    gps.forEach(([x, z], i) => (i ? mg.lineTo : mg.moveTo).call(mg, (x - p.x) * MAP.ppm, (z - p.z) * MAP.ppm));
+    mg.stroke();
+    mg.globalAlpha = 1;
+  }
   mg.restore();
   const toMap = (x, z) => {
     const dx = (x - p.x) * MAP.ppm * scale, dz = (z - p.z) * MAP.ppm * scale;
@@ -419,19 +560,17 @@ function drawMinimap(blips) {
     mg.fillStyle = b.c; mg.strokeStyle = '#101418'; mg.lineWidth = 3;
     mg.beginPath(); mg.arc(x, y, b.r || 7, 0, 7); mg.fill(); mg.stroke();
   }
-  // player arrow
   mg.save(); mg.translate(c, c); mg.rotate(rot + Math.atan2(Math.cos(player.heading), Math.sin(player.heading)) + Math.PI / 2);
   mg.fillStyle = '#f2c12e'; mg.strokeStyle = '#101418'; mg.lineWidth = 3;
   mg.beginPath(); mg.moveTo(0, -13); mg.lineTo(9, 10); mg.lineTo(0, 5); mg.lineTo(-9, 10); mg.closePath(); mg.fill(); mg.stroke();
   mg.restore();
-  // north (-z) marker on the rim
   northEl.style.left = 50 + Math.sin(rot) * 41 + '%';
   northEl.style.top = 50 - Math.cos(rot) * 41 + '%';
 }
 
 // ------------------------------------------------------------------ doors
 function updateDoors(dt) {
-  for (const d of W.doors) {
+  for (const d of house.doors) {
     if (!d.auto) continue;
     const near = d.pos.distanceTo(_v2.set(player.pos.x, player.pos.y, player.pos.z)) < 2.3;
     if (near && d.target === 0) audio.door();
@@ -452,25 +591,30 @@ function bubble(text) {
 }
 
 // ------------------------------------------------------------------ pedestrians
-const LINES = ['Hei!', 'Uff!', 'Pass deg!', 'Typisk.', 'Neimen!', 'Au!', 'Hallo?!', 'Rolig!'];
+const LINES = ['Hei!', 'Uff!', 'Pass deg!', 'Typisk.', 'Neimen!', 'Au!', 'Hallo?!', 'Rolig!', 'Æ e fra Bergen!'];
 const npcs = [];
-const npcDefs = [
-  { path: [[-1.3, -47], [-1.3, 31]], jacket: 0x2c4c7a, umbrella: 0xd23a2b },
-  { path: [[1.7, 30], [1.7, -44]], jacket: 0x6b2d3a, umbrella: 0x2b2f36 },
-  { path: [[-0.2, -20], [-0.2, 20]], jacket: 0x3f6b4a, umbrella: 0xf2c12e },
-  { path: [[-78, -40], [-78, 58]], jacket: 0x22252b, umbrella: 0x3a6ea8 },
-  { path: [[-81, 52], [-81, -32]], jacket: 0xb14b2e, umbrella: null },
-  { path: [[-52, 36.8], [-7, 36.8]], jacket: 0x8a8f96, umbrella: 0x7a2e8a },
-  { path: [[-58, 31], [-58, -38]], jacket: 0x2f5d3a, umbrella: 0xe8e2d2 },
-  { path: [[-76, -20], [-76, 40]], jacket: 0xd9b75a, umbrella: 0x101418 },
-];
-for (const d of npcDefs) {
-  const fig = new Humanoid({ jacket: d.jacket, pants: [0x2b3140, 0x3b3b3b, 0x4a3a2c][npcs.length % 3], hat: Math.random() < 0.5 ? null : [0x2c4c7a, 0x7a2e28, 0x3b3b3b][npcs.length % 3], hair: [0x3a2618, 0xc9a26b, 0x1d1d1d, 0x8a8a8a][npcs.length % 4], umbrella: d.umbrella });
+const NPC_N = isTouch ? 6 : 10;
+const jackets = [0x2c4c7a, 0x6b2d3a, 0x3f6b4a, 0x22252b, 0xb14b2e, 0x8a8f96, 0x2f5d3a, 0xd9b75a, 0x4a3f6b, 0x1d1d1d];
+const umbrellaCols = [0xd23a2b, 0x2b2f36, 0xf2c12e, 0x3a6ea8, null, 0x7a2e8a, 0xe8e2d2, 0x101418, null, 0x2bb673];
+function placeNpc(n, near) {
+  // a street node 25-90 m from the player, out of sight if possible
+  for (let k = 0; k < 40; k++) {
+    const i = Math.floor(Math.random() * gAdj.length);
+    if (!gAdj[i].length) continue;
+    const d = Math.hypot(gx(i) - near.x, gz(i) - near.z);
+    if (d < 25 || d > 90) continue;
+    n.a = i; n.b = gAdj[i][Math.floor(Math.random() * gAdj[i].length)]; n.t = Math.random();
+    n.pos.set(lerp(gx(n.a), gx(n.b), n.t), 0, lerp(gz(n.a), gz(n.b), n.t));
+    n.pos.y = world.floorAt(n.pos.x, n.pos.z, 300);
+    n.off = (Math.random() - 0.5) * 1.6;
+    return true;
+  }
+  return false;
+}
+for (let k = 0; k < NPC_N; k++) {
+  const fig = new Humanoid({ jacket: jackets[k % jackets.length], pants: [0x2b3140, 0x3b3b3b, 0x4a3a2c][k % 3], hat: Math.random() < 0.5 ? null : [0x2c4c7a, 0x7a2e28, 0x3b3b3b][k % 3], hair: [0x3a2618, 0xc9a26b, 0x1d1d1d, 0x8a8a8a][k % 4], umbrella: umbrellaCols[k % umbrellaCols.length] });
   scene.add(fig.root);
-  const n = { fig, path: d.path, seg: 0, dir: 1, t: Math.random(), pos: new THREE.Vector3(), heading: 0, downT: 0, speed: 1.1 + Math.random() * 0.4, bubble: null, bubbleT: 0, fall: 0 };
-  const [a, b] = d.path;
-  n.pos.set(lerp(a[0], b[0], n.t), 0, lerp(a[1], b[1], n.t));
-  n.pos.y = world.floorAt(n.pos.x, n.pos.z, 100);
+  const n = { fig, a: 0, b: 0, t: 0, pos: new THREE.Vector3(), heading: 0, downT: 0, speed: 1.1 + Math.random() * 0.4, bubble: null, bubbleT: 0, fall: 0, off: 0 };
   npcs.push(n);
 }
 function knockNpc(n, from) {
@@ -488,27 +632,34 @@ function say(n, text) {
   n.bubbleT = 2.2;
 }
 function updateNpcs(dt) {
+  const focus = state.mode === 'title' ? camera.position : player.pos;
   for (const n of npcs) {
     if (n.bubble) { n.bubbleT -= dt; if (n.bubbleT <= 0) { n.fig.root.remove(n.bubble); n.bubble = null; } }
     if (n.party) { n.fig.animate(dt, 0, n.party); n.fig.root.position.copy(n.pos); continue; }
+    if (!n.placed || n.pos.distanceTo(focus) > 140) { n.placed = placeNpc(n, focus); n.fig.root.visible = n.placed; if (!n.placed) continue; }
     if (n.downT > 0) {
       n.downT -= dt;
       n.fall = n.downT > 0.6 ? damp(n.fall, 1, 10, dt) : damp(n.fall, 0, 8, dt);
     } else {
-      const [a, b] = n.path;
-      const len = Math.hypot(b[0] - a[0], b[1] - a[1]);
-      n.t += n.dir * n.speed * dt / len;
-      if (n.t > 1) { n.t = 1; n.dir = -1; } else if (n.t < 0) { n.t = 0; n.dir = 1; }
-      const tx = lerp(a[0], b[0], n.t), tz = lerp(a[1], b[1], n.t);
-      const want = Math.atan2((b[0] - a[0]) * n.dir, (b[1] - a[1]) * n.dir);
-      n.heading += angDiff(n.heading, want) * Math.min(1, dt * 5);
+      const ax = gx(n.a), az = gz(n.a), bx = gx(n.b), bz = gz(n.b);
+      const len = Math.hypot(bx - ax, bz - az) || 0.1;
+      n.t += n.speed * dt / len;
+      if (n.t >= 1) {
+        const nb = gAdj[n.b].filter(j => j !== n.a);
+        const next = nb.length ? nb[Math.floor(Math.random() * nb.length)] : n.a;
+        n.a = n.b; n.b = next; n.t = 0;
+      }
+      const dx = (bx - ax) / len, dz = (bz - az) / len;
+      // walk a little to the side of the centre line
+      const tx = lerp(ax, bx, Math.min(1, n.t)) - dz * n.off, tz = lerp(az, bz, Math.min(1, n.t)) + dx * n.off;
+      n.heading += angDiff(n.heading, Math.atan2(dx, dz)) * Math.min(1, dt * 5);
       n.pos.x = tx; n.pos.z = tz;
-      const fl = world.floorAt(n.pos.x, n.pos.z, n.pos.y + 0.6, 0.6);
-      if (fl > -50) n.pos.y = damp(n.pos.y, fl, 15, dt);
+      const fl = world.floorAt(n.pos.x, n.pos.z, n.pos.y + 1.0, 1.0);
+      if (fl > -1e8) n.pos.y = damp(n.pos.y, fl, 15, dt);
     }
     // bump with the player
     const dx = player.pos.x - n.pos.x, dz = player.pos.z - n.pos.z, d = Math.hypot(dx, dz);
-    if (d < 0.6 && Math.abs(player.pos.y - n.pos.y) < 1.2 && d > 1e-4 && n.downT <= 0) {
+    if (state.mode === 'play' && d < 0.6 && Math.abs(player.pos.y - n.pos.y) < 1.2 && d > 1e-4 && n.downT <= 0) {
       const speed = player.riding ? Math.abs(player.riding.speed) : Math.hypot(player.vel.x, player.vel.z);
       if (speed > 5) knockNpc(n, player.pos);
       else { player.pos.x += dx / d * (0.6 - d); player.pos.z += dz / d * (0.6 - d); }
@@ -531,17 +682,19 @@ function addScooter(x, z, heading) {
   scooters.push(s);
   return s;
 }
-addScooter(1.6, 8.5, 0);
-addScooter(-1.6, -27, 0);
-addScooter(-70, 33, Math.PI / 2);
-addScooter(-6, -57, Math.PI / 2);
+const SC_HOME = L2W(11, -2.3);
+addScooter(SC_HOME[0], SC_HOME[1], Math.atan2(HUX, HUZ));
+addScooter(-183, -80, 0.3);           // Domkirkeplassen
+addScooter(-425, -205, 2.5);          // Torget
+addScooter(40, -265, -1.2);           // Fjellveien, by the funicular halt
+addScooter(-58, 40, 0.8);             // Asylplassen
 const scInfo = {};
 function updateScooter(s, dt, input) {
   const fwd = _v2.set(Math.sin(s.heading), 0, Math.cos(s.heading));
   const ridden = player.riding === s;
   // ground and slope
   const fl = world.floorAt(s.pos.x, s.pos.z, s.pos.y + 0.1, 0.5, scInfo);
-  const onStairs = scInfo.block && scInfo.block.stairs;
+  const onStairs = (scInfo.block && scInfo.block.stairs) || city.onSteps(s.pos.x, s.pos.z);
   const grounded = s.pos.y <= fl + 0.05;
   let slope = 0;
   if (grounded) {
@@ -568,7 +721,15 @@ function updateScooter(s, dt, input) {
   const dist = s.speed * dt, n = Math.max(1, Math.ceil(Math.abs(dist) / 0.1));
   let crashed = false;
   for (let i = 0; i < n; i++) {
+    const px = s.pos.x, pz = s.pos.z;
     s.pos.x += fwd.x * dist / n; s.pos.z += fwd.z * dist / n;
+    // walls of earth: the terrain rises too steeply
+    const g1 = world.terrain.ground(s.pos.x, s.pos.z);
+    if (g1 > s.pos.y + Math.abs(dist / n) * 1.2 + 0.08) {
+      s.pos.x = px; s.pos.z = pz;
+      if (ridden && Math.abs(s.speed) > 7.5) { crashed = true; break; }
+      s.speed *= -0.2; audio.bump(); break;
+    }
     const hit = world.collide(s.pos, 0.35, 1.7, 0.45);
     if (hit) {
       const into = -(hit.nx * fwd.x + hit.nz * fwd.z);
@@ -590,7 +751,8 @@ function updateScooter(s, dt, input) {
 // ------------------------------------------------------------------ seagulls
 const gulls = [];
 const GULL_N = 12;
-const groundSpots = [[-80, -12, 4], [-79, -12, 11], [-81.5, -12, -7], [-77.5, -12, 19], [-82, -12, 30]];
+// on the quay at Fisketorget
+const groundSpots = [[-452, -222], [-449, -230], [-455, -214], [-446, -238], [-441, -209], [-458, -228]].map(([x, z]) => [x, world.floorAt(x, z, 50), z]);
 for (let i = 0; i < GULL_N; i++) {
   const g = new Gull();
   scene.add(g.root);
@@ -603,9 +765,10 @@ for (let i = 0; i < GULL_N; i++) {
 }
 function newCircle(a, place) {
   a.state = 'circle';
-  a.c.set(-70 + Math.random() * 80, 0, -50 + Math.random() * 100);
+  const f = state && state.mode === 'play' ? player.pos : camera.position;
+  a.c.set(f.x + (Math.random() - 0.5) * 160, 0, f.z + (Math.random() - 0.5) * 160);
   a.r = 12 + Math.random() * 25;
-  a.alt = 16 + Math.random() * 18;
+  a.alt = Math.max(5, city.terrain.height(a.c.x, a.c.z)) + 18 + Math.random() * 20;
   a.w = (Math.random() < 0.5 ? -1 : 1) * (4.5 + Math.random() * 2) / a.r;
   if (place) a.pos.set(a.c.x + Math.cos(a.ang) * a.r, a.alt, a.c.z + Math.sin(a.ang) * a.r);
 }
@@ -667,7 +830,7 @@ function updateGulls(dt) {
       case 'orbit': {
         a.ang += dt * 0.9;
         const r = 7, h = indoors ? 12 : 4.5;
-        const cx = indoors ? (H6.x0 + H6.x1) / 2 : p.x, cz = indoors ? 0 : p.z;
+        const hc = L2W(4, 4.2), cx = indoors ? hc[0] : p.x, cz = indoors ? hc[1] : p.z;
         desired.set(cx + Math.cos(a.ang) * r - a.pos.x, p.y + h + Math.sin(a.ang * 2) - a.pos.y, cz + Math.sin(a.ang) * r - a.pos.z).multiplyScalar(1.8);
         flap = 0.5;
         if (a.t <= 0 && !indoors && player.knockT <= 0 && state.mode === 'play') { a.state = 'dive'; a.t = 2.4; audio.squawk(); }
@@ -749,7 +912,6 @@ function hitPlayer(a) {
 }
 
 // ------------------------------------------------------------------ alarm
-const state = { mode: 'title', alarm: 0, alarmMin: 0, alarmCool: 0, alarmFlash: 0 };
 function raiseAlarm(n = 1) {
   const before = state.alarm;
   state.alarm = clamp(state.alarm + n, 0, 5);
@@ -765,19 +927,30 @@ function updateAlarm(dt) {
 }
 
 // ------------------------------------------------------------------ pickups: lost umbrellas
-const L = laneY;
-const alley = W.bryggen[5] ? (W.bryggen[5].z1 + W.bryggen[6].z0) / 2 : 0;
-const UMBRELLAS = [
-  [-10.4, -58], [19.5, -5.2], [-30, -20], [-82.5, -43], [-67, alley], [-4.5, 38.5], [-28, -23.5], [11.2, -3.0, H6.U], [11.9, -5.6], [-47, 40.5],
+// lost umbrellas at real spots around Fjellet, the cathedral and Torget
+const snapToStreet = (x, z) => { const i = nearestNode(x, z, 40); return i >= 0 ? [gx(i), gz(i)] : [x, z]; };
+const UMBRELLA_SPOTS = [
+  ['Domkirkeplassen', ...snapToStreet(-178, -84)],
+  ['Fløibanen, lower station', ...snapToStreet(-262, -360)],
+  ['Fjellveien, by the funicular', ...snapToStreet(45, -275)],
+  ['Fisketorget', -444, -226],
+  ['Asylplassen', ...snapToStreet(-55, 40)],
+  ['Skivebakken steps', ...snapToStreet(150, 120)],
+  ['Heggebakken steps', ...snapToStreet(-49, -21)],
+  ['the terrace', ...L2W(6.8, 11.6), H.FL],
+  ['the shower', ...L2W(2.2, 6.1), H.FL],
+  ['Brattlien steps', ...snapToStreet(42, -31)],
+  ['Korskirken', ...snapToStreet(-300, -190)],
 ];
-const umbrellaObjs = UMBRELLAS.map((u, i) => {
-  const y = u[2] !== undefined ? u[2] : world.floorAt(u[0], u[1], 100);
+const UMBRELLAS = UMBRELLA_SPOTS;
+const umbrellaObjs = UMBRELLAS.map(([name, x, z, yy], i) => {
+  const y = yy !== undefined ? yy : world.floorAt(x, z, 300);
   const o = makeItem('umbrella');
-  o.position.set(u[0], y, u[1]);
+  o.position.set(x, y, z);
   o.rotation.z = 0.5; o.rotation.y = i;
   o.visible = !save.umbrellas.includes(i);
   scene.add(o);
-  return { o, i, base: y };
+  return { o, i, base: y, name };
 });
 function updateUmbrellas(dt, time) {
   for (const u of umbrellaObjs) {
@@ -790,7 +963,7 @@ function updateUmbrellas(dt, time) {
       save.umbrellas.push(u.i); save.money += 50; persist();
       audio.coin();
       const n = save.umbrellas.length;
-      toast(n === UMBRELLAS.length ? `All ${n} lost umbrellas found! Bergen thanks you. +500 kr` : `Lost umbrella ${n}/${UMBRELLAS.length}  +50 kr`, 3);
+      toast(n === UMBRELLAS.length ? `All ${n} lost umbrellas found! Bergen thanks you. +500 kr` : `Lost umbrella ${n}/${UMBRELLAS.length} (${u.name})  +50 kr`, 3);
       if (n === UMBRELLAS.length) { save.money += 500; persist(); }
     }
   }
@@ -833,7 +1006,8 @@ let lastSurfaceTag = null;
 function surfaceAt() {
   const p = player.pos;
   if (inHouse(p)) {
-    if (p.y > 2) { if (p.x > 10.35 && p.z < -1.65) return 'tile'; if (p.z > -2.95 && p.z < 0.15 && p.x > 9.1) return 'tile'; if (p.z > -1.65 && p.z < 0.15) return 'tile'; }
+    const [u, v] = W2L(p.x, p.z);
+    if (p.y < H.FU - 1 && u < 2.6 && v > 4.6) return 'tile';
     return 'wood';
   }
   return 'stone';
@@ -902,9 +1076,18 @@ function updatePlayer(dt) {
   // horizontal, in small substeps
   const hd = Math.hypot(v.x, v.z) * dt, n = Math.max(1, Math.ceil(hd / 0.1));
   for (let i = 0; i < n; i++) {
-    p.x += v.x * dt / n; p.z += v.z * dt / n;
+    const px = p.x, pz = p.z, sx = v.x * dt / n, sz = v.z * dt / n;
+    p.x += sx; p.z += sz;
+    // the terrain is a heightfield: anything steeper than ~50 degrees is a wall
+    const climb = Math.hypot(sx, sz) * 1.2 + 0.06;
+    if (world.terrain.ground(p.x, p.z) > p.y + climb) {
+      // slide along: try each axis on its own
+      p.x = px + sx; p.z = pz;
+      if (world.terrain.ground(p.x, p.z) > p.y + climb) { p.x = px; p.z = pz + sz; if (world.terrain.ground(p.x, p.z) > p.y + climb) p.z = pz; }
+    }
     world.collide(p, RADIUS, HEIGHT, player.onGround ? STEP : 0.25);
   }
+  p.x = clamp(p.x, AX0, AX1); p.z = clamp(p.z, AZ0, AZ1);
   // vertical
   const wasGround = player.onGround;
   p.y += v.y * dt;
@@ -928,8 +1111,8 @@ function updatePlayer(dt) {
   lastSurfaceTag = pInfo.block && pInfo.block.tag;
 
   // fell into Vågen
-  if (p.y < -12.6 && p.x < -83) { splash(); return; }
-  if (p.y < -40) respawn();
+  if (p.y < 0.1 && world.terrain.height(p.x, p.z) < -0.3) { splash(); return; }
+  if (p.y < -30) respawn();
 
   player.fig.animate(dt, player.knockT > 0 ? 0 : hs, player.knockT > 0.3 ? 'down' : 'walk', player.onGround || player.knockT > 0);
   player.fig.root.position.copy(p);
@@ -994,14 +1177,16 @@ function dropBolleAt(pos, gull) {
   bolleDrop = { pos: bolleItem.position.clone(), item: bolleItem };
 }
 function pickDropSpot(from) {
-  // somewhere walkable 12-22 m away, on the way home
-  for (let k = 0; k < 30; k++) {
-    const a = Math.random() * Math.PI * 2, r = 12 + Math.random() * 10;
-    const x = clamp(from.x + Math.cos(a) * r, -82, 18), z = clamp(from.z + Math.sin(a) * r, -55, 55);
-    const y = world.floorAt(x, z, 60, 0.45, pInfo);
-    if (y > -13 && pInfo.block && pInfo.block.tag !== 'house' && pInfo.block.walk && !inHouse({ x, y, z })) return new THREE.Vector3(x, y, z);
+  // a street spot 12-25 m away
+  for (let k = 0; k < 40; k++) {
+    const i = Math.floor(Math.random() * gAdj.length);
+    if (!gAdj[i].length) continue;
+    const d = Math.hypot(gx(i) - from.x, gz(i) - from.z);
+    if (d < 12 || d > 25) continue;
+    return new THREE.Vector3(gx(i), world.floorAt(gx(i), gz(i), 300), gz(i));
   }
-  return new THREE.Vector3(-1, L(10), 10);
+  const i = nearestNode(from.x, from.z, 200);
+  return new THREE.Vector3(gx(i), world.floorAt(gx(i), gz(i), 300), gz(i));
 }
 
 // ------------------------------------------------------------------ missions
@@ -1010,23 +1195,67 @@ scene.add(marker);
 marker.visible = false;
 const itemArrows = [];
 let mission = null;
+// The bakery: the corner house on Torget facing the fish market
+const BAKERY = (() => {
+  const target = [-412, -222];
+  let best = null, bd = Infinity;
+  for (const it of city.polys.items) {
+    if (it.tree) continue;
+    const cx = (it.x0 + it.x1) / 2, cz = (it.z0 + it.z1) / 2;
+    const d = Math.hypot(cx - target[0], cz - target[1]);
+    if (d < bd && it.x1 - it.x0 > 6) { bd = d; best = it; }
+  }
+  const np = { x: 0, z: 0 };
+  let nearest = Infinity, ex = 0, ez = 0;
+  const p = best.pts;
+  for (let i = 0, j = p.length - 2; i < p.length; j = i, i += 2) {
+    const ax = p[j], az = p[j + 1], bx = p[i], bz = p[i + 1], dx = bx - ax, dz = bz - az, l2 = dx * dx + dz * dz || 1;
+    const t = clamp(((target[0] - ax) * dx + (target[1] - az) * dz) / l2, 0.2, 0.8);
+    const qx = ax + dx * t, qz = az + dz * t, d = Math.hypot(qx - target[0], qz - target[1]);
+    if (d < nearest) { nearest = d; np.x = qx; np.z = qz; ex = dx; ez = dz; }
+  }
+  const l = Math.hypot(ex, ez) || 1;
+  let nx = ez / l, nz = -ex / l;
+  if ((target[0] - np.x) * nx + (target[1] - np.z) * nz < 0) { nx = -nx; nz = -nz; }
+  const door = new THREE.Vector3(np.x + nx * 1.2, 0, np.z + nz * 1.2);
+  door.y = world.floorAt(door.x, door.z, 200);
+  const sign = new THREE.Mesh(new THREE.PlaneGeometry(3.2, 0.8), new THREE.MeshStandardMaterial({ map: textTexture(['BAKERI'], { w: 512, h: 128, bg: '#f4ead2', fg: '#6a2a1f', font: '800 78px "Archivo", sans-serif', border: '#6a2a1f' }), roughness: 0.6 }));
+  sign.position.set(np.x + nx * 0.08, door.y + 3.3, np.z + nz * 0.08);
+  sign.rotation.y = Math.atan2(nx, nz);
+  scene.add(sign);
+  const awning = new THREE.Mesh(new THREE.BoxGeometry(3.6, 0.08, 1.6), new THREE.MeshStandardMaterial({ color: 0x7a2e28, roughness: 0.8 }));
+  awning.position.set(np.x + nx * 0.8, door.y + 2.7, np.z + nz * 0.8);
+  awning.rotation.set(0, Math.atan2(nx, nz), 0);
+  awning.rotateX(0.3);
+  scene.add(awning);
+  return { door, heading: Math.atan2(nx, nz) };
+})();
+// Fisketorget: a few market stalls on the quay
+for (const [x, z, c] of [[-449, -219, 0xd23a2b], [-445, -228, 0xf4f1ea], [-452, -233, 0x2c4c7a], [-441, -214, 0xf4f1ea]]) {
+  const y = world.floorAt(x, z, 50);
+  const g = new THREE.Group();
+  const roof = new THREE.Mesh(new THREE.ConeGeometry(2.4, 1.0, 4), new THREE.MeshStandardMaterial({ color: c, roughness: 0.7 }));
+  roof.position.y = 2.7; roof.rotation.y = Math.PI / 4;
+  const table = new THREE.Mesh(new THREE.BoxGeometry(2.6, 0.9, 1.2), new THREE.MeshStandardMaterial({ color: 0x8a8f96, roughness: 0.5, metalness: 0.4 }));
+  table.position.y = 0.45;
+  g.add(roof, table);
+  for (const [px, pz] of [[-1.5, -1.5], [1.5, -1.5], [-1.5, 1.5], [1.5, 1.5]]) { const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.04, 2.3, 5), new THREE.MeshStandardMaterial({ color: 0x333333 })); pole.position.set(px, 1.15, pz); g.add(pole); }
+  g.position.set(x, y, z); g.rotation.y = 0.35;
+  g.traverse(o => { if (o.isMesh) o.castShadow = true; });
+  scene.add(g);
+  world.polys.add(Float32Array.from([x - 1.3, z - 0.6, x + 1.3, z - 0.6, x + 1.3, z + 0.6, x - 1.3, z + 0.6]), y - 1, y + 0.9, {});
+}
+
+const intoHouse = Math.atan2(HVX, HVZ);           // facing from the street into the house
 const SPAWN = {
-  wharf: [-79.5, -12, 31, Math.PI / 2],
-  home: [1.5, L(-0.85), -0.85, Math.PI / 2],
-  lane: [0.5, L(4), 4, Math.PI],
-  bakery: [-76.5, -12, W.bakeZ, Math.PI / 2],
+  torget: [-430, 0, -207, Math.PI / 2],
+  home: [...(([x, z]) => [x, H.FU + 0.5, z])(L2W(1.95, -1.6)), intoHouse],
+  lane: [...(([x, z]) => [x, H.FU + 0.5, z])(L2W(9.5, -2.3)), Math.atan2(HUX, HUZ)],
+  bakery: [BAKERY.door.x, BAKERY.door.y, BAKERY.door.z, BAKERY.heading + Math.PI],
 };
-const DOOR = new THREE.Vector3(1.9, L(-0.85), -0.85);
-const TERRACE = new THREE.Vector3(16.5, H6.U, -0.8);
-const G = H6.G, U = H6.U;
-const ITEMS = [
-  { kind: 'laptop', p: [11.9, G + 0.9, -4.0], name: 'laptop' },
-  { kind: 'candle', p: [10.2, G + 0.43, 2.1], name: 'candle & flowers' },
-  { kind: 'router', p: [3.1, G + 0.76, -3.0], name: 'wi-fi router' },
-  { kind: 'cushion', p: [7.6, U + 0.56, 3.6], name: 'blue cushions' },
-  { kind: 'plant', p: [12.05, U + 1.43, -3.2], name: 'bathroom plant' },
-  { kind: 'book', p: [3.1, U + 0.76, 2.3], name: 'coffee-table book' },
-];
+const DOOR = L2V(1.95, H.FU, -0.7);
+const TERRACE = L2V(...house.terrace.slice(0, 1), house.terrace[1], house.terrace[2]);
+const ITEMS = house.items.map(it => ({ ...it, p: (([u, y, v]) => { const w = L2V(u, y, v); return [w.x, w.y, w.z]; })(it.p) }));
 const itemObjs = ITEMS.map(it => {
   const o = makeItem(it.kind);
   o.position.set(...it.p);
@@ -1037,20 +1266,29 @@ const itemObjs = ITEMS.map(it => {
   scene.add(arrow);
   return { ...it, o, arrow, got: false };
 });
-
-const CHECKPOINTS = [
-  [0.2, 16], [0.2, 30], [-4, 36.6], [-25, 36.8], [-48, 36.8], [-70, 35],
-];
+let CHECKPOINTS = [];
+function planCheckpoints() {
+  const r = route(SC_HOME[0], SC_HOME[1], BAKERY.door.x, BAKERY.door.z) || [[BAKERY.door.x, BAKERY.door.z]];
+  const cps = [];
+  let acc = 0;
+  for (let i = 1; i < r.length; i++) {
+    acc += Math.hypot(r[i][0] - r[i - 1][0], r[i][1] - r[i - 1][1]);
+    if (acc > 70 || i === r.length - 1) { cps.push(r[i]); acc = 0; }
+  }
+  const len = r.reduce((a, p, i) => i ? a + Math.hypot(p[0] - r[i - 1][0], p[1] - r[i - 1][1]) : 0, 0);
+  CHECKPOINTS = cps;
+  return len;
+}
 
 const MISSIONS = [
   {
-    id: 'home', title: 'Hjem, vått hjem', sub: 'Home, wet home', spawn: 'wharf', reward: 100,
+    id: 'home', title: 'Hjem, vått hjem', sub: 'Home, wet home', spawn: 'torget', reward: 100,
     start(m) {
-      showPhone('Ingrid (housemate)', 'Where ARE you? You have the only key and it’s pouring. Cappes vei 6. Now please.', 7);
+      showPhone('Ingrid (housemate)', 'Where ARE you? You have the only key and it’s pouring. Cappes vei 6, the black door. Now please.', 7);
       m.step = 0;
     },
     update(m) {
-      setObjective('Get home to <em>Cappes vei 6</em>. The smau stairs run straight up from Bryggen.');
+      setObjective('Get home to <em>Cappes vei 6</em>. Follow the yellow route: up past the cathedral, Heggebakken and Skivebakken.');
       m.target = DOOR;
       if (player.pos.distanceTo(DOOR) < 1.4 || inHouse(player.pos)) return 'done';
     },
@@ -1086,8 +1324,8 @@ const MISSIONS = [
         m.blips = remaining.map(i => ({ x: i.o.position.x, z: i.o.position.z, c: '#f2c12e', r: 5, edge: false }));
         void best;
       } else {
-        if (!m.allGot) { m.allGot = true; showPhone('Ingrid', 'Perfect. Bring it all up to the terrace. The back door upstairs.', 6); }
-        setObjective('Carry it all to the <em>terrace</em> (upstairs, out the back door).');
+        if (!m.allGot) { m.allGot = true; showPhone('Ingrid', 'Perfect. Bring it all down to the terrace: downstairs, the glass door at the end of the corridor.', 6); }
+        setObjective('Carry it all to the <em>terrace</em> (downstairs, out the glass door).');
         m.target = TERRACE;
         m.blips = null;
         if (player.pos.distanceTo(TERRACE) < 2.2) return 'done';
@@ -1097,27 +1335,28 @@ const MISSIONS = [
     cleanup() { for (const it of itemObjs) { it.o.visible = false; it.arrow.visible = false; } },
   },
   {
-    id: 'scooter', title: 'Grand Theft Sparkesykkel', sub: 'The bakery at Bryggen closes in one minute', spawn: 'lane', reward: 500,
+    id: 'scooter', title: 'Grand Theft Sparkesykkel', sub: 'The bakery on Torget is about to close', spawn: 'lane', reward: 500,
     noPunchAlarm: true,
     start(m) {
-      showPhone('Ingrid', 'DISASTER. No boller for the party. The bakery at Bryggen closes in a minute. Grab a scooter. Go go go.', 8);
+      showPhone('Ingrid', 'DISASTER. No boller for the party. The bakery on Torget closes any minute. Grab a scooter. Go go go.', 8);
       m.step = 0; m.cp = 0;
+      m.len = planCheckpoints();
       const s = scooters[0];
-      s.pos.set(1.6, L(8.5), 8.5); s.heading = 0; s.speed = 0; s.pos.y = world.floorAt(1.6, 8.5, 100);
+      s.pos.set(SC_HOME[0], 0, SC_HOME[1]); s.heading = Math.atan2(HUX, HUZ); s.speed = 0; s.pos.y = world.floorAt(SC_HOME[0], SC_HOME[1], 300);
     },
     update(m) {
       if (m.step === 0) {
-        setObjective('Steal an <em>e-scooter</em> — there’s one just down the lane. Press <em>E</em> next to it.');
+        setObjective('Steal an <em>e-scooter</em>: there’s one just along Cappes vei. Press <em>E</em> next to it.');
         const s = nearestScooter(1000);
         m.target = s ? s.pos : null;
-        if (player.riding) { m.step = 1; m.timer = 60; state.alarmMin = 2; raiseAlarm(2); toast('Gulls incoming. Keep riding!'); }
+        if (player.riding) { m.step = 1; m.timer = Math.round(m.len / 6.5 + 25); state.alarmMin = 2; raiseAlarm(2); toast('Gulls incoming. Keep riding!'); }
         return;
       }
       const cp = CHECKPOINTS[m.cp];
       const y = world.floorAt(cp[0], cp[1], 100);
       m.target = _cpv.set(cp[0], y, cp[1]);
-      setObjective(`Ride down to <em>Bryggen</em> through the checkpoints (${m.cp + 1}/${CHECKPOINTS.length}).`);
-      if (Math.hypot(player.pos.x - cp[0], player.pos.z - cp[1]) < 3.2) {
+      setObjective(`Ride down to the bakery on <em>Torget</em> through the checkpoints (${m.cp + 1}/${CHECKPOINTS.length}).`);
+      if (Math.hypot(player.pos.x - cp[0], player.pos.z - cp[1]) < 4.5) {
         m.cp++; audio.coin();
         if (m.cp >= CHECKPOINTS.length) return 'done';
       }
@@ -1133,7 +1372,7 @@ const MISSIONS = [
       showPhone('Ingrid', 'Did you make it?? Get the LAST skillingsbolle. Every gull in Bergen is watching that counter.', 7);
     },
     update(m, dt) {
-      const door = _cpv.set(-75.2, -12, W.bakeZ);
+      const door = _cpv.copy(BAKERY.door);
       if (m.step === 0) {
         setObjective('Get the last <em>skillingsbolle</em> from the bakery.');
         m.target = door;
@@ -1145,7 +1384,7 @@ const MISSIONS = [
         return;
       }
       if (player.carrying) {
-        setObjective('Carry the bolle home to the <em>terrace of Cappes vei 6</em>. Punch gulls that get close.');
+        setObjective('Carry the bolle home to the <em>terrace of Cappes vei 6</em> (in the front door, down the stairs). Punch gulls that get close.');
         m.target = TERRACE;
         bolleMarker.visible = false;
         if (player.pos.distanceTo(TERRACE) < 2.4) return 'done';
@@ -1228,7 +1467,7 @@ function updateMission(dt) {
 // ------------------------------------------------------------------ death, water, respawn
 function placePlayer(sp) {
   const [x, y, z, h] = sp;
-  player.pos.set(x, world.floorAt(x, z, y + 1), z);
+  player.pos.set(x, world.floorAt(x, z, (y || 0) + 200, 0.5), z);
   player.vel.set(0, 0, 0);
   player.heading = h;
   cam.yaw = h + Math.PI; cam.pitch = 0.3; cam.cur = cam.dist = 4.4;
@@ -1248,10 +1487,10 @@ function splash() {
   if (player.carrying) { player.carrying = null; bolleItem.removeFromParent(); }
   toast('Vågen is 8 °C in November. Not today.', 3);
   fadeThen(() => {
-    placePlayer(SPAWN.wharf);
+    placePlayer(SPAWN.torget);
     if (mission && mission.def.id === 'bolle' && mission.step === 1 && !player.carrying && !bolleDrop) { giveBolle(); }
   });
-  player.pos.y = -12.5; player.vel.set(0, 0, 0);
+  player.vel.set(0, 0, 0);
 }
 function die(title, sub) {
   state.mode = 'dead';
@@ -1270,13 +1509,14 @@ function die(title, sub) {
 const party = [];
 function ending() {
   state.mode = 'cut';
+  state.alarm = 0; state.alarmMin = 0;
   weather.forced = 0;
-  const spots = [[15.4, 0.1, -2.2, 'wave', 0x2c4c7a, 0xc9a26b], [16.2, 2.6, Math.PI, 'idle', 0x8a3b6b, 0x1d1d1d], [18.2, -2.6, -0.4, 'wave', 0x3f6b4a, 0x3a2618]];
-  if (!party.length) for (const [x, z, h, anim, jacket, hair] of spots) {
+  const spots = [[1.5, 10.2, 2.4, 'wave', 0x2c4c7a, 0xc9a26b], [5.2, 9.6, -2.2, 'idle', 0x8a3b6b, 0x1d1d1d], [6.4, 11.4, -2.8, 'wave', 0x3f6b4a, 0x3a2618]];
+  if (!party.length) for (const [u, v, h, anim, jacket, hair] of spots) {
     const fig = new Humanoid({ jacket, hair, hat: null });
     scene.add(fig.root);
-    const n = { fig, pos: new THREE.Vector3(x, U, z), heading: h, party: anim, downT: 0, fall: 0, path: [[x, z], [x, z]] };
-    fig.root.position.copy(n.pos); fig.root.rotation.y = h;
+    const n = { fig, pos: L2V(u, H.FL, v), heading: h + H.theta, party: anim, downT: 0, fall: 0, placed: true };
+    fig.root.position.copy(n.pos); fig.root.rotation.y = n.heading;
     npcs.push(n); party.push(n);
   }
   say(party[0], 'Bolle!!');
@@ -1293,9 +1533,9 @@ function updateCut(dt) {
   const k = clamp((performance.now() - state.cut.t0) / state.cut.dur, 0, 1);
   const e = k * k * (3 - 2 * k);
   // rise from the terrace and look out over the rooftops to Vågen
-  const a = new THREE.Vector3(19.5, U + 2.2, 3.5), b = new THREE.Vector3(24, U + 34, 16);
+  const a = L2V(8.5, H.FL + 2.4, 13.8), b = L2V(2, H.FL + 34, 30);
   camera.position.lerpVectors(a, b, e);
-  const la = new THREE.Vector3(14.5, U + 1.2, -0.5), lb = new THREE.Vector3(-90, -14, -4);
+  const la = L2V(3.5, H.FL + 1.2, 9.5), lb = new THREE.Vector3(-470, 0, -250);
   camera.lookAt(_v.lerpVectors(la, lb, e));
   player.fig.root.visible = true;
   void dt;
@@ -1303,9 +1543,10 @@ function updateCut(dt) {
 
 // ------------------------------------------------------------------ title camera
 function updateTitleCam(time) {
-  const a = time * 0.12;
-  camera.position.set(-1.3 + Math.sin(a) * 0.6, 4.4 + Math.sin(a * 0.7) * 0.4, -15 + Math.cos(a) * 1.5);
-  camera.lookAt(3.5, 2.6, 1);
+  // drift along Cappes vei, looking at no. 6
+  const a = time * 0.1;
+  camera.position.copy(L2V(-9 + Math.sin(a) * 1.5, H.FU + 3.2 + Math.sin(a * 0.7) * 0.4, -5.5));
+  camera.lookAt(L2V(3.5, H.FU + 2.2, 0.5));
 }
 
 // ------------------------------------------------------------------ flow
@@ -1366,7 +1607,7 @@ $('reset').addEventListener('click', () => {
 });
 
 // ------------------------------------------------------------------ main loop
-let last = performance.now(), time = 0, frameAvg = 16, adaptT = 0;
+let last = performance.now(), time = 0, frameAvg = 16, adaptT = 0, gpsT = 0;
 const funiState = { t: 0 };
 function frame(now) {
   requestAnimationFrame(frame);
@@ -1399,7 +1640,17 @@ function frame(now) {
     if (mission && mission.blips) blips.push(...mission.blips);
     if (!mission || mission.def.id === 'scooter') for (const s of scooters) if (s !== player.riding) blips.push({ x: s.pos.x, z: s.pos.z, c: '#2bb673', r: 5 });
     for (const a of gulls) if (['orbit', 'dive', 'climb', 'carry'].includes(a.state)) blips.push({ x: a.pos.x, z: a.pos.z, c: a.state === 'carry' ? '#f2c12e' : '#d2301f', r: 4 });
-    blips.push({ x: 7.6, z: 0, c: '#f4f1ea', r: 6, edge: true });
+    { const [hx, hz] = L2W(4, 4.2); blips.push({ x: hx, z: hz, c: '#f4f1ea', r: 6, edge: true }); }
+    // GPS route to the current target, recomputed now and then
+    gpsT -= dt;
+    if (gpsT <= 0) {
+      gpsT = 1.2;
+      const tgt = mission && mission.target;
+      gps = tgt && !inHouse(player.pos) && Math.hypot(tgt.x - player.pos.x, tgt.z - player.pos.z) > 15 ? route(player.pos.x, player.pos.z, tgt.x, tgt.z) : null;
+      if (gps) gps.unshift([player.pos.x, player.pos.z]);
+      const sn = inHouse(player.pos) ? 'Cappes vei 6' : streetName(player.pos.x, player.pos.z);
+      if (sn !== hud.street.textContent) hud.street.textContent = sn || '';
+    }
     drawMinimap(blips);
     // prompt
     let prompt = '';
@@ -1418,17 +1669,16 @@ function frame(now) {
   // funicular cars shuttle up and down, passing halfway
   funiState.t += dt / 70;
   const ft = (Math.sin(funiState.t * Math.PI * 2) + 1) / 2;
-  W.funi.cars.forEach((car, i) => {
-    const u = i === 0 ? ft : 1 - ft;
-    const p = W.funi.curve.getPointAt(clamp(u, 0, 1));
-    const p2 = W.funi.curve.getPointAt(clamp(u + 0.01, 0, 1));
-    car.position.copy(p).add(_v.set(0, 0, i === 0 ? 1.6 : -1.6));
-    car.lookAt(p2.x, p2.y, p2.z + (i === 0 ? 1.6 : -1.6));
-    car.rotateY(-Math.PI / 2);
+  city.cars.forEach((car, i) => {
+    const u = clamp(i === 0 ? ft : 1 - ft, 0, 0.995);
+    const p = city.funiCurve.getPointAt(u);
+    const p2 = city.funiCurve.getPointAt(u + 0.005);
+    car.position.copy(p);
+    car.lookAt(p2.x, p.y, p2.z);
   });
 
   // the sun's shadow box follows the player
-  const focus = state.mode === 'title' ? _v.set(4, 2, 0) : player.pos;
+  const focus = state.mode === 'title' ? L2V(3, H.FU, 0) : (state.mode === 'cut' ? L2V(3, H.FL, 6) : player.pos);
   sun.position.copy(focus).addScaledVector(sunOffset, 100);
   sun.target.position.copy(focus);
 
@@ -1449,4 +1699,4 @@ $('play').disabled = false;
 $('play').textContent = save.mission > 0 ? (save.mission >= MISSIONS.length ? 'Free roam' : 'Continue') : 'Play';
 
 // debug hooks for testing
-window.__gt = { renderer, camera, player, cam, world, state, startMission, save, weather, scooters, gulls, mission: () => mission, startGame, raiseAlarm, W, ending, hitPlayer, dropBolle, bolle: () => ({ drop: bolleDrop, carrying: !!player.carrying }) };
+window.__gt = { renderer, camera, player, cam, world, state, startMission, save, weather, scooters, gulls, mission: () => mission, startGame, raiseAlarm, ending, L2V, L2W, W2L, H, house, city, route, BAKERY, CHECKPOINTS: () => CHECKPOINTS, inHouse, hitPlayer, dropBolle, bolle: () => ({ drop: bolleDrop, carrying: !!player.carrying }) };
