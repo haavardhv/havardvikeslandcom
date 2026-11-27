@@ -2816,6 +2816,7 @@ function frame(now) {
     { const [hx, hz] = L2W(4, 4.2); blips.push({ x: hx, z: hz, c: '#f4f1ea', r: 6, edge: true }); }
     for (const pl of PLACES) blips.push({ x: pl.x, z: pl.z, c: pl.st.bg, r: 7, label: pl.n, edge: pl.k === 'food' });
     blips.push({ x: JUMP.x, z: JUMP.z, c: '#e2231a', r: 6, label: 'Skydive' });
+    for (const lm of map.landmarks || []) if (lm.n !== 'Fløyen') blips.push({ x: lm.x, z: lm.z, c: '#cfd6dc', r: 4, label: lm.n });
     for (const sec of tram.sections) if (sec.g.visible) blips.push({ x: sec.x, z: sec.z, c: '#f07c1a', r: 4 });
     // GPS route to the current target, recomputed now and then
     gpsT -= dt;

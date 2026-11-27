@@ -43,7 +43,7 @@ OUT = sys.argv[2]
 LAT0, LON0 = 60.3931275, 5.3333919          # Cappes vei 6 (OSM address node 3126074741)
 MLAT = 111230.0
 MLON = 111320.0 * math.cos(math.radians(LAT0))
-X0, X1, Z0, Z1 = -690.0, 750.0, -750.0, 330.0   # playable area: Bryggen and Bergenhus to Fløyen, Byparken and Marken
+X0, X1, Z0, Z1 = -690.0, 750.0, -750.0, 950.0   # playable area: Bryggen and Bergenhus to Fløyen, Grieghallen and AdO arena
 
 def P(n): return ((n['lon'] - LON0) * MLON, -(n['lat'] - LAT0) * MLAT)
 
@@ -759,6 +759,10 @@ print('funicular points', len(fl), 'from', [r1(v) for v in fl[0]], 'to', [r1(v) 
 tram_ways = [w for w in ways.values() if w.get('tags', {}).get('railway') in ('light_rail', 'tram') and in_area(coords(w))
              and w.get('tags', {}).get('tunnel') not in ('yes',)]
 tracks = [flat(coords(w)) for w in tram_ways if len(coords(w)) >= 2]
+# the railway into Bergen station gets rails too (drawn, not driven)
+for w in ways.values():
+    t = w.get('tags', {})
+    if t.get('railway') == 'rail' and t.get('tunnel') not in ('yes',) and in_area(coords(w)) and len(coords(w)) >= 2: tracks.append(flat(coords(w)))
 tadj = {}
 for w in tram_ways:
     ids = [i for i in w['nodes'] if i in nodes]
@@ -795,6 +799,22 @@ if tadj:
             cur2 = min(nxt, key=turn)
         prev, cur = cur, cur2; seen.add(cur); route.append(cur)
     tram_route = flat([P(nodes[n]) for n in route])
+# landmarks for the minimap
+LANDMARKS = ['Grieghallen', 'AdO arena', 'Bergen stasjon', 'Bystasjonen', 'Lille Lungegårdsvann', 'Fløyen']
+landmarks = []
+for name in LANDMARKS:
+    best = None
+    for w in ways.values():
+        if w.get('tags', {}).get('name', '').lower() == name.lower():
+            c = coords(w)
+            if len(c) >= 3 and (best is None or len(c) > len(best)): best = c
+    if best is None:
+        n = next((n for n in nodes.values() if n.get('tags', {}).get('name', '').lower() == name.lower()), None)
+        if n: best = [P(n)]
+    if best:
+        x = sum(p[0] for p in best) / len(best); z = sum(p[1] for p in best) / len(best)
+        if X0 < x < X1 and Z0 < z < Z1: landmarks.append({'n': name, 'x': r1(x), 'z': r1(z)})
+print('landmarks', [l['n'] for l in landmarks])
 print('tram tracks', len(tracks), 'platforms', [p['n'] for p in platforms], 'route points', len(tram_route) // 2)
 
 # ------------------------------------------------------------------ terrain arrays
@@ -848,6 +868,7 @@ out = {
     'trees': trees,
     'funicular': funicular,
     'tram': {'tracks': tracks, 'platforms': platforms, 'route': tram_route},
+    'landmarks': landmarks,
     'graph': graph,
     'places': places,
     'barriers': barriers,
