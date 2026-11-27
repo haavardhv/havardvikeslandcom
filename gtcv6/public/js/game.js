@@ -82,7 +82,7 @@ sky.frustumCulled = false;
 sky.renderOrder = -10;
 scene.add(sky);
 
-const hemi = new THREE.HemisphereLight(0xd2dce4, 0x4b4e44, 1.3);
+const hemi = new THREE.HemisphereLight(0xd2dce4, 0x4b4e44, 0.7);
 scene.add(hemi);
 const sun = new THREE.DirectionalLight(0xffeedd, 1.8);
 const sunOffset = new THREE.Vector3(-55, 48, 62).normalize();
@@ -117,9 +117,29 @@ function updateWeather(dt) {
   scene.fog.near = lerp(80, 12, r);
   scene.fog.far = lerp(1500, 420, r);
   sun.intensity = lerp(2.9, 0.75, r);
-  hemi.intensity = lerp(1.15, 1.45, r);
+  hemi.intensity = lerp(0.55, 0.8, r);
   hemi.color.lerpColors(new THREE.Color(0xcfe0ff), new THREE.Color(0xd4dbe0), r);
 }
+
+// image-based lighting: the sky, rendered into a prefiltered environment map
+const pmrem = new THREE.PMREMGenerator(renderer);
+const envScene = new THREE.Scene();
+const envSky = new THREE.Mesh(sky.geometry, sky.material);
+envSky.frustumCulled = false;
+envScene.add(envSky);
+// a dark band below the horizon, like the hills and sea around Bergen
+const envGround = new THREE.Mesh(new THREE.SphereGeometry(1500, 16, 8, 0, Math.PI * 2, Math.PI * 0.52, Math.PI * 0.48), new THREE.MeshBasicMaterial({ color: 0x2b3430, side: THREE.BackSide, fog: false }));
+envScene.add(envGround);
+let envRT = null, envRain = -1;
+function updateEnv() {
+  if (Math.abs(weather.rain - envRain) < 0.06 && envRT) return;
+  envRain = weather.rain;
+  const old = envRT;
+  envRT = pmrem.fromScene(envScene, 0, 1, 2500);
+  scene.environment = envRT.texture;
+  if (old) old.dispose();
+}
+scene.environmentIntensity = 0.75;
 
 // ------------------------------------------------------------------ world
 const T = buildTextures();
@@ -217,37 +237,52 @@ function streetName(x, z) {
 }
 
 // ------------------------------------------------------------------ rain
-const RAIN_N = isTouch ? 1400 : 2600;
-const rainPos = new Float32Array(RAIN_N * 6);
+// Every drop is computed in the vertex shader from a random seed and the time: no per-frame CPU
+// work, no buffer uploads. Drops are anchored in world space and wrap in a 50 x 30 x 50 m box around
+// the camera; inside the house they are pushed out of sight.
+const RAIN_N = isTouch ? 3000 : 6000;
 const rainGeo = new THREE.BufferGeometry();
-rainGeo.setAttribute('position', new THREE.BufferAttribute(rainPos, 3));
-const rainMat = new THREE.LineBasicMaterial({ color: 0xb8c6d2, transparent: true, opacity: 0.42, depthWrite: false });
-const rain = new THREE.LineSegments(rainGeo, rainMat);
+{
+  const seed = new Float32Array(RAIN_N * 2 * 4);
+  for (let i = 0; i < RAIN_N; i++) {
+    const a = Math.random(), b = Math.random(), c = Math.random(), sp = Math.random();
+    for (let e = 0; e < 2; e++) seed.set([a, b, c, e * 2 + sp * 0.999], (i * 2 + e) * 4);
+  }
+  rainGeo.setAttribute('seed', new THREE.BufferAttribute(seed, 4));
+  rainGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(RAIN_N * 2 * 3), 3));
+}
+const rainU = { time: { value: 0 }, cam: { value: new THREE.Vector3() }, house: { value: new THREE.Vector4(OX, OZ, HUX, HUZ) }, houseTop: { value: H.FU + 6 }, color: { value: new THREE.Color(0xb8c6d2) } };
+const rain = new THREE.LineSegments(rainGeo, new THREE.ShaderMaterial({
+  uniforms: rainU, transparent: true, depthWrite: false, fog: false,
+  vertexShader: `
+    attribute vec4 seed; uniform float time; uniform vec3 cam; uniform vec4 house; uniform float houseTop;
+    varying float vA;
+    void main() {
+      float end = floor(seed.w * 0.5), spd = 11.0 + fract(seed.w) * 5.0, wind = 1.8;
+      float x = cam.x - 25.0 + mod(seed.x * 50.0 + wind * time - cam.x, 50.0);
+      float z = cam.z - 25.0 + mod(seed.z * 50.0 - cam.z, 50.0);
+      float y = cam.y - 12.0 + mod(seed.y * 30.0 - time * spd - cam.y, 30.0);
+      y += end * 0.55; x -= end * wind * 0.04;
+      float dx = x - house.x, dz = z - house.y;
+      float u = dx * house.z + dz * house.w, v = dx * -house.w + dz * house.z;
+      if (u > -0.5 && u < 8.5 && v > -0.5 && v < 8.9 && y < houseTop) y = -1e5;
+      vA = 0.42;
+      gl_Position = projectionMatrix * viewMatrix * vec4(x, y, z, 1.0);
+    }`,
+  fragmentShader: `uniform vec3 color; varying float vA;
+    void main() {
+      gl_FragColor = vec4(color, vA);
+      #include <colorspace_fragment>
+    }`,
+}));
 rain.frustumCulled = false;
 scene.add(rain);
-const drops = [];
-for (let i = 0; i < RAIN_N; i++) drops.push({ x: (Math.random() - 0.5) * 50, y: Math.random() * 30, z: (Math.random() - 0.5) * 50, s: 11 + Math.random() * 5 });
 function updateRain(dt) {
   const n = Math.floor(RAIN_N * clamp(weather.rain * 1.2, 0, 1));
   rainGeo.setDrawRange(0, n * 2);
   rain.visible = n > 0;
-  if (!n) return;
-  const cx = camera.position.x, cy = camera.position.y, cz = camera.position.z;
-  const wind = 1.8;
-  for (let i = 0; i < n; i++) {
-    const d = drops[i];
-    d.y -= d.s * dt; d.x += wind * dt;
-    if (d.y < -12) { d.y += 30; d.x = (Math.random() - 0.5) * 50; d.z = (Math.random() - 0.5) * 50; }
-    if (d.x > 25) d.x -= 50;
-    let x = cx + d.x, y = cy + d.y, z = cz + d.z;
-    // wrap to the camera so the rain box follows smoothly
-    x = cx + ((x - cx + 25) % 50 + 50) % 50 - 25;
-    { const dx = x - OX, dz = z - OZ, u = dx * HUX + dz * HUZ, v = dx * HVX + dz * HVZ; if (u > -0.5 && u < 8.5 && v > -0.5 && v < 8.9 && y < H.FU + 6) y = -9999; }
-    const k = i * 6;
-    rainPos[k] = x; rainPos[k + 1] = y; rainPos[k + 2] = z;
-    rainPos[k + 3] = x - wind * 0.04; rainPos[k + 4] = y + 0.55; rainPos[k + 5] = z;
-  }
-  rainGeo.attributes.position.needsUpdate = true;
+  rainU.time.value += dt;
+  rainU.cam.value.copy(camera.position);
 }
 
 // ------------------------------------------------------------------ audio
@@ -269,9 +304,9 @@ const player = {
   carrying: null, punchCd: 0, airT: 0, hurtT: 0, health: 100, regenT: 0,
 };
 scene.add(player.fig.root);
-const carryHold = new THREE.Group(); // the bolle rides in the left hand
-player.fig.arms[0].add(carryHold);
-carryHold.position.set(0, -0.7, 0.12);
+const carryHold = new THREE.Group(); // the bolle rides in the right hand
+player.fig.elbows[0].add(carryHold);
+carryHold.position.set(0, -0.32, 0.08);
 
 // ------------------------------------------------------------------ camera rig
 const cam = { yaw: -Math.PI / 2, pitch: 0.32, dist: 4.4, cur: 4.4, lastLook: 0, shake: 0 };
@@ -476,12 +511,14 @@ const mapBase = document.createElement('canvas');
 mapBase.width = (MAP.x1 - MAP.x0) * MAP.ppm; mapBase.height = (MAP.z1 - MAP.z0) * MAP.ppm;
 {
   const g = mapBase.getContext('2d');
-  const W = mapBase.width, Hh = mapBase.height;
-  // ground: water, green, paved, with hill shading from the terrain
-  const img = g.createImageData(W, Hh);
+  // ground: water, green, paved, with hill shading from the terrain (at half resolution, scaled up)
+  const W = Math.ceil(mapBase.width / 2), Hh = Math.ceil(mapBase.height / 2);
+  const half = document.createElement('canvas'); half.width = W; half.height = Hh;
+  const hg = half.getContext('2d');
+  const img = hg.createImageData(W, Hh);
   const clsCol = [[78, 92, 66], [74, 104, 58], [52, 82, 46], [104, 104, 106], [34, 64, 77]];
   for (let j = 0; j < Hh; j++) for (let i = 0; i < W; i++) {
-    const x = MAP.x0 + i / MAP.ppm, z = MAP.z0 + j / MAP.ppm;
+    const x = MAP.x0 + i * 2 / MAP.ppm, z = MAP.z0 + j * 2 / MAP.ppm;
     const h = city.terrain.height(x, z);
     let c;
     if (h < 0.2) c = [34, 64, 77];
@@ -495,7 +532,9 @@ mapBase.width = (MAP.x1 - MAP.x0) * MAP.ppm; mapBase.height = (MAP.z1 - MAP.z0) 
     const o = (j * W + i) * 4;
     img.data[o] = c[0]; img.data[o + 1] = c[1]; img.data[o + 2] = c[2]; img.data[o + 3] = 255;
   }
-  g.putImageData(img, 0, 0);
+  hg.putImageData(img, 0, 0);
+  g.imageSmoothingEnabled = true;
+  g.drawImage(half, 0, 0, mapBase.width, mapBase.height);
   g.lineCap = 'round'; g.lineJoin = 'round';
   const tx = x => (x - MAP.x0) * MAP.ppm, tz = z => (z - MAP.z0) * MAP.ppm;
   const roadCol = { road: '#c9c6bd', sett: '#b9ad97', ped: '#c3b9a8', side: '#a6a39b', foot: '#a39d8e', steps: '#d07a5a' };
@@ -689,6 +728,10 @@ function updateNpcs(dt) {
       continue;
     }
     if (!n.placed || n.pos.distanceTo(focus) > 140) { n.placed = placeNpc(n, focus); n.fig.root.visible = n.placed; if (!n.placed) continue; }
+    // far away: don't draw, don't animate; mid distance: no shadow
+    const dCam = n.pos.distanceTo(camera.position);
+    n.fig.root.visible = dCam < 95;
+    n.fig.mesh.castShadow = dCam < 35;
     if (n.downT > 0) {
       n.downT -= dt;
       n.fall = n.downT > 0.6 ? damp(n.fall, 1, 10, dt) : damp(n.fall, 0, 8, dt);
@@ -947,6 +990,7 @@ function updateGulls(dt) {
       a.g.root.lookAt(_v);
       a.g.root.rotateZ(clamp(-a.w * 6, -0.5, 0.5) * (a.state === 'circle' ? 1 : 0));
     }
+    a.g.root.visible = a.pos.distanceToSquared(camera.position) < 170 * 170;
     a.g.animate(dt, flap, grounded);
   }
 }
@@ -1744,7 +1788,8 @@ $('reset').addEventListener('click', () => {
 });
 
 // ------------------------------------------------------------------ main loop
-let last = performance.now(), time = 0, frameAvg = 16, adaptT = 0, gpsT = 0;
+let last = performance.now(), time = 0, frameAvg = 16, adaptT = 0, gpsT = 0, frameNo = 0;
+renderer.shadowMap.autoUpdate = false;
 const funiState = { t: 0 };
 function frame(now) {
   requestAnimationFrame(frame);
@@ -1821,6 +1866,11 @@ function frame(now) {
   sun.position.copy(focus).addScaledVector(sunOffset, 100);
   sun.target.position.copy(focus);
 
+  // the sun's shadow map is re-rendered every other frame (the world is static; only people move)
+  frameNo++;
+  renderer.shadowMap.needsUpdate = frameNo % 2 === 0 || frameNo < 4;
+  if (frameNo % 120 === 1) updateEnv();
+  city.water.material.normalMap.offset.set(time * 0.004, time * 0.0025);
   renderer.render(scene, camera);
 
   // adaptive resolution
@@ -1838,4 +1888,4 @@ $('play').disabled = false;
 $('play').textContent = save.mission > 0 ? (save.mission >= MISSIONS.length ? 'Free roam' : 'Continue') : 'Play';
 
 // debug hooks for testing
-window.__gt = { renderer, camera, player, cam, world, state, startMission, save, weather, scooters, gulls, mission: () => mission, startGame, raiseAlarm, ending, L2V, L2W, W2L, H, house, city, route, BAKERY, CHECKPOINTS: () => CHECKPOINTS, inHouse, housemates, PLACES, hitPlayer, dropBolle, bolle: () => ({ drop: bolleDrop, carrying: !!player.carrying }) };
+window.__gt = { scene, renderer, camera, player, cam, world, state, startMission, save, weather, scooters, gulls, mission: () => mission, startGame, raiseAlarm, ending, L2V, L2W, W2L, H, house, city, route, BAKERY, CHECKPOINTS: () => CHECKPOINTS, inHouse, housemates, PLACES, hitPlayer, dropBolle, bolle: () => ({ drop: bolleDrop, carrying: !!player.carrying }) };

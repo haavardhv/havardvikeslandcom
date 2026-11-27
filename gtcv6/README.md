@@ -13,6 +13,7 @@ It is a separate site from the main "something great is coming" page and is mean
   - *Outside:* the side passage with steps and plants runs down from the street to the raised, fenced terrace of stone slabs and weeds, which looks out over the roofs on Skivebakken.
 - **The people of Cappes vei 6.** You play Håvard. Øystein (in the kitchen), Theodor (on the sofa), Jaakko (downstairs) and Martin (on the terrace) live there too, and talk when you come close. They send the mission texts and gather on the terrace for the party at the end. Their faces and shirts come from photos in `public/img/people/`.
 - **Places that matter:** Magda, Trekroneren, Rema 1000 Marken, Johnny's Pizza and Guangdong House have signs over the street and labels on the minimap, at their OpenStreetMap positions. The first visit to each is worth 50 kr. Trekroneren and Johnny's restore your health, Rema 1000 helps a bit, and the gulls lose track of you at Magda.
+- **Buildings that make sense.** Windows sit storey by storey and only above the ground, there are none on party walls between terraced houses, every building has a front door facing its street, and there are stone plinths that follow the slope, shopfronts in the centre, corner boards, chimneys, attic windows and parapets. Street lamps, parked cars, benches, walls, fences and hedges come from OpenStreetMap or are placed along the streets.
 - **Weather** follows Bergen: rain showers come and go, with short sunny breaks.
 - **Måkealarm** is the wanted level, five seagull icons. Punch gulls or people and the gang dives at you. Hide indoors and the alarm drops faster.
 - **Five missions on real streets:** walk home from Bryggen, borrow the landlord's things around the house, steal an e-scooter and race the real route to the bakery on Torget, carry the last skillingsbolle home, then get dinner from Guangdong House before it closes. A GPS line on the minimap shows the route (A* over the OSM street graph), and the HUD shows which street you are on. Free roam follows, with 14 lost umbrellas at real spots. Progress is saved in the browser's `localStorage`.
@@ -27,15 +28,18 @@ Plain static files with no build step. The only library is three.js, vendored.
 | --- | --- |
 | `public/index.html`, `public/style.css` | Title screen, HUD, pause menu, touch controls |
 | `public/js/game.js` | Main loop, player and camera, scooters, seagull AI, pedestrians on the street graph, missions, HUD, minimap and GPS |
+| `public/js/buildings.js` | Facade and roof generation, the shared texture atlas, and the 100 m level-of-detail tiles for buildings and streets |
 | `public/js/city.js` | Builds the town from the map data: terrain meshes, buildings, streets and steps, trees, water, Fløibanen; polygon collision for buildings |
 | `public/js/house6.js` | Cappes vei 6, its side passage and terrace, in a local frame aligned with the real outline |
 | `public/js/physics.js` | One collision interface over terrain, building polygons and the house's local box world |
 | `public/js/engine.js` | Geometry batching and the box collision world used for the house |
-| `public/js/actors.js`, `textures.js`, `audio.js` | Characters and props, procedural textures, synthesised sound |
+| `public/js/actors.js`, `textures.js`, `audio.js` | People (one skinned mesh and texture atlas each), seagulls, scooters and pickups; procedural textures; synthesised sound |
 | `public/img/people/` | Face and shirt textures for Håvard, Øystein, Theodor, Martin and Jaakko |
 | `public/data/` | The packed map: `map.json` (buildings, streets, trees, funicular, walking graph, the house's frame), `terrain.bin` (2.5 m grid, about 900 × 1010 m), `coarse.bin` (60 m grid for the mountains), `ground.bin` (ground types) |
 | `tools/fetch_data.py`, `tools/build_map.py` | Download OSM and Kartverket data, then pack it into `public/data/` |
 | `public/vendor/three.module.min.js` | three.js r186.1, bundled and minified (MIT) |
+
+See [`REVIEW.md`](REVIEW.md) for the fidelity and performance review: what was measured, what was changed (one-draw-call skinned characters, atlas materials, tiled level of detail for buildings and terrain, GPU rain), and what would come next.
 
 Debug URL option: `?q=low` pins a low render resolution. Otherwise the resolution adapts to the frame rate.
 

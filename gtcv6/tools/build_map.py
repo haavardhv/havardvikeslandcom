@@ -79,6 +79,7 @@ def flat(c): return [r1(a) for p in c for a in p]
 def h01(s): return int(hashlib.md5(str(s).encode()).hexdigest()[:8], 16) / 0xffffffff
 
 # ------------------------------------------------------------------ buildings
+WIDTH_KEYS = {'trunk', 'primary', 'secondary', 'tertiary', 'unclassified', 'residential', 'living_street', 'service', 'pedestrian', 'footway', 'steps', 'path'}
 def building_polys():
     for w in ways.values():
         t = w.get('tags', {})
@@ -151,18 +152,98 @@ for bid, t, poly in building_polys():
     if kind in ('cathedral', 'church') or 'kirke' in name.lower():
         col, roof = '#b9b4a6', ROOF_COPPER
     if not gabled: roof = ROOF_FLAT if centre or kind in ('garage', 'garages') else roof
-    b = {'p': flat(c), 'b': r1(gmin - 1.5), 't': r1(eave), 'c': col, 'rc': roof}
+    style = 'y' if bryggen else ('b' if col in BRICK else ('p' if col in PLASTER or kind in ('cathedral', 'church') else 'w'))
+    b = {'p': flat(c), 'b': r1(gmin - 1.5), 't': r1(eave), 'c': col, 'rc': roof, 's': style}
+    if kind in ('retail', 'commercial', 'hotel') or (centre and t.get('shop')): b['shop'] = 1
+    if kind in ('garage', 'garages', 'shed', 'carport', 'warehouse', 'service'): b['plain'] = 1
     if gabled: b['g'] = flat(rc)
     if name: b['n'] = name
     if kind in ('cathedral', 'church'): b['k'] = 'church'
     if bryggen: b['k'] = 'bryggen'
+    b['_poly'] = Polygon(c)
+    b['_kind'] = kind
     buildings.append((bid, b))
 
 # neighbours of no. 6 coloured as in the video: the green house on the passage side
 for bid, b in buildings:
-    if bid == 579309502: b['c'] = '#9ab775'; b['rc'] = ROOF_BLACK
+    if bid == 579309502: b['c'] = '#8e979d'; b['rc'] = ROOF_BLACK
     if bid == 579309499: b['c'] = '#e8e3d3'
 print('buildings', len(buildings))
+
+# ------------------------------------------------------------------ facades: party walls and front doors
+# An edge that another building touches (the terraced rows of Fjellet, the blocks in the centre) gets
+# no windows. Five samples along each edge, 0.45 m outside it; a bit is set where the outside is free.
+from shapely.strtree import STRtree
+others = [b['_poly'] for _, b in buildings] + [reserved]
+tree = STRtree(others)
+def blocked(pt, self_i):
+    for j in tree.query(pt):
+        if j != self_i and others[j].contains(pt): return True
+    return False
+road_lines = []
+for w in ways.values():
+    t = w.get('tags', {})
+    if t.get('highway') in WIDTH_KEYS and t.get('tunnel') != 'yes':
+        c = coords(w)
+        if len(c) > 1 and in_area(c): road_lines.append(LineString(c))
+road_tree = STRtree(road_lines)
+for bi, (bid, b) in enumerate(buildings):
+    poly = b['_poly']
+    pts = list(poly.exterior.coords)[:-1]
+    masks, best = [], None
+    for i in range(len(pts)):
+        ax, az = pts[i]; bx, bz = pts[(i + 1) % len(pts)]
+        L = math.hypot(bx - ax, bz - az)
+        if L < 0.05: masks.append(0); continue
+        nx, nz = (bz - az) / L, -(bx - ax) / L
+        mx, mz = (ax + bx) / 2, (az + bz) / 2
+        if poly.contains(Point(mx + nx * 0.05, mz + nz * 0.05)): nx, nz = -nx, -nz
+        m = 0
+        for k in range(5):
+            tt = (k + 0.5) / 5
+            q = Point(ax + (bx - ax) * tt + nx * 0.45, az + (bz - az) * tt + nz * 0.45)
+            if not blocked(q, bi): m |= 1 << k
+        masks.append(m)
+        # front door: the free edge closest to a street
+        if L >= 2.4 and (m & 0b01110) == 0b01110 and b['_kind'] not in ('shed', 'roof', 'carport', 'kiosk'):
+            probe = Point(mx + nx * 1.5, mz + nz * 1.5)
+            near = road_tree.query_nearest(probe)
+            if len(near):
+                line = road_lines[int(near[0])]
+                d = line.distance(probe)
+                if d < 30 and (best is None or d < best[0]):
+                    rp = line.interpolate(line.project(probe))
+                    tt = ((rp.x - ax) * (bx - ax) + (rp.y - az) * (bz - az)) / (L * L)
+                    best = (d, i, min(0.75, max(0.25, tt)))
+    b['e'] = masks
+    if best: b['d'] = [best[1], round(best[2], 3)]
+for _, b in buildings:
+    del b['_poly']; del b['_kind']
+
+# ------------------------------------------------------------------ walls, fences, hedges; benches; lamps; parking
+barriers = []
+for w in ways.values():
+    t = w.get('tags', {})
+    k = t.get('barrier')
+    if k not in ('wall', 'retaining_wall', 'fence', 'hedge', 'guard_rail'): continue
+    c = coords(w)
+    if len(c) < 2 or not in_area(c): continue
+    if any(reserved_p.contains(Point(x, z)) for x, z in c): continue
+    barriers.append({'k': k, 'p': flat(c)})
+benches, lamps = [], []
+for n in nodes.values():
+    t = n.get('tags', {})
+    x, z = P(n)
+    if not (X0 < x < X1 and Z0 < z < Z1): continue
+    if t.get('amenity') == 'bench': benches += [r1(x), r1(z)]
+    if t.get('highway') == 'street_lamp': lamps += [r1(x), r1(z)]
+parking = []
+for w in ways.values():
+    t = w.get('tags', {})
+    if t.get('amenity') == 'parking' and t.get('parking') not in ('underground', 'multi-storey') and 'building' not in t:
+        c = coords(w)
+        if len(c) >= 4 and c[0] == c[-1] and in_area(c) and Polygon(c).area > 60: parking.append(flat(c[:-1]))
+print('barriers', len(barriers), 'benches', len(benches) // 2, 'lamps', len(lamps) // 2, 'parking', len(parking))
 
 # ------------------------------------------------------------------ roads
 WIDTH = {'trunk': 9, 'primary': 8.5, 'secondary': 7.5, 'tertiary': 7, 'unclassified': 5, 'residential': 5, 'living_street': 4.5,
@@ -324,6 +405,10 @@ out = {
     'funicular': funicular,
     'graph': graph,
     'places': places,
+    'barriers': barriers,
+    'benches': benches,
+    'lamps': lamps,
+    'parking': parking,
 }
 json.dump(out, open(os.path.join(OUT, 'map.json'), 'w'), separators=(',', ':'))
 print('wrote', os.path.getsize(os.path.join(OUT, 'map.json')) // 1024, 'KB')

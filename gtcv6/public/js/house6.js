@@ -21,7 +21,7 @@ export function buildHouse6(group, T, H) {
 
   const std = (o, tex) => { const m = new THREE.MeshStandardMaterial({ roughness: 0.85, metalness: 0, ...o }); if (tex) m.map = tex; return m; };
   const M = {
-    out: std({ color: 0x8e979d, roughness: 0.8 }, T.siding),
+    out: std({ color: 0x96b373, roughness: 0.8 }, T.siding),     // Cappes vei 6 is green
     paint: std({ color: 0xecebe6, roughness: 0.95, emissive: 0x2a2926 }),
     trim: std({ color: 0xf3f2ee, roughness: 0.6 }),
     stone: std({ color: 0xd0d0d0, roughness: 0.95 }, T.stone),

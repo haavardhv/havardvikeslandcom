@@ -3,6 +3,7 @@
 import * as THREE from '../vendor/three.module.min.js';
 import { Geo } from './engine.js';
 import { rng } from './textures.js';
+import { buildBuildings } from './buildings.js';
 
 export async function loadMapData(base = '/data/') {
   const [map, terr, coarse, ground] = await Promise.all([
@@ -163,76 +164,6 @@ export class PolyWorld {
 }
 
 // ---------------------------------------------------------------------------
-function facadeTexture() {
-  // One storey bay: 2.4 m wide, 2.9 m tall. RGB is the final colour of frames and
-  // glass; alpha says how much the building's own colour tints it (1 = cladding).
-  const W = 128, H = 160;
-  const c = document.createElement('canvas'); c.width = W; c.height = H;
-  const g = c.getContext('2d');
-  const img = g.createImageData(W, H);
-  const R = rng(3);
-  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
-    const k = (y * W + x) * 4;
-    // horizontal boards
-    const board = (y % 11);
-    const v = board === 10 ? 170 : board === 9 ? 215 : 238 + Math.floor(R() * 10);
-    img.data[k] = img.data[k + 1] = img.data[k + 2] = v;
-    img.data[k + 3] = 255;
-  }
-  g.putImageData(img, 0, 0);
-  // window: centred, sill at 0.9 m, 1.3 m tall, 0.95 m wide (y measured from the top of the bay)
-  const sx = W / 2.4, sy = H / 2.9;
-  const wx = (2.4 - 0.95) / 2 * sx, ww = 0.95 * sx, wy = (2.9 - 0.9 - 1.3) * sy, wh = 1.3 * sy;
-  const frame = 0.11 * sx;
-  g.globalCompositeOperation = 'source-over';
-  g.fillStyle = 'rgba(244,243,238,1)';   // alpha 1 here, fixed below
-  g.fillRect(wx - frame, wy - frame, ww + frame * 2, wh + frame * 2);
-  const grd = g.createLinearGradient(0, wy, 0, wy + wh);
-  grd.addColorStop(0, '#9fb3bf'); grd.addColorStop(0.45, '#5f7482'); grd.addColorStop(1, '#3a4853');
-  g.fillStyle = grd; g.fillRect(wx, wy, ww, wh);
-  g.fillStyle = '#f4f3ee';
-  g.fillRect(wx + ww / 2 - frame / 3, wy, frame * 0.66, wh);
-  g.fillRect(wx, wy + wh * 0.3, ww, frame * 0.66);
-  g.fillRect(wx - frame * 1.6, wy + wh + frame, ww + frame * 3.2, frame * 0.9);
-  // Alpha marks what the building colour tints (255 cladding, 0 window). A canvas
-  // would wipe the colour of fully transparent pixels, so build the data by hand,
-  // bottom row first.
-  const src = g.getImageData(0, 0, W, H).data;
-  const data = new Uint8Array(W * H * 4);
-  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
-    const inWin = x >= wx - frame * 1.6 && x <= wx + ww + frame * 1.6 && y >= wy - frame && y <= wy + wh + frame * 1.9;
-    const si = (y * W + x) * 4, di = ((H - 1 - y) * W + x) * 4;
-    data[di] = src[si]; data[di + 1] = src[si + 1]; data[di + 2] = src[si + 2];
-    data[di + 3] = inWin ? 0 : 255;
-  }
-  const t = new THREE.DataTexture(data, W, H, THREE.RGBAFormat);
-  t.wrapS = t.wrapT = THREE.RepeatWrapping;
-  t.colorSpace = THREE.SRGBColorSpace;
-  t.magFilter = THREE.LinearFilter;
-  t.minFilter = THREE.LinearMipmapLinearFilter;
-  t.generateMipmaps = true;
-  t.anisotropy = 8;
-  t.needsUpdate = true;
-  return t;
-}
-
-function tintedFacadeMaterial(tex) {
-  const m = new THREE.MeshStandardMaterial({ map: tex, vertexColors: true, roughness: 0.82 });
-  m.onBeforeCompile = (sh) => {
-    sh.fragmentShader = sh.fragmentShader
-      .replace('#include <map_fragment>', `
-        #ifdef USE_MAP
-          vec4 texelColor = texture2D( map, vMapUv );
-        #endif`)
-      .replace('#include <color_fragment>', `
-        #ifdef USE_MAP
-          diffuseColor.rgb = mix(texelColor.rgb, texelColor.rgb * vColor.rgb, texelColor.a);
-        #endif`);
-  };
-  m.customProgramCacheKey = () => 'tintedFacade';
-  return m;
-}
-
 function detailTexture(size, seed, base, amp) {
   const c = document.createElement('canvas'); c.width = c.height = size;
   const g = c.getContext('2d');
@@ -253,18 +184,6 @@ function detailTexture(size, seed, base, amp) {
   return t;
 }
 
-function stepsTexture() {
-  const c = document.createElement('canvas'); c.width = 64; c.height = 64;
-  const g = c.getContext('2d');
-  g.fillStyle = '#9a9a96'; g.fillRect(0, 0, 64, 64);
-  g.fillStyle = '#5f605e'; g.fillRect(0, 0, 64, 10);
-  g.fillStyle = '#b4b4ae'; g.fillRect(0, 10, 64, 4);
-  const t = new THREE.CanvasTexture(c);
-  t.wrapS = t.wrapT = THREE.RepeatWrapping;
-  t.colorSpace = THREE.SRGBColorSpace;
-  t.anisotropy = 8;
-  return t;
-}
 
 // ---------------------------------------------------------------------------
 export function buildCity(scene, map, T, opts) {
@@ -312,30 +231,82 @@ export function buildCity(scene, map, T, opts) {
     bg.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
     bg.setIndex(idx);
     bg.computeVertexNormals();
-    // split into ~150 m tiles so the camera can skip what it cannot see
     const tmat = new THREE.MeshStandardMaterial({ vertexColors: true, map: detailTexture(256, 9, 200, 70), roughness: 0.9 });
-    const nrm = bg.attributes.normal.array, TS = 60;
-    for (let tj = 0; tj < nz - 1; tj += TS) for (let ti = 0; ti < nx - 1; ti += TS) {
-      const i1 = Math.min(nx - 1, ti + TS), j1 = Math.min(nz - 1, tj + TS), w = i1 - ti + 1, h = j1 - tj + 1;
-      const P = new Float32Array(w * h * 3), N = new Float32Array(w * h * 3), Cc = new Float32Array(w * h * 3), U = new Float32Array(w * h * 2);
-      for (let j = 0; j < h; j++) for (let i = 0; i < w; i++) {
-        const src = (tj + j) * nx + ti + i, dst = j * w + i;
-        for (let k = 0; k < 3; k++) { P[dst * 3 + k] = pos[src * 3 + k]; N[dst * 3 + k] = nrm[src * 3 + k]; Cc[dst * 3 + k] = colr[src * 3 + k]; }
-        U[dst * 2] = uv[src * 2]; U[dst * 2 + 1] = uv[src * 2 + 1];
+    const nrm = bg.attributes.normal.array, TS = 40;
+    // contact shadow: darken the ground next to buildings (baked ambient occlusion from the outlines)
+    {
+      const cover = new Uint8Array(nx * nz);
+      for (const b of map.buildings) {
+        const p = b.p;
+        let x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity;
+        for (let k = 0; k < p.length; k += 2) { x0 = Math.min(x0, p[k]); x1 = Math.max(x1, p[k]); z0 = Math.min(z0, p[k + 1]); z1 = Math.max(z1, p[k + 1]); }
+        for (let jj = Math.max(0, Math.floor((z0 - g.z0) / g.step)); jj <= Math.min(nz - 1, Math.ceil((z1 - g.z0) / g.step)); jj++)
+          for (let ii = Math.max(0, Math.floor((x0 - g.x0) / g.step)); ii <= Math.min(nx - 1, Math.ceil((x1 - g.x0) / g.step)); ii++)
+            if (PolyWorld.inside(p, g.x0 + ii * g.step, g.z0 + jj * g.step)) cover[jj * nx + ii] = 1;
       }
-      const ix = [];
+      for (let jj = 2; jj < nz - 2; jj++) for (let ii = 2; ii < nx - 2; ii++) {
+        const k = jj * nx + ii;
+        if (cover[k]) continue;
+        let c = 0;
+        for (let dj = -2; dj <= 2; dj++) for (let di = -2; di <= 2; di++) c += cover[k + dj * nx + di] * (Math.abs(di) <= 1 && Math.abs(dj) <= 1 ? 2 : 1);
+        if (!c) continue;
+        const f = 1 - Math.min(0.42, c / 34 * 0.9);
+        colr[k * 3] *= f; colr[k * 3 + 1] *= f; colr[k * 3 + 2] *= f;
+      }
+    }
+    // Tiles of 100 m with three levels of detail (2.5, 5 and 10 m between vertices), each with a
+    // skirt hanging down from its edges so the seams between levels never open into cracks.
+    const tileMesh = (ti, tj, i1, j1, stride) => {
+      const cols = [], rows = [];
+      for (let i = ti; i < i1; i += stride) cols.push(i); cols.push(i1);
+      for (let j = tj; j < j1; j += stride) rows.push(j); rows.push(j1);
+      const w = cols.length, h = rows.length, nv = w * h + 2 * (w + h) * 1;
+      const P = [], N = [], Cc = [], U = [], ix = [];
+      for (const j of rows) for (const i of cols) {
+        const src = j * nx + i;
+        P.push(pos[src * 3], pos[src * 3 + 1], pos[src * 3 + 2]); N.push(nrm[src * 3], nrm[src * 3 + 1], nrm[src * 3 + 2]);
+        Cc.push(colr[src * 3], colr[src * 3 + 1], colr[src * 3 + 2]); U.push(uv[src * 2], uv[src * 2 + 1]);
+      }
       for (let j = 0; j < h - 1; j++) for (let i = 0; i < w - 1; i++) { const a = j * w + i, b = a + 1, c = a + w, d = c + 1; ix.push(a, c, b, b, c, d); }
+      // skirts
+      const edge = (list, inward) => {
+        const base = P.length / 3;
+        for (const v of list) { P.push(P[v * 3], P[v * 3 + 1] - 3, P[v * 3 + 2]); N.push(N[v * 3], N[v * 3 + 1], N[v * 3 + 2]); Cc.push(Cc[v * 3] * 0.7, Cc[v * 3 + 1] * 0.7, Cc[v * 3 + 2] * 0.7); U.push(U[v * 2], U[v * 2 + 1]); }
+        for (let k = 0; k < list.length - 1; k++) {
+          const a = list[k], b = list[k + 1], c = base + k, d = base + k + 1;
+          ix.push(a, c, b, b, c, d, a, b, c, b, d, c);     // both sides: cheap and never wrong
+          void inward;
+        }
+      };
+      edge(cols.map((_, i) => i), true);                                   // top row
+      edge(cols.map((_, i) => (h - 1) * w + i), false);                    // bottom row
+      edge(rows.map((_, j) => j * w), false);                              // left column
+      edge(rows.map((_, j) => j * w + w - 1), true);                       // right column
+      void nv;
       const tg = new THREE.BufferGeometry();
-      tg.setAttribute('position', new THREE.BufferAttribute(P, 3));
-      tg.setAttribute('normal', new THREE.BufferAttribute(N, 3));
-      tg.setAttribute('color', new THREE.BufferAttribute(Cc, 3));
-      tg.setAttribute('uv', new THREE.BufferAttribute(U, 2));
+      tg.setAttribute('position', new THREE.Float32BufferAttribute(P, 3));
+      tg.setAttribute('normal', new THREE.Float32BufferAttribute(N, 3));
+      tg.setAttribute('color', new THREE.Float32BufferAttribute(Cc, 3));
+      tg.setAttribute('uv', new THREE.Float32BufferAttribute(U, 2));
       tg.setIndex(ix);
       tg.computeBoundingSphere();
       const m = new THREE.Mesh(tg, tmat);
       m.receiveShadow = true;
       m.matrixAutoUpdate = false;
-      scene.add(m);
+      tmat.side = THREE.FrontSide;
+      return m;
+    };
+    for (let tj = 0; tj < nz - 1; tj += TS) for (let ti = 0; ti < nx - 1; ti += TS) {
+      const i1 = Math.min(nx - 1, ti + TS), j1 = Math.min(nz - 1, tj + TS);
+      const cx = g.x0 + (ti + i1) / 2 * g.step, cz = g.z0 + (tj + j1) / 2 * g.step;
+      const lod = new THREE.LOD();
+      lod.position.set(cx, 0, cz);
+      for (const [stride, dist] of [[1, 0], [2, 110], [4, 260]]) {
+        const m = tileMesh(ti, tj, i1, j1, stride);
+        m.position.set(-cx, 0, -cz); m.updateMatrix();
+        lod.addLevel(m, dist);
+      }
+      scene.add(lod);
     }
   }
 
@@ -387,178 +358,45 @@ export function buildCity(scene, map, T, opts) {
   }
 
   // -------------------------------------------------------------- water (Vågen)
-  const water = new THREE.Mesh(new THREE.PlaneGeometry(8000, 8000), new THREE.MeshStandardMaterial({ color: 0x4a6b78, roughness: 0.18, metalness: 0.15 }));
+  // a tiling normal map of small waves (sum of sines, so it wraps seamlessly)
+  const waveTex = (() => {
+    const S = 256, c = document.createElement('canvas'); c.width = c.height = S;
+    const g = c.getContext('2d'), img = g.createImageData(S, S);
+    const H = (x, y) => {
+      let h = 0;
+      for (const [fx, fy, a, ph] of [[1, 2, 1, 0.3], [3, -1, 0.6, 1.1], [-2, 3, 0.5, 2.0], [5, 4, 0.25, 0.7], [-6, 5, 0.2, 2.6], [7, -8, 0.12, 1.9]])
+        h += a * Math.sin((fx * x + fy * y) * Math.PI * 2 / S + ph);
+      return h;
+    };
+    for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) {
+      const dx = H(x + 1, y) - H(x - 1, y), dy = H(x, y + 1) - H(x, y - 1);
+      const n = new THREE.Vector3(-dx * 3, -dy * 3, 1).normalize();
+      const k = (y * S + x) * 4;
+      img.data[k] = (n.x * 0.5 + 0.5) * 255; img.data[k + 1] = (n.y * 0.5 + 0.5) * 255; img.data[k + 2] = (n.z * 0.5 + 0.5) * 255; img.data[k + 3] = 255;
+    }
+    g.putImageData(img, 0, 0);
+    const t = new THREE.CanvasTexture(c);
+    t.wrapS = t.wrapT = THREE.RepeatWrapping;
+    t.repeat.set(1300, 1300);
+    return t;
+  })();
+  const water = new THREE.Mesh(new THREE.PlaneGeometry(8000, 8000), new THREE.MeshStandardMaterial({ color: 0x2f4c58, roughness: 0.06, metalness: 0.0, normalMap: waveTex, normalScale: new THREE.Vector2(0.16, 0.16) }));
   water.rotation.x = -Math.PI / 2;
   water.position.y = 0.15;
   water.receiveShadow = true;
   scene.add(water);
 
-  // -------------------------------------------------------------- buildings
-  const facade = tintedFacadeMaterial(facadeTexture());
-  facade.map.repeat.set(1, 1);
-  const roofMat = new THREE.MeshStandardMaterial({ vertexColors: true, map: T.roof.clone(), roughness: 0.6 });
-  roofMat.map.repeat.set(1, 1); roofMat.map.needsUpdate = true;
-  const flatRoofMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.9 });
-  const tiles = new Map();
-  const tileOf = (x, z) => {
-    const k = Math.floor(x / 150) * 1000 + Math.floor(z / 150);
-    if (!tiles.has(k)) tiles.set(k, { bp: { p: [], n: [], u: [], c: [] }, rp: { p: [], n: [], u: [], c: [] }, fp: { p: [], n: [], c: [] } });
-    return tiles.get(k);
-  };
-  let bp, rp, fp;
-  const pushTri = (dst, a, b, c, n, ua, ub, uc, colr) => {
-    for (const [P, U] of [[a, ua], [b, ub], [c, uc]]) {
-      dst.p.push(P[0], P[1], P[2]); dst.n.push(n[0], n[1], n[2]);
-      if (dst.u) dst.u.push(U[0], U[1]);
-      dst.c.push(colr.r, colr.g, colr.b);
-    }
-  };
-  const quad = (dst, a, b, c, d, n, uv, colr) => {
-    // ensure the winding faces n
-    const e1 = [b[0] - a[0], b[1] - a[1], b[2] - a[2]], e2 = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
-    const cx = e1[1] * e2[2] - e1[2] * e2[1], cy = e1[2] * e2[0] - e1[0] * e2[2], cz = e1[0] * e2[1] - e1[1] * e2[0];
-    if (cx * n[0] + cy * n[1] + cz * n[2] < 0) { [b, d] = [d, b]; uv = [uv[0], uv[3], uv[2], uv[1]]; }
-    pushTri(dst, a, b, c, n, uv[0], uv[1], uv[2], colr);
-    pushTri(dst, a, c, d, n, uv[0], uv[2], uv[3], colr);
-  };
-  const named = [];
-  for (const b of map.buildings) {
-    const pts = b.p, n = pts.length / 2;
-    ({ bp, rp, fp } = tileOf(pts[0], pts[1]));
-    let area2 = 0;
-    for (let i = 0; i < n; i++) { const j = (i + 1) % n; area2 += pts[i * 2] * pts[j * 2 + 1] - pts[j * 2] * pts[i * 2 + 1]; }
-    const sgn = area2 > 0 ? 1 : -1;
-    col.set(b.c);
-    const top = b.t, base = b.b;
-    let along = 0;
-    for (let i = 0; i < n; i++) {
-      const j = (i + 1) % n;
-      const ax = pts[i * 2], az = pts[i * 2 + 1], bx = pts[j * 2], bz = pts[j * 2 + 1];
-      const len = Math.hypot(bx - ax, bz - az);
-      if (len < 0.05) continue;
-      // outward normal (polygon winding known from the signed area)
-      const nx = (bz - az) / len * sgn, nz = -(bx - ax) / len * sgn;
-      const u0 = along / 2.4, u1 = (along + len) / 2.4;
-      // keep whole windows: snap the repeat to the edge length
-      const bays = Math.max(1, Math.round(len / 2.4));
-      // v runs downwards from the eaves so the top storey's windows sit under the roof
-      const v1 = (base - top) / 2.9;
-      quad(bp, [ax, top, az], [bx, top, bz], [bx, base, bz], [ax, base, az], [nx, 0, nz],
-        [[0, 0], [bays, 0], [bays, v1], [0, v1]], col);
-      void u0; void u1;
-      along += len;
-    }
-    // roof
-    const rc = new THREE.Color(b.rc);
-    if (b.g) {
-      const g = b.g;
-      const c = [[g[0], g[1]], [g[2], g[3]], [g[4], g[5]], [g[6], g[7]]];
-      const l01 = Math.hypot(c[1][0] - c[0][0], c[1][1] - c[0][1]), l12 = Math.hypot(c[2][0] - c[1][0], c[2][1] - c[1][1]);
-      // ridge runs along the long side
-      const [p0, p1, p2, p3] = l01 >= l12 ? c : [c[1], c[2], c[3], c[0]];
-      const short = Math.min(l01, l12);
-      const rise = b.k === 'bryggen' ? Math.min(7.5, short / 2 * Math.tan(0.95)) : Math.min(5.5, short / 2 * Math.tan(0.66));
-      const m03 = [(p0[0] + p3[0]) / 2, (p0[1] + p3[1]) / 2], m12 = [(p1[0] + p2[0]) / 2, (p1[1] + p2[1]) / 2];
-      const ov = 0.35;
-      const ex = (p, q) => { const dx = p[0] - q[0], dz = p[1] - q[1], l = Math.hypot(dx, dz) || 1; return [p[0] + dx / l * ov, p[1] + dz / l * ov]; };
-      // slight overhang at the eaves
-      const e0 = ex(p0, p3), e1 = ex(p1, p2), e2 = ex(p2, p1), e3 = ex(p3, p0);
-      const R0 = [m03[0], top + rise, m03[1]], R1 = [m12[0], top + rise, m12[1]];
-      const E0 = [e0[0], top - 0.25, e0[1]], E1 = [e1[0], top - 0.25, e1[1]], E2 = [e2[0], top - 0.25, e2[1]], E3 = [e3[0], top - 0.25, e3[1]];
-      const nrm = (a, b2, c2) => {
-        const v1 = new THREE.Vector3(b2[0] - a[0], b2[1] - a[1], b2[2] - a[2]), v2 = new THREE.Vector3(c2[0] - a[0], c2[1] - a[1], c2[2] - a[2]);
-        const v = v1.cross(v2).normalize(); if (v.y < 0) v.negate(); return [v.x, v.y, v.z];
-      };
-      const sl = Math.hypot(short / 2 + ov, rise);
-      const lenR = Math.max(l01, l12);
-      quad(rp, E0, E1, R1, R0, nrm(E0, E1, R1), [[0, 0], [lenR, 0], [lenR, sl], [0, sl]], rc);
-      quad(rp, E3, E2, R1, R0, nrm(E3, E2, R1), [[0, 0], [lenR, 0], [lenR, sl], [0, sl]], rc);
-      // gable ends in the wall colour
-      for (const [a, b2, mm] of [[p0, p3, m03], [p1, p2, m12]]) {
-        const A = [a[0], top, a[1]], B = [b2[0], top, b2[1]], M = [mm[0], top + rise, mm[1]];
-        const dx = b2[0] - a[0], dz = b2[1] - a[1], l = Math.hypot(dx, dz) || 1;
-        const cxm = (p0[0] + p1[0] + p2[0] + p3[0]) / 4, czm = (p0[1] + p1[1] + p2[1] + p3[1]) / 4;
-        let nx = dz / l, nz = -dx / l;
-        if ((mm[0] - cxm) * nx + (mm[1] - czm) * nz < 0) { nx = -nx; nz = -nz; }
-        pushTri(bp, A, B, M, [nx, 0, nz], [0, -0.08], [0.02, -0.08], [0.01, -0.05], col);
-        pushTri(bp, A, M, B, [-nx, 0, -nz], [0, -0.08], [0.01, -0.05], [0.02, -0.08], col);
-      }
-      polys.add(Float32Array.from(pts), base, top, { roof: rise, kind: 'house' });
-    } else {
-      // flat roof
-      const contour = [];
-      for (let i = 0; i < n; i++) contour.push(new THREE.Vector2(pts[i * 2], pts[i * 2 + 1]));
-      const tris = THREE.ShapeUtils.triangulateShape(contour, []);
-      for (const [a, b2, c2] of tris) {
-        const A = [pts[a * 2], top, pts[a * 2 + 1]], B = [pts[b2 * 2], top, pts[b2 * 2 + 1]], Cc = [pts[c2 * 2], top, pts[c2 * 2 + 1]];
-        // face up
-        const e1x = B[0] - A[0], e1z = B[2] - A[2], e2x = Cc[0] - A[0], e2z = Cc[2] - A[2];
-        const up = e1z * e2x - e1x * e2z;   // y of cross product
-        for (const P of up > 0 ? [A, B, Cc] : [A, Cc, B]) { fp.p.push(...P); fp.n.push(0, 1, 0); fp.c.push(rc.r, rc.g, rc.b); }
-      }
-      polys.add(Float32Array.from(pts), base, top, { roof: 0, kind: 'flat', walk: true });
-    }
-    if (b.k === 'church') {
-      // a tower at the west end of the church
-      let wi = 0;
-      for (let i = 1; i < n; i++) if (pts[i * 2] < pts[wi * 2]) wi = i;
-      const tx = pts[wi * 2] + 4.5, tz = pts[wi * 2 + 1];
-      geo.box(opts.stone, tx - 3.5, base, tz - 3.5, tx + 3.5, top + 14, tz + 3.5);
-      geo.geom(opts.copper, new THREE.ConeGeometry(5.2, 12, 4), new THREE.Matrix4().makeRotationY(Math.PI / 4).premultiply(new THREE.Matrix4().makeTranslation(tx, top + 20, tz)));
-      polys.add(Float32Array.from([tx - 3.5, tz - 3.5, tx + 3.5, tz - 3.5, tx + 3.5, tz + 3.5, tx - 3.5, tz + 3.5]), base, top + 14, {});
-    }
-    if (b.n) named.push(b);
-  }
-  const mk = (src, mat, hasUv = true) => {
-    const bg = new THREE.BufferGeometry();
-    bg.setAttribute('position', new THREE.Float32BufferAttribute(src.p, 3));
-    bg.setAttribute('normal', new THREE.Float32BufferAttribute(src.n, 3));
-    if (hasUv) bg.setAttribute('uv', new THREE.Float32BufferAttribute(src.u, 2));
-    bg.setAttribute('color', new THREE.Float32BufferAttribute(src.c, 3));
-    bg.computeBoundingSphere();
-    const m = new THREE.Mesh(bg, mat);
-    m.castShadow = true; m.receiveShadow = true;
-    m.matrixAutoUpdate = false;
-    scene.add(m);
-    return m;
-  };
-  for (const t of tiles.values()) {
-    if (t.bp.p.length) mk(t.bp, facade);
-    if (t.rp.p.length) mk(t.rp, roofMat);
-    if (t.fp.p.length) mk(t.fp, flatRoofMat, false);
-  }
-
   // -------------------------------------------------------------- roads, lanes, steps
-  const roadMats = {
-    road: new THREE.MeshStandardMaterial({ color: 0x45474b, roughness: 0.42, map: detailTexture(128, 21, 190, 60) }),
-    sett: new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.4, map: T.cobble.clone() }),
-    foot: new THREE.MeshStandardMaterial({ color: 0x8b8a86, roughness: 0.6, map: detailTexture(128, 22, 210, 40) }),
-    side: new THREE.MeshStandardMaterial({ color: 0x8f8e8a, roughness: 0.55, map: detailTexture(128, 23, 215, 30) }),
-    ped: new THREE.MeshStandardMaterial({ color: 0xa29d93, roughness: 0.55, map: T.slab.clone() }),
-    steps: new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.7, map: stepsTexture() }),
-  };
-  roadMats.sett.map.repeat.set(1 / 2.4, 1 / 2.4); roadMats.sett.map.needsUpdate = true;
-  roadMats.ped.map.repeat.set(1 / 2.4, 1 / 2.4); roadMats.ped.map.needsUpdate = true;
-  roadMats.road.map.repeat.set(1 / 4, 1 / 4);
-  roadMats.foot.map.repeat.set(1 / 3, 1 / 3);
-  roadMats.side.map.repeat.set(1 / 3, 1 / 3);
-  const order = { road: 1, sett: 2, ped: 3, side: 4, foot: 5, steps: 6 };
-  for (const k in roadMats) {
-    roadMats[k].polygonOffset = true;
-    roadMats[k].polygonOffsetFactor = -1 - order[k];
-    roadMats[k].polygonOffsetUnits = -2 - order[k] * 2;
-  }
+  // Street ribbons are draped on the terrain and drawn with the same atlas material as the
+  // buildings, merged into the same 100 m tiles (see buildings.js). The kinds are stacked a few
+  // centimetres apart instead of using polygon offsets, so one material covers them all.
+  const LIFT = { road: 0.06, sett: 0.065, ped: 0.07, side: 0.08, foot: 0.09, steps: 0.1 };
+  const RSTY = { road: 'asphalt', sett: 'cobble', ped: 'paving', side: 'side', foot: 'foot', steps: 'steps' };
   const stepsMask = new Map();          // 1 m cells on steps
   const roadMask = new Map();           // 2 m cells on any road
-  const rgTiles = new Map();
-  const rgOf = (x, z, k) => {
-    const key = Math.floor(x / 150) * 1000 + Math.floor(z / 150) + ':' + k;
-    if (!rgTiles.has(key)) rgTiles.set(key, { k, p: [], n: [], u: [] });
-    return rgTiles.get(key);
-  };
+  const roadQuads = [];
   for (const r of map.roads) {
-    const p = r.p, w = r.w / 2;
-    // resample
+    const p = r.p, w = r.w / 2, lift = LIFT[r.k];
     const pts = [];
     for (let i = 0; i < p.length - 2; i += 2) {
       const ax = p[i], az = p[i + 1], bx = p[i + 2], bz = p[i + 3];
@@ -566,9 +404,7 @@ export function buildCity(scene, map, T, opts) {
       for (let s = 0; s < n; s++) pts.push([ax + (bx - ax) * s / n, az + (bz - az) * s / n]);
     }
     pts.push([p[p.length - 2], p[p.length - 1]]);
-    const g = rgOf(p[0], p[1], r.k);
-    let dist = 0;
-    let prevL = null, prevR = null, prevD = 0;
+    let dist = 0, prevL = null, prevR = null, prevD = 0;
     for (let i = 0; i < pts.length; i++) {
       const a = pts[Math.max(0, i - 1)], b = pts[Math.min(pts.length - 1, i + 1)];
       let dx = b[0] - a[0], dz = b[1] - a[1];
@@ -576,28 +412,23 @@ export function buildCity(scene, map, T, opts) {
       const [x, z] = pts[i];
       if (i > 0) dist += Math.hypot(x - pts[i - 1][0], z - pts[i - 1][1]);
       const lx = x - dz * w, lz = z + dx * w, rx = x + dz * w, rz = z - dx * w;
-      const L = [lx, terrain.height(lx, lz) + 0.07, lz], Rr = [rx, terrain.height(rx, rz) + 0.07, rz];
+      const L = [lx, terrain.height(lx, lz) + lift, lz], Rr = [rx, terrain.height(rx, rz) + lift, rz];
       // keep the cross-section level-ish so narrow lanes do not tilt into the hillside
-      const mid = terrain.height(x, z) + 0.07;
+      const mid = terrain.height(x, z) + lift;
       L[1] = Math.max(L[1] * 0.3 + mid * 0.7, mid - 0.4); Rr[1] = Math.max(Rr[1] * 0.3 + mid * 0.7, mid - 0.4);
       if (prevL) {
-        const vs = r.k === 'steps' ? 1 / 0.32 : 1;
-        const u0 = r.k === 'steps' ? [0, prevD * vs] : [prevL[0], prevL[2]];
-        void u0;
         const uv = r.k === 'steps'
-          ? [[0, prevD * vs], [1, prevD * vs], [1, dist * vs], [0, dist * vs]]
+          ? [[0, prevD], [2 * w, prevD], [2 * w, dist], [0, dist]]
           : [[prevL[0], prevL[2]], [prevR[0], prevR[2]], [Rr[0], Rr[2]], [L[0], L[2]]];
         const P = [prevL, prevR, Rr, L];
         const e1 = [P[1][0] - P[0][0], P[1][1] - P[0][1], P[1][2] - P[0][2]], e2 = [P[2][0] - P[0][0], P[2][1] - P[0][1], P[2][2] - P[0][2]];
         const n = [e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0]];
         const nl = Math.hypot(...n) || 1;
-        let N = n.map(v => v / nl);
-        let Q = P, UV = uv;
+        let N = n.map(v => v / nl), Q = P, UV = uv;
         if (N[1] < 0) { Q = [P[0], P[3], P[2], P[1]]; UV = [uv[0], uv[3], uv[2], uv[1]]; N = N.map(v => -v); }
-        for (const t of [[0, 1, 2], [0, 2, 3]]) for (const q of t) { g.p.push(...Q[q]); g.n.push(...N); g.u.push(...UV[q]); }
+        roadQuads.push([Q, N, UV, RSTY[r.k]]);
       }
       prevL = L; prevR = Rr; prevD = dist;
-      // masks
       const steps = r.k === 'steps';
       for (let s = -w; s <= w + 0.01; s += 1) {
         const mx = x - dz * s, mz = z + dx * s;
@@ -606,19 +437,14 @@ export function buildCity(scene, map, T, opts) {
       }
     }
   }
-  for (const g of rgTiles.values()) {
-    if (!g.p.length) continue;
-    const bg = new THREE.BufferGeometry();
-    bg.setAttribute('position', new THREE.Float32BufferAttribute(g.p, 3));
-    bg.setAttribute('normal', new THREE.Float32BufferAttribute(g.n, 3));
-    bg.setAttribute('uv', new THREE.Float32BufferAttribute(g.u, 2));
-    bg.computeBoundingSphere();
-    const m = new THREE.Mesh(bg, roadMats[g.k]);
-    m.receiveShadow = true;
-    m.renderOrder = 1;
-    m.matrixAutoUpdate = false;
-    scene.add(m);
-  }
+  // -------------------------------------------------------------- buildings and streets (see buildings.js)
+  const white = new THREE.Color(1, 1, 1);
+  const { named, lods: buildingLods, facadeMat } = buildBuildings(scene, map, terrain, polys, T, {
+    geo, stone: opts.stone, copper: opts.copper,
+    extra: (tileOf, STYLE) => {
+      for (const [Q, N, UV, sty] of roadQuads) tileOf(Q[0][0], Q[0][2]).roof.quad(Q[0], Q[1], Q[2], Q[3], N, [white, white, white, white], UV, STYLE[sty]);
+    },
+  });
   const onSteps = (x, z) => stepsMask.has(Math.round(x) * 100003 + Math.round(z));
   const onRoad = (x, z) => roadMask.get(Math.round(x / 2) * 100003 + Math.round(z / 2));
 
@@ -654,6 +480,157 @@ export function buildCity(scene, map, T, opts) {
     });
     trunks.castShadow = crowns.castShadow = true;
     scene.add(trunks, crowns);
+  }
+
+  // -------------------------------------------------------------- walls, fences, hedges (OSM barriers)
+  {
+    const wallG = new Geo();
+    const stoneM = new THREE.MeshStandardMaterial({ color: 0xa9a7a0, roughness: 0.95, map: T.stone.clone() });
+    stoneM.map.repeat.set(1 / 2.5, 1 / 2.5); stoneM.map.needsUpdate = true;
+    // picket fence: one textured panel per segment, gaps cut out with alpha testing
+    const fenceTex = (() => {
+      const c = document.createElement('canvas'); c.width = 64; c.height = 64;
+      const g = c.getContext('2d');
+      for (let i = 0; i < 4; i++) { g.fillStyle = '#f1eee6'; g.fillRect(i * 16 + 2, 4, 10, 60); g.beginPath(); g.moveTo(i * 16 + 2, 4); g.lineTo(i * 16 + 7, 0); g.lineTo(i * 16 + 12, 4); g.fill(); }
+      g.fillStyle = '#e4e0d4'; g.fillRect(0, 16, 64, 5); g.fillRect(0, 46, 64, 5);
+      const t = new THREE.CanvasTexture(c); t.wrapS = THREE.RepeatWrapping; t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 4;
+      return t;
+    })();
+    const fenceM = new THREE.MeshStandardMaterial({ map: fenceTex, alphaTest: 0.5, side: THREE.DoubleSide, roughness: 0.8 });
+    fenceM.userData.noCast = false;
+    const hedgeM = new THREE.MeshStandardMaterial({ color: 0x3d5a2c, roughness: 1, flatShading: true });
+    const railM = new THREE.MeshStandardMaterial({ color: 0x9aa0a4, roughness: 0.4, metalness: 0.6 });
+    const KIND = { wall: [stoneM, 1.1, 0.35], retaining_wall: [stoneM, 1.0, 0.45], fence: [fenceM, 1.05, 0.06], hedge: [hedgeM, 1.4, 0.8], guard_rail: [railM, 0.75, 0.08] };
+    for (const br of map.barriers) {
+      const [m, h, w] = KIND[br.k];
+      const p = br.p;
+      for (let i = 0; i < p.length - 2; i += 2) {
+        const ax = p[i], az = p[i + 1], bx = p[i + 2], bz = p[i + 3];
+        const L = Math.hypot(bx - ax, bz - az);
+        if (L < 0.2) continue;
+        const nseg = Math.max(1, Math.ceil(L / 3));
+        for (let k = 0; k < nseg; k++) {
+          const t0 = k / nseg, t1 = (k + 1) / nseg;
+          const x0 = ax + (bx - ax) * t0, z0 = az + (bz - az) * t0, x1 = ax + (bx - ax) * t1, z1 = az + (bz - az) * t1;
+          const g0 = Math.min(terrain.height(x0, z0), terrain.height(x1, z1));
+          const cx = (x0 + x1) / 2, cz = (z0 + z1) / 2, len = Math.hypot(x1 - x0, z1 - z0);
+          const top = Math.max(terrain.height(x0, z0), terrain.height(x1, z1)) + h;
+          if (br.k === 'fence') {
+            const ya = terrain.height(x0, z0), yb = terrain.height(x1, z1), reps = len / 0.64;
+            wallG.quad(m, [x0, ya, z0], [x1, yb, z1], [x1, yb + h, z1], [x0, ya + h, z0], [[0, 0], [reps, 0], [reps, 1], [0, 1]], null);
+          } else {
+            wallG.obox(m, cx, (g0 - 0.6 + top) / 2, cz, len + (br.k === 'hedge' ? 0.3 : 0.02), top - g0 + 0.6, w, 0, Math.atan2(x1 - x0, z1 - z0) + Math.PI / 2, 0);
+          }
+        }
+      }
+    }
+    // benches (OSM positions), facing the nearest street
+    const benchM = new THREE.MeshStandardMaterial({ color: 0x6b4c33, roughness: 0.8 });
+    const legM = new THREE.MeshStandardMaterial({ color: 0x2a2c2e, roughness: 0.5, metalness: 0.5 });
+    for (let i = 0; i < map.benches.length; i += 2) {
+      const x = map.benches[i], z = map.benches[i + 1], y = terrain.height(x, z), r = (x * 7 + z * 3) % 6.28;
+      wallG.obox(benchM, x, y + 0.45, z, 1.6, 0.06, 0.45, 0, r, 0);
+      wallG.obox(benchM, x - Math.sin(r + Math.PI / 2) * 0, y + 0.72, z, 1.6, 0.4, 0.05, 0, r, 0);
+      wallG.obox(legM, x, y + 0.22, z, 1.4, 0.44, 0.08, 0, r, 0);
+    }
+    wallG.build(scene);
+  }
+
+  // -------------------------------------------------------------- street lamps and parked cars (instanced)
+  {
+    const R = rng(55);
+    const lampSpots = [];
+    for (let i = 0; i < map.lamps.length; i += 2) lampSpots.push([map.lamps[i], map.lamps[i + 1]]);
+    // Bergen streets have lamps every 25-30 m: place them along the edges of the bigger streets
+    const placed = new Map();
+    const near = (x, z) => { const k = Math.round(x / 12) * 100003 + Math.round(z / 12); if (placed.has(k)) return true; placed.set(k, 1); return false; };
+    for (const r of map.roads) {
+      if (!['road', 'sett', 'ped'].includes(r.k)) continue;
+      const p = r.p;
+      let acc = 12 + R() * 10, side = 1;
+      for (let i = 0; i < p.length - 2; i += 2) {
+        const ax = p[i], az = p[i + 1], bx = p[i + 2], bz = p[i + 3], L = Math.hypot(bx - ax, bz - az);
+        if (L < 0.01) continue;
+        const dx = (bx - ax) / L, dz = (bz - az) / L;
+        for (let t = acc; t < L; t += 28) {
+          const off = r.w / 2 + 0.5;
+          const x = ax + dx * t - dz * off * side, z = az + dz * t + dx * off * side;
+          side = -side;
+          if (polys.query(x - 0.5, z - 0.5, x + 0.5, z + 0.5).some(it => !it.tree && PolyWorld.inside(it.pts, x, z))) continue;
+          if (!near(x, z)) lampSpots.push([x, z]);
+          acc = t + 28 - L;
+        }
+        acc = Math.max(0, acc - L);
+      }
+    }
+    const poleG = new THREE.CylinderGeometry(0.06, 0.09, 4.6, 6); poleG.translate(0, 2.3, 0);
+    const headG = new THREE.CylinderGeometry(0.28, 0.18, 0.32, 8); headG.translate(0, 4.65, 0);
+    const poles = new THREE.InstancedMesh(poleG, new THREE.MeshStandardMaterial({ color: 0x23272b, roughness: 0.5, metalness: 0.6 }), lampSpots.length);
+    const heads = new THREE.InstancedMesh(headG, new THREE.MeshStandardMaterial({ color: 0xfff4dc, emissive: 0xffd9a0, emissiveIntensity: 1.4 }), lampSpots.length);
+    const m4 = new THREE.Matrix4();
+    lampSpots.forEach(([x, z], i) => {
+      m4.makeTranslation(x, terrain.height(x, z), z);
+      poles.setMatrixAt(i, m4); heads.setMatrixAt(i, m4);
+      polys.add(Float32Array.from([x - 0.1, z - 0.1, x + 0.1, z - 0.1, x + 0.1, z + 0.1, x - 0.1, z + 0.1]), terrain.height(x, z) - 1, terrain.height(x, z) + 4.6, { noCam: true, tree: true });
+    });
+    poles.castShadow = true;
+    scene.add(poles, heads);
+
+    // parked cars: in OSM car parks and along residential streets in Fjellet and Marken
+    const carSpots = [];
+    for (const poly of map.parking) {
+      let x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity;
+      for (let k = 0; k < poly.length; k += 2) { x0 = Math.min(x0, poly[k]); x1 = Math.max(x1, poly[k]); z0 = Math.min(z0, poly[k + 1]); z1 = Math.max(z1, poly[k + 1]); }
+      for (let x = x0 + 1.5; x < x1 - 1.5; x += 2.6) for (let z = z0 + 2.5; z < z1 - 2.5; z += 5.5)
+        if (PolyWorld.inside(poly, x, z) && R() < 0.7 && !polys.query(x - 1, z - 1, x + 1, z + 1).length) carSpots.push([x, z, 0]);
+    }
+    for (const r of map.roads) {
+      if (r.k !== 'road' || r.w > 6) continue;
+      const p = r.p;
+      for (let i = 0; i < p.length - 2; i += 2) {
+        const ax = p[i], az = p[i + 1], bx = p[i + 2], bz = p[i + 3], L = Math.hypot(bx - ax, bz - az);
+        if (L < 6) continue;
+        const dx = (bx - ax) / L, dz = (bz - az) / L, ang = Math.atan2(dx, dz);
+        for (let t = 3; t < L - 3; t += 5.2) {
+          if (R() < 0.6) continue;
+          const off = r.w / 2 + 0.95;
+          const x = ax + dx * t - dz * off, z = az + dz * t + dx * off;
+          if (polys.query(x - 1.2, z - 1.2, x + 1.2, z + 1.2).length) continue;
+          if (opts.keepClear(x, z)) continue;
+          const slope = Math.abs(terrain.height(x + dx * 2, z + dz * 2) - terrain.height(x - dx * 2, z - dz * 2)) / 4;
+          if (slope > 0.12) continue;     // nobody parks on the steepest bits
+          carSpots.push([x, z, ang]);
+        }
+      }
+    }
+    const body = new THREE.BoxGeometry(1.75, 0.7, 4.2); body.translate(0, 0.55, 0);
+    const cabin = new THREE.BoxGeometry(1.55, 0.55, 2.2); cabin.translate(0, 1.15, -0.2);
+    const carG = new THREE.BufferGeometry();
+    {
+      const parts = [body, cabin].map(g => g.toNonIndexed());
+      const pos = [], nrm = [], col = [];
+      parts.forEach((g, pi) => {
+        pos.push(...g.attributes.position.array); nrm.push(...g.attributes.normal.array);
+        for (let k = 0; k < g.attributes.position.count; k++) col.push(...(pi === 0 ? [1, 1, 1] : [0.25, 0.3, 0.35]));
+      });
+      carG.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+      carG.setAttribute('normal', new THREE.Float32BufferAttribute(nrm, 3));
+      carG.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
+    }
+    const cars2 = new THREE.InstancedMesh(carG, new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.35, metalness: 0.3 }), Math.max(1, carSpots.length));
+    const carCols = [0xe8e8e8, 0x1d1f22, 0x8c9196, 0x2c4c7a, 0x7a2e28, 0xc9c9c4, 0x3f5d48, 0x30343a];
+    const q4 = new THREE.Quaternion(), s4 = new THREE.Vector3(1, 1, 1), p4 = new THREE.Vector3();
+    carSpots.forEach(([x, z, a], i) => {
+      m4.compose(p4.set(x, terrain.height(x, z), z), q4.setFromAxisAngle(new THREE.Vector3(0, 1, 0), a), s4);
+      cars2.setMatrixAt(i, m4);
+      cars2.setColorAt(i, col.set(carCols[Math.floor(R() * carCols.length)]));
+      const c = Math.cos(a), sn = Math.sin(a), hw = 0.9, hl = 2.1;
+      const pts = [[-hw, -hl], [hw, -hl], [hw, hl], [-hw, hl]].map(([u, v]) => [x + u * c + v * sn, z - u * sn + v * c]).flat();
+      polys.add(Float32Array.from(pts), terrain.height(x, z) - 0.5, terrain.height(x, z) + 1.45, { noCam: true, walk: true });
+    });
+    cars2.count = carSpots.length;
+    cars2.castShadow = true; cars2.receiveShadow = true;
+    scene.add(cars2);
   }
 
   // -------------------------------------------------------------- Fløibanen
@@ -696,5 +673,5 @@ export function buildCity(scene, map, T, opts) {
 
   geo.build(scene);
 
-  return { terrain, polys, funiCurve, cars, onSteps, onRoad, named };
+  return { terrain, polys, funiCurve, cars, onSteps, onRoad, named, buildingLods, water };
 }
