@@ -60,6 +60,10 @@ body {
 #alarm.flash svg.on path { animation: flash 0.5s steps(2) infinite; }
 @keyframes flash { 50% { fill: var(--red); } }
 #health { width: clamp(110px, 14vw, 160px); height: 9px; background: rgba(16, 20, 24, 0.75); border: 2px solid rgba(16, 20, 24, 0.9); border-radius: 2px; }
+#boostbar { width: clamp(110px, 14vw, 160px); height: 7px; background: rgba(16, 20, 24, 0.75); border: 2px solid rgba(16, 20, 24, 0.9); border-radius: 2px; }
+#boostbar[hidden] { display: none; }
+#boostbar i { display: block; height: 100%; background: linear-gradient(#8fd3ff, #3a8fd6); }
+#boostbar.on i { background: linear-gradient(#e8f7ff, #6cc2ff); box-shadow: 0 0 8px #6cc2ff; }
 #health i { display: block; height: 100%; width: 100%; background: linear-gradient(#e6564a, #b72f24); transition: width 0.2s; }
 #umbrellas { font: 600 13px/1 var(--cond); opacity: 0.85; }
 
@@ -196,6 +200,7 @@ body.touch #ammo { top: calc(max(16px, env(safe-area-inset-top)) + 168px); }
 #touch [data-k="punch"] { right: calc(max(20px, env(safe-area-inset-right)) + 88px); bottom: max(28px, env(safe-area-inset-bottom)); }
 #touch [data-k="use"]   { right: max(20px, env(safe-area-inset-right)); bottom: calc(max(28px, env(safe-area-inset-bottom)) + 90px); }
 #touch [data-k="run"]   { right: calc(max(20px, env(safe-area-inset-right)) + 80px); bottom: calc(max(28px, env(safe-area-inset-bottom)) + 84px); width: 54px; height: 54px; }
+#touch [data-k="trick"] { right: calc(max(20px, env(safe-area-inset-right)) + 150px); bottom: calc(max(28px, env(safe-area-inset-bottom)) + 74px); width: 54px; height: 54px; }
 #touch [data-k="gun"]   { right: calc(max(20px, env(safe-area-inset-right)) + 164px); bottom: max(28px, env(safe-area-inset-bottom)); width: 54px; height: 54px; }
 body.touch #help { display: none; }
 body.touch #pausebtn { display: block; }

@@ -11,48 +11,46 @@ const SONGS = [
   { id: 'stone-and-salt', title: 'Cappes Vei Stone and Salt', dur: 203.08 },
   { id: 'cappes-vei-six-2', title: 'Cappes Vei Six (Version 2)', dur: 334.97 },
 ];
-// The station's clips recorded so far (gtcv6/RADIO.md has the scripts), with their durations. A
-// slot whose clip is not here yet is left out of the broadcast.
-const TALK = {
-  'intro_grand-theft-cappes-vei-6': 7.58, 'intro_cappes-vei-six': 6.71, 'intro_guangdong-house': 7.11,
-  'intro_stone-and-salt': 7.34, 'intro_cappes-vei-six-v2': 6.37,
-  id_01: 3.81, id_02: 4.47, id_03: 3.11, id_04: 3.89,
-  outro_01: 3.42, outro_02: 3.74, outro_03: 3.66,
-  news_maakemelding: 18.78, news_traffic: 15.26, news_party: 11.99,
-};
+// The station's clips (gtcv6/RADIO.md has the scripts) and their durations, from clips.json, which
+// tools/build_radio.py writes. A slot whose clip isn't there yet is left out of the broadcast.
+const TALK = await fetch('/audio/radio/clips.json').then(r => r.ok ? r.json() : {}).catch(() => ({}));
 const INTRO = { 'grand-theft-cappes-vei-6': 'intro_grand-theft-cappes-vei-6', 'cappes-vei-six': 'intro_cappes-vei-six',
   'guangdong-house': 'intro_guangdong-house', 'stone-and-salt': 'intro_stone-and-salt', 'cappes-vei-six-2': 'intro_cappes-vei-six-v2' };
 // the rotating slots: a different clip of the kind plays in each slot, round after round
 const POOL = {
   id: ['id_01', 'id_02', 'id_03', 'id_04'],
   outro: ['outro_01', 'outro_02', 'outro_03'],
-  talk: ['talk_rain', 'talk_gulls', 'talk_shoutout', 'talk_scooters', 'talk_bryggen'],
+  // Regnar and Sol talking between the songs
+  chat: ['chat_weather', 'chat_gulls', 'chat_steep', 'chat_bryggen', 'chat_scooters', 'chat_party', 'chat_guangdong'],
   ad: ['ad_maakeskrekk', 'ad_regnfrakk', 'ad_bratt', 'ad_sparksjo'],
   news: ['news_maakemelding', 'news_traffic', 'news_party'],
+  // and over the music, halfway through a song
+  over: ['over_umbrella', 'over_sunglasses', 'over_dance', 'over_gull', 'over_bolle', 'over_floibanen', 'over_steps', 'over_fortyone'],
 };
-// what follows each song (RADIO.md, "How it will play")
-const AFTER = [['outro', 'ad'], ['talk', 'news'], ['ad', 'talk'], ['outro', 'news'], ['ad', 'talk']];
-const TITLE = { news: 'Nyheter', ad: 'Reklame' };
-// Lines that cut in over the music when something happens while you ride (voiced by the
-// station's second voice); the game decides when (see radioReact in game.js)
-const REACTS = new Set(['react_crash', 'react_sun', 'react_rain_back', 'react_bolle', 'react_guangdong',
-  'react_alarm_high', 'react_alarm_clear', 'react_bakery']);
-// The broadcast: a station ID, Regnar's intro, the song, then the chatter after it. It runs for
-// enough rounds of the songs that the rotating clips come round evenly, then starts again.
+// what follows each song (RADIO.md, "How it plays")
+const AFTER = [['outro', 'chat'], ['chat', 'news'], ['ad', 'chat'], ['outro', 'news'], ['chat', 'ad']];
+const TITLE = { news: 'Nyheter', ad: 'Reklame', chat: 'Regnar & Sol' };
+// The broadcast: a station ID, Regnar's intro, the song (with the two of them talking over it
+// halfway through), then the chatter after it. It runs for enough rounds of the songs that the
+// rotating clips come round evenly, then starts again. It is a broadcast: it plays the same
+// whatever you are doing.
 const PROGRAM = [];
 {
   const next = {}, talk = (id, kind) => TALK[id] && PROGRAM.push({ talk: true, title: TITLE[kind] || DJ, src: `/audio/radio/${id}.mp3`, dur: TALK[id] });
-  const pick = kind => {
+  const pick = (kind, take = id => talk(id, kind)) => {
     const ids = POOL[kind].filter(id => TALK[id]);
     if (!ids.length) return;
     const n = next[kind] || 0; next[kind] = n + 1;
-    talk(ids[n % ids.length], kind);
+    take(ids[n % ids.length]);
   };
   for (let round = 0; round < 3; round++) {
     SONGS.forEach((song, i) => {
       pick('id');
       talk(INTRO[song.id], 'intro');
-      PROGRAM.push({ title: song.title, src: `/audio/${song.id}.mp3`, dur: song.dur });
+      const seg = { title: song.title, src: `/audio/${song.id}.mp3`, dur: song.dur };
+      // talk over the song: a little before the middle, and always clear of the end
+      pick('over', id => { const dur = TALK[id]; seg.over = { src: `/audio/radio/${id}.mp3`, dur, at: Math.min(song.dur * 0.42, song.dur - dur - 20) }; });
+      PROGRAM.push(seg);
       for (const kind of AFTER[i % AFTER.length]) pick(kind);
     });
   }
@@ -115,13 +113,13 @@ export class Audio {
     // straight into the song.
     this.radioGain = c.createGain(); this.radioGain.gain.value = 0;
     this.radioTone = c.createBiquadFilter(); this.radioTone.type = 'highshelf'; this.radioTone.frequency.value = 6000; this.radioTone.gain.value = -4;
-    this.musicGain = c.createGain();                 // ducks the music under a line that cuts in
+    this.musicGain = c.createGain();                 // ducks the music while Regnar and Sol talk over it
     this.radioTone.connect(this.musicGain).connect(this.radioGain).connect(this.master);
-    this.reactEl = document.createElement('audio');
-    this.reactEl.preload = 'auto';
-    c.createMediaElementSource(this.reactEl).connect(this.radioGain);
-    this.reactEl.addEventListener('ended', () => this.musicGain.gain.setTargetAtTime(1, this.ctx.currentTime, 0.3));
-    this.lastReact = -1e9;
+    this.overEl = document.createElement('audio');
+    this.overEl.preload = 'none';
+    c.createMediaElementSource(this.overEl).connect(this.radioGain);
+    this.overEl.addEventListener('ended', () => this._duck(false));
+    this.ducked = false;
     this.radioEls = [0, 1].map(() => {
       const el = document.createElement('audio');
       el.preload = 'none';
@@ -183,17 +181,29 @@ export class Audio {
     this._preloadAfter(i);
     if ((!seg.talk || seg.title !== DJ) && this.onSong) this.onSong(STATION, seg.title);   // songs, the news and ads
   }
-  // a line over the music: only while the radio is on, not over Regnar, at most one every 45 s
-  // (unless forced); returns whether it plays
-  react(id, force = false) {
-    if (!this.ctx || !this.radioOn || !REACTS.has(id) || !this.reactEl.paused) return false;
-    const now = performance.now();
-    if (!force && (now - this.lastReact < 45000 || (PROGRAM[this.segIdx] && PROGRAM[this.segIdx].talk))) return false;
-    this.lastReact = now;
-    this.reactEl.src = `/audio/radio/${id}.mp3`;
-    this.reactEl.play().catch(() => {});
-    this.musicGain.gain.setTargetAtTime(0.28, this.ctx.currentTime, 0.08);
-    return true;
+  _duck(on) {
+    if (this.ducked === on) return;
+    this.ducked = on;
+    this.musicGain.gain.setTargetAtTime(on ? 0.26 : 1, this.ctx.currentTime, on ? 0.12 : 0.35);
+  }
+  // Regnar and Sol talking over the song: follow the song's own position, so tuning in halfway
+  // through their chat picks it up mid-sentence, like everything else on the station
+  _overTick() {
+    const seg = PROGRAM[this.segIdx], el = this.radioEl, ov = this.overEl;
+    const o = this.radioOn && seg && seg.over && !el.paused && el.dataset.src === seg.src ? seg.over : null;
+    const rel = o ? el.currentTime - o.at : -1;
+    if (o && o.src !== ov.dataset.src && rel > -8) { ov.dataset.src = o.src; ov.preload = 'auto'; ov.src = o.src; ov.load(); }
+    if (o && rel >= 0 && rel < o.dur - 0.3) {
+      if (ov.paused && !this._overPlayed) {
+        this._overPlayed = o;
+        try { if (ov.readyState >= 1) ov.currentTime = rel; } catch (e) { /* from the top */ }
+        ov.play().catch(() => {});
+        this._duck(true);
+      }
+    } else {
+      if (this._overPlayed && (!o || rel < 0)) this._overPlayed = null;
+      if (!ov.paused && (!o || rel < -0.5 || rel > o.dur + 1)) { ov.pause(); this._duck(false); }
+    }
   }
   // turn the radio on or off; call as often as you like
   setRadio(on) {
@@ -211,28 +221,29 @@ export class Audio {
       this._radioStop = setTimeout(() => {
         if (this.radioOn) return;
         for (const e of this.radioEls) e.pause();
-        this.reactEl.pause(); this.musicGain.gain.setTargetAtTime(1, this.ctx.currentTime, 0.05);
+        this.overEl.pause(); this._overPlayed = null; this._duck(false);
       }, 700);
     }
   }
   pauseRadio(paused) {
     if (!this.radioEls || !this.radioOn) return;
-    if (paused) this.radioEl.pause(); else this.radioEl.play().catch(() => {});
+    if (paused) { this.radioEl.pause(); this.overEl.pause(); this._overPlayed = null; } else this.radioEl.play().catch(() => {});
   }
   setOn(on) {
     this.on = on;
     if (this.master) this.master.gain.setTargetAtTime(on ? 0.8 : 0, this.ctx.currentTime, 0.05);
   }
-  update(rain, indoors, scooterSpeed) {
+  update(rain, indoors, scooterSpeed, boost = 0) {
     if (!this.ctx) return;
+    if (this.overEl) this._overTick();
     const t = this.ctx.currentTime;
     const r = rain * (indoors ? 0.25 : 1);
     this.rainHi.gain.setTargetAtTime(r * 0.05, t, 0.3);
     this.rainLo.gain.setTargetAtTime(r * (indoors ? 0.25 : 0.12), t, 0.3);
     const s = scooterSpeed;
     this.motorGain.gain.setTargetAtTime(s > 0.05 ? 0.035 + Math.min(0.05, s * 0.004) : 0, t, 0.08);
-    this.motor.frequency.setTargetAtTime(70 + s * 22, t, 0.08);
-    this.motorF.frequency.setTargetAtTime(500 + s * 90, t, 0.08);
+    this.motor.frequency.setTargetAtTime(70 + s * 22 + boost * 60, t, 0.08);
+    this.motorF.frequency.setTargetAtTime(500 + s * 90 + boost * 900, t, 0.08);
   }
   // 0..1, how hard the scooter is sliding
   skid(amount) { if (this.ctx && this.skidGain) this.skidGain.gain.setTargetAtTime(Math.min(1, amount) * 0.09, this.ctx.currentTime, 0.05); }

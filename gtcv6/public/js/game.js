@@ -107,9 +107,7 @@ function updateWeather(dt) {
     const raining = weather.target > 0.4;
     weather.target = raining ? 0.05 + Math.random() * 0.2 : 0.55 + Math.random() * 0.45;
     weather.t = raining ? 25 + Math.random() * 30 : 60 + Math.random() * 70;
-    // the radio notices a sunny break, and the rain coming back
     weather.sunny = raining;
-    radioNews = { id: raining ? 'react_sun' : 'react_rain_back', until: performance.now() + 25000 };
   }
   weather.rain = damp(weather.rain, weather.target, weather.forced !== null ? 1.2 : 0.25, dt);
   const r = weather.rain;
@@ -293,27 +291,6 @@ function updateRain(dt) {
 const audio = new Audio();
 // the scooter radio's station and song, shown at the top of the screen like a car radio
 let radioT = 0;
-// lines that cut in over the music (audio.react): a queued one from the weather, and a few
-// seconds of radio after a crash so the line about it is heard
-let radioNews = null, radioGraceT = 0, radioAlarm = 0, radioAlarmPeak = 0;
-function radioReact() {
-  // the Måkealarm on the news: when it gets serious, and when it is over
-  const al = state.alarm;
-  if (al >= 4 && radioAlarm < 4) radioNews = { id: 'react_alarm_high', until: performance.now() + 20000 };
-  if (al === 0 && radioAlarm > 0 && radioAlarmPeak >= 3) radioNews = { id: 'react_alarm_clear', until: performance.now() + 20000 };
-  radioAlarmPeak = al === 0 ? 0 : Math.max(radioAlarmPeak, al);
-  radioAlarm = al;
-  if (!audio.radioOn) return;
-  if (radioNews) {
-    if (performance.now() > radioNews.until) radioNews = null;
-    else if (audio.react(radioNews.id)) radioNews = null;
-  }
-  if (!mission) return;
-  const m = mission, said = m.said || (m.said = {});
-  if (m.def.id === 'scooter' && m.step === 1 && !said.s && audio.react('react_bakery')) said.s = true;
-  if (m.def.id === 'guangdong' && m.step === 0 && !said.g && audio.react('react_guangdong')) said.g = true;
-  if (m.def.id === 'bolle' && player.carrying && !said.b && audio.react('react_bolle')) said.b = true;
-}
 audio.onSong = (station, title) => {
   const el = $('radio');
   el.querySelector('b').textContent = station;
@@ -353,7 +330,7 @@ function updateCamera(dt) {
   const want = lerp(player.riding ? 5.6 : inside ? 2.5 : 4.6, 3.1, gun.aimK);
   cam.dist = damp(cam.dist, want, 3, dt);
   const baseFov = camera.aspect < 0.8 ? 78 : 64;
-  const fov = damp(camera.fov, inside ? baseFov + 14 : baseFov, 3, dt);
+  const fov = damp(camera.fov, (inside ? baseFov + 14 : baseFov) + (player.riding && turbo.on ? 9 : 0), 3, dt);
   if (Math.abs(fov - camera.fov) > 0.01) { camera.fov = fov; camera.updateProjectionMatrix(); }
   // follow the scooter's heading unless the player is steering the camera
   if (player.riding && performance.now() - cam.lastLook > 900) {
@@ -386,8 +363,8 @@ function updateCamera(dt) {
 
 // ------------------------------------------------------------------ input
 const keys = {};
-const pressed = { jump: false, punch: false, use: false, radio: false, gun: false };
-const touch = { mx: 0, my: 0, run: false, stickId: null, lookId: null, sx: 0, sy: 0, lx: 0, ly: 0 };
+const pressed = { jump: false, punch: false, use: false, radio: false, gun: false, trick: false };
+const touch = { mx: 0, my: 0, run: false, jumpHeld: false, stickId: null, lookId: null, sx: 0, sy: 0, lx: 0, ly: 0 };
 let locked = false;
 addEventListener('keydown', e => {
   if (e.repeat) { if (['Space', 'ArrowUp', 'ArrowDown'].includes(e.code)) e.preventDefault(); return; }
@@ -398,6 +375,7 @@ addEventListener('keydown', e => {
     if (e.code === 'KeyF') pressed.punch = true;
     if (e.code === 'KeyR') pressed.radio = true;
     if (e.code === 'KeyG') pressed.gun = true;
+    if (e.code === 'KeyT') pressed.trick = true;
     if (e.code === 'KeyY' && offer && !offer.accepted) acceptOffer();
     if (e.code === 'KeyN' && offer && !offer.accepted) declineOffer();
     if (e.code === 'KeyQ' || e.code === 'Tab') { openWheel(!wheelOpen); e.preventDefault(); }
@@ -415,8 +393,10 @@ canvas.addEventListener('mousedown', e => {
   if (state.mode === 'play') {
     if (!locked) { requestLock(); return; }
     if (e.button === 0) pressed.punch = true;
+    if (e.button === 2) pressed.trick = true;
   }
 });
+canvas.addEventListener('contextmenu', e => e.preventDefault());
 addEventListener('mousemove', e => {
   if (!locked || state.mode !== 'play') return;
   cam.yaw -= e.movementX * 0.0024;
@@ -472,10 +452,15 @@ for (const b of document.querySelectorAll('#touch button')) {
   b.addEventListener('touchstart', e => {
     e.preventDefault();
     const k = b.dataset.k;
+    if (k === 'jump') touch.jumpHeld = true;
     if (k === 'run') { touch.run = !touch.run; b.classList.toggle('on', touch.run); }
     else if (k === 'switch') openWheel(!wheelOpen);
     else pressed[k] = true;
   }, { passive: false });
+}
+{
+  const jb = document.querySelector('#touch [data-k="jump"]');
+  for (const ev of ['touchend', 'touchcancel']) jb.addEventListener(ev, () => { touch.jumpHeld = false; });
 }
 $('pausebtn').addEventListener('click', () => pauseGame());
 
@@ -488,14 +473,15 @@ function moveInput() {
   x += touch.mx; y += touch.my;
   const l = Math.hypot(x, y);
   if (l > 1) { x /= l; y /= l; }
-  return { x, y, run: keys.ShiftLeft || keys.ShiftRight || touch.run };
+  // on a scooter: Shift (Run) boosts, Space (Jump) held drifts
+  return { x, y, run: keys.ShiftLeft || keys.ShiftRight || touch.run, drift: keys.Space || touch.jumpHeld };
 }
 
 // ------------------------------------------------------------------ HUD
 const hud = {
   money: $('money'), alarm: $('alarm'), health: $('health').firstElementChild, timer: $('timer'),
   objective: $('objective'), prompt: $('prompt'), phone: $('phone'), toast: $('toast'), banner: $('banner'),
-  umbrellas: $('umbrellas'), street: $('street'), crosshair: $('crosshair'), ammo: $('ammo'),
+  umbrellas: $('umbrellas'), street: $('street'), crosshair: $('crosshair'), ammo: $('ammo'), boost: $('boostbar').firstElementChild,
 };
 const punchBtn = document.querySelector('#touch [data-k="punch"]');
 const gullSvg = '<svg viewBox="0 0 32 18" aria-hidden="true"><path d="M1 6c5-3 10-2 15 4 5-6 10-7 15-4-4 0-9 3-11 8l-4 1-4-1C10 9 5 6 1 6z"/></svg>';
@@ -875,6 +861,38 @@ addScooter(-552, -410, 0.8);          // Bryggen
     added++;
   }
 }
+// Tricks (right-click, or T): a hop with a tailwhip, a 360 (hold A or D) or a backflip (hold S).
+// Land it all the way round for a few kroner and some boost; land halfway round and you crash.
+const TRICKS = {
+  tailwhip: { name: 'Tailwhip', dur: 0.45, vy: 5.8, kr: 20 },
+  spin: { name: '360', dur: 0.5, vy: 5.8, kr: 15 },
+  backflip: { name: 'Backflip', dur: 0.62, vy: 7.6, kr: 40 },
+};
+const turbo = { charge: 1, on: false };
+function startTrick(s, input) {
+  if (s.trick) return;
+  const kind = input.y < -0.3 ? 'backflip' : Math.abs(input.x) > 0.3 ? 'spin' : 'tailwhip';
+  const T = TRICKS[kind];
+  const fl = world.floorAt(s.pos.x, s.pos.z, s.pos.y + 0.1, 0.5);
+  if (s.pos.y <= fl + 0.06) { s.vy = T.vy; s.pos.y += 0.02; audio.jump(); }
+  else if (s.vy < -2) return;                       // too late to start one: already coming down
+  s.trick = { kind, t: 0, dur: T.dur, dir: input.x > 0 ? -1 : 1, air: false };
+}
+const _tq = new THREE.Quaternion(), _te = new THREE.Euler(), _tpv = new THREE.Vector3();
+// the trick's rotation for the deck, and for the rider (who stays put through a tailwhip),
+// both turning about a point 0.9 m above the deck
+function trickRot(s, rider) {
+  const tr = s.trick, k = Math.min(1, tr.t / tr.dur), e = k * k * (3 - 2 * k), turn = Math.PI * 2 * e;
+  const yaw = tr.kind === 'spin' || (tr.kind === 'tailwhip' && !rider) ? turn * tr.dir : 0;
+  const pitch = tr.kind === 'backflip' ? -turn : 0;
+  return _tq.setFromEuler(_te.set(s.tilt + pitch, s.heading + yaw, s.lean, 'YXZ'));
+}
+function pivotOffset(q, h, out) { return out.set(0, h, 0).applyQuaternion(q).multiplyScalar(-1).add(_tpv.set(0, h, 0)); }
+function poseTrick(s) {
+  const q = trickRot(s, false);
+  s.obj.quaternion.copy(q);
+  s.obj.position.copy(s.pos).add(pivotOffset(q, 0.9, _v));
+}
 const scInfo = {};
 function updateScooter(s, dt, input) {
   const ridden = player.riding === s;
@@ -895,13 +913,18 @@ function updateScooter(s, dt, input) {
   }
   // Drift: hold Shift (Run) at speed and the back wheel lets go. The scooter turns faster than it
   // travels, so it slides sideways; let go of Shift after a good drift for a burst of speed.
-  const drifting = ridden && grounded && input.run && s.speed > 4 && !onStairs;
+  const drifting = ridden && grounded && input.drift && s.speed > 4 && !onStairs;
+  // Boost: hold Shift (Run). It drains the meter and refills slowly, and faster after a drift.
+  const boosting = ridden && input.run && turbo.charge > 0.01 && s.speed > -0.5;
+  turbo.on = boosting;
+  if (ridden) turbo.charge = clamp(turbo.charge + (boosting ? -dt / 3.2 : dt / 10), 0, 1);
   if (drifting && !s.drifting) s.driftT = 0;
   s.drifting = drifting;
   if (ridden && grounded) {
     const thr = input.y;
     if (thr > 0) s.speed += thr * (s.speed < 0 ? 12 : 5.5) * dt;
     else if (thr < 0) s.speed += thr * (s.speed > 0.5 ? 11 : 3) * dt;
+    if (boosting) s.speed += 9 * dt;
     const turn = 2.3 * clamp(Math.abs(s.speed) / 3, 0.25, 1) * (s.speed < 0 ? -1 : 1) * (drifting ? 1.75 : 1);
     s.heading -= input.x * turn * dt;
     s.lean = damp(s.lean, -input.x * clamp(s.speed / 10, 0, 1) * (drifting ? 0.6 : 0.35), 6, dt);
@@ -921,6 +944,7 @@ function updateScooter(s, dt, input) {
     if (s.driftT > 0.6 && grounded) {
       const b = Math.min(4, 1.2 + s.driftT * 1.4);
       s.speed += b; s.boostT = 1.3;
+      turbo.charge = Math.min(1, turbo.charge + Math.min(0.4, s.driftT * 0.15));
       audio.start2(); cam.shake = Math.max(cam.shake, 0.25);
       if (s.driftT > 1.5) { save.money += Math.round(s.driftT * 2); toast(`Drift! ${s.driftT.toFixed(1)} s  +${Math.round(s.driftT * 2)} kr`, 1.6); }
     }
@@ -930,7 +954,7 @@ function updateScooter(s, dt, input) {
   if (grounded) {
     s.speed -= slope * 9.8 * 0.55 * dt;
     s.speed *= 1 - (ridden && input.y !== 0 ? 0.25 : 0.9) * dt;
-    const maxS = onStairs ? 4.5 : 12.5 + (s.boostT > 0 ? 4 : 0);
+    const maxS = onStairs ? 4.5 : 12.5 + (s.boostT > 0 || boosting ? 5 : 0);
     s.speed = clamp(s.speed, -3, maxS);
     if (onStairs && Math.abs(s.speed) > 1.5 && ridden) { cam.shake = Math.max(cam.shake, 0.35); if (Math.random() < dt * 8) audio.bump(); }
   }
@@ -957,11 +981,23 @@ function updateScooter(s, dt, input) {
   }
   // vertical
   const fl2 = world.floorAt(s.pos.x, s.pos.z, s.pos.y + 0.1, 0.5);
-  if (s.vy <= 0 && s.pos.y <= fl2 + 0.35 && (grounded || s.pos.y <= fl2)) { s.pos.y = fl2; if (s.vy < -6 && ridden) { audio.land(); cam.shake = 0.5; } s.vy = 0; }
-  else { s.vy -= 20 * dt; s.pos.y += s.vy * dt; if (s.pos.y < fl2) { s.pos.y = fl2; s.vy = 0; } }
+  const tr = s.trick;
+  if (tr) { tr.t += dt; if (s.pos.y > fl2 + 0.08) tr.air = true; }
+  let landed = false;
+  if (s.vy <= 0 && s.pos.y <= fl2 + 0.35 && (grounded || s.pos.y <= fl2)) { s.pos.y = fl2; if (s.vy < -6 && ridden) { audio.land(); cam.shake = 0.5; } s.vy = 0; landed = true; }
+  else { s.vy -= 20 * dt; s.pos.y += s.vy * dt; if (s.pos.y < fl2) { s.pos.y = fl2; s.vy = 0; landed = true; } }
+  if (tr && tr.air && landed) {
+    s.trick = null;
+    if (tr.t / tr.dur >= 0.85) {
+      const kr = TRICKS[tr.kind].kr;
+      save.money += kr; turbo.charge = Math.min(1, turbo.charge + 0.25);
+      audio.coin(); toast(`${TRICKS[tr.kind].name}!  +${kr} kr`, 1.6);
+    } else if (ridden) crashed = true;            // landed halfway round: that's a wipeout
+  }
   s.tilt = damp(s.tilt, -Math.atan(slope), 10, dt);
   s.obj.position.copy(s.pos);
   s.obj.rotation.set(s.tilt, s.heading, s.lean, 'YXZ');
+  if (s.trick) poseTrick(s);
   if (!ridden) {
     if (Math.abs(s.speed) < 0.05) s.speed = 0;
     s.asleep = s.speed === 0 && s.vy === 0 && s.pos.y <= fl2 + 1e-3;
@@ -1473,14 +1509,14 @@ function updatePlayer(dt) {
 
   if (player.riding) {
     const s = player.riding;
+    if (pressed.trick) startTrick(s, inp);
     const crashed = updateScooter(s, dt, inp);
     player.pos.copy(s.pos);
     player.heading = s.heading;
     player.vel.set(Math.sin(s.heading) * s.speed, s.vy, Math.cos(s.heading) * s.speed);
     if (crashed) {
       const sp = s.speed;
-      audio.react('react_crash', true);
-      radioGraceT = 3.4;
+      s.trick = null;
       dismount(true);
       player.vel.set(Math.sin(s.heading) * sp * 0.6, 4, Math.cos(s.heading) * sp * 0.6);
       s.speed = 0;
@@ -1493,6 +1529,11 @@ function updatePlayer(dt) {
     player.fig.animate(dt, 0, 'ride');
     player.fig.root.position.copy(player.pos).add(_v.set(0, 0.17, 0));
     player.fig.root.rotation.set(s.tilt, s.heading, s.lean, 'YXZ');
+    if (s.trick) {
+      const q = trickRot(s, true);
+      player.fig.root.quaternion.copy(q);
+      player.fig.root.position.copy(player.pos).add(pivotOffset(q, 0.9, _v)).add(_v2.set(0, 0.17, 0).applyQuaternion(q));
+    }
     pressed.jump = false;
     return;
   }
@@ -1570,7 +1611,7 @@ function nearestScooter(r) {
 }
 function mount(s) {
   player.riding = s;
-  s.speed = 0; s.driftT = 0; s.drifting = false; s.asleep = false; s.vdir = s.heading;
+  s.speed = 0; s.driftT = 0; s.drifting = false; s.asleep = false; s.vdir = s.heading; s.trick = null;
   player.vel.set(0, 0, 0);
   audio.start2();
   if (!s.stolen) { s.stolen = true; toast('Grand Theft Sparkesykkel'); save.money += 0; }
@@ -2343,7 +2384,7 @@ function frame(now) {
   let dt = Math.min(0.05, (now - last) / 1000);
   last = now;
   time += dt;
-  if (state.mode === 'pause') { pressed.jump = pressed.punch = pressed.use = pressed.radio = pressed.gun = false; audio.skid(0); renderer.render(scene, camera); return; }
+  if (state.mode === 'pause') { pressed.jump = pressed.punch = pressed.use = pressed.radio = pressed.gun = pressed.trick = false; audio.skid(0); renderer.render(scene, camera); return; }
 
   updateWeather(dt);
   skyU.time.value = time;
@@ -2390,11 +2431,19 @@ function frame(now) {
     let prompt = '';
     if (state.mode === 'play' && !player.riding) { const s = nearestScooter(1.7); if (s) prompt = `<kbd>${isTouch ? 'E' : 'E'}</kbd>${s.stolen ? 'Ride e-scooter' : 'Steal e-scooter'}`; }
     else if (state.mode === 'play' && player.riding && Math.abs(player.riding.speed) < 1) prompt = '<kbd>E</kbd>Get off';
-    else if (state.mode === 'play' && player.riding && player.riding.speed > 5 && !save.driftHint) prompt = `<kbd>${isTouch ? 'Run' : 'Shift'}</kbd>Hold to drift`;
-    if (player.riding && player.riding.driftT > 1 && !save.driftHint) { save.driftHint = true; persist(); }
+    else if (state.mode === 'play' && player.riding && player.riding.speed > 4 && !save.rideHint) prompt = isTouch ? '<kbd>Jump</kbd>hold to drift <kbd>Run</kbd>boost <kbd>Trick</kbd>' : '<kbd>Space</kbd>drift <kbd>Shift</kbd>boost <kbd>Right-click</kbd>trick';
+    if (player.riding && (player.riding.driftT > 1 || player.riding.trick) && !save.rideHint) { save.rideHint = true; persist(); }
     hud.prompt.hidden = !prompt;
     if (prompt && hud.prompt.innerHTML !== prompt) hud.prompt.innerHTML = prompt;
-    audio.update(weather.rain, inHouse(camera.position), player.riding ? Math.abs(player.riding.speed) : 0);
+    audio.update(weather.rain, inHouse(camera.position), player.riding ? Math.abs(player.riding.speed) : 0, player.riding && turbo.on ? 1 : 0);
+    if (player.riding && turbo.on && state.mode === 'play') {
+      const r = player.riding;
+      emit(_v.set(r.pos.x - Math.sin(r.heading) * 0.5, r.pos.y + 0.12, r.pos.z - Math.cos(r.heading) * 0.5), 2,
+        { color: 0x9fd8ff, speed: 1.2, up: 0.6, spread: 0.4, life: 0.25, grav: 2, dir: _v2.set(-Math.sin(r.heading), 0.2, -Math.cos(r.heading)) });
+    }
+    hud.boost.parentElement.hidden = !player.riding || state.mode !== 'play';
+    hud.boost.style.width = (turbo.charge * 100).toFixed(1) + '%';
+    hud.boost.parentElement.classList.toggle('on', turbo.on);
     {
       const r = player.riding, slide = r && r.drifting && state.mode === 'play' ? Math.min(1, Math.abs(Math.sin(r.slip)) * 2.2) : 0;
       audio.skid(slide);
@@ -2411,12 +2460,10 @@ function frame(now) {
       save.radio = !save.radio; persist();
       if (!save.radio) { toast('Radio off', 1.2); $('radio').hidden = true; }
     }
-    radioGraceT = Math.max(0, radioGraceT - dt);
-    audio.setRadio(state.mode === 'play' && (!!player.riding || radioGraceT > 0) && save.radio !== false);
-    radioReact();
+    audio.setRadio(state.mode === 'play' && !!player.riding && save.radio !== false);
     if (radioT > 0) { radioT -= dt; if (radioT <= 0 || !player.riding) { $('radio').hidden = true; radioT = 0; } }
   }
-  pressed.jump = pressed.punch = pressed.use = pressed.radio = pressed.gun = false;
+  pressed.jump = pressed.punch = pressed.use = pressed.radio = pressed.gun = pressed.trick = false;
   updateFx(dt);
 
   updateMates(dt);
@@ -2466,4 +2513,4 @@ $('play').disabled = false;
 $('play').textContent = save.mission > 0 ? (save.mission >= MISSIONS.length ? 'Free roam' : 'Continue') : 'Play';
 
 // debug hooks for testing
-window.__gt = { gameTime: () => time, gun, shoot, toggleGun, npcs, audio, switchTo, swapTo, mates: () => housemates, active: () => active, OUT_SPOTS, offer: () => offer, acceptOffer, declineOffer, makeOffer, scene, renderer, camera, player, cam, world, state, startMission, save, weather, scooters, gulls, mission: () => mission, startGame, raiseAlarm, ending, L2V, L2W, W2L, H, house, city, route, BAKERY, CHECKPOINTS: () => CHECKPOINTS, inHouse, housemates, PLACES, hitPlayer, dropBolle, bolle: () => ({ drop: bolleDrop, carrying: !!player.carrying }) };
+window.__gt = { gameTime: () => time, gun, shoot, toggleGun, npcs, turbo, audio, switchTo, swapTo, mates: () => housemates, active: () => active, OUT_SPOTS, offer: () => offer, acceptOffer, declineOffer, makeOffer, scene, renderer, camera, player, cam, world, state, startMission, save, weather, scooters, gulls, mission: () => mission, startGame, raiseAlarm, ending, L2V, L2W, W2L, H, house, city, route, BAKERY, CHECKPOINTS: () => CHECKPOINTS, inHouse, housemates, PLACES, hitPlayer, dropBolle, bolle: () => ({ drop: bolleDrop, carrying: !!player.carrying }) };
