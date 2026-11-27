@@ -3455,6 +3455,7 @@ function frame(now) {
     blips.push({ x: JUMP.x, z: JUMP.z, c: '#e2231a', r: 6, label: 'Skydive' });
     blips.push({ x: funiStop[0].x, z: funiStop[0].z, c: '#2f6db5', r: 5, label: 'Fløibanen' });
     for (const lm of map.landmarks || []) if (lm.n !== 'Fløyen') blips.push({ x: lm.x, z: lm.z, c: '#cfd6dc', r: 4, label: lm.n });
+    for (const lm of landmarks.spots) blips.push({ x: lm.x, z: lm.z, c: '#cfd6dc', r: 4, label: lm.n });
     for (const sec of tram.sections) if (sec.g.visible) blips.push({ x: sec.x, z: sec.z, c: '#f07c1a', r: 4 });
     bm.blips = blips.map(b => b.home ? { ...b, label: 'Cappes vei 6' } : b);
     // the waypoint: reached when you get there

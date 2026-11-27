@@ -228,3 +228,34 @@ What made the difference, in the order it was found:
 - **Painted, not draped.** The streets are part of the terrain, painted on from two 50 cm textures that the map builder rasterises with soft edges and buildings cut out. Only steps keep geometry, for the direction of their treads.
 
 The remaining jumps are mostly at one junction where three steep streets meet at different levels (Bernhard Meyers vei, Øvre Korskirkeallmenningen and Bispengsgaten), and where OpenStreetMap's steps meet a road across a retaining wall.
+
+## City pass: flickering walls, bad geometry, and a town you can recognise
+
+Every finding below came from screenshots of the real game in headless Chromium, taken at fixed viewpoints before and after.
+
+### Z-fighting and bad geometry
+
+| Problem | Cause | Fix |
+| --- | --- | --- |
+| Windows flickering through shopfronts | On shop buildings the lowest row of windows was drawn on top of the shopfront in the same plane | The ground floor of a shop is its shopfront: no window there, a sign band above it |
+| Windows, doors and corner boards flickering on distant walls | Decals 2–7 cm off the wall, a 0.08 m near plane and a 24-bit depth buffer | The decal material draws with a polygon offset; the near plane is 14 cm outdoors (8 cm indoors) |
+| Flicker on Rema 1000, Johnny's and Guangdong House | The dressings sat 1 cm from the generated windows and door casings, Johnny's granite exactly on the casing | Those buildings get no generated windows or door on the ground floor (`bareBelow`) |
+| City hall tower flickering at its base | The tower was drawn in the plane of the OSM building under it | The whole building is modelled |
+| Churches as six-storey blocks of arched windows, with flat roofs | Churches got storeys like houses, and no roof when OSM had no roof shape | One tier of tall lancets, nave-height walls, a steep gable along the nave |
+| Slope houses with ten rows of windows down their downhill side | Windows went all the way down to the street | Below about one storey under the middle of the ground, the wall is a stone foundation |
+| Blotchy plaster | Dark circles in the plaster texture | Fine grain and soft rain streaks |
+| Lille Lungegårdsvann was grass | The lake is a multipolygon of three open ways that the builder skipped, and its surface is above the sea plane | Rings are joined; every lake gets its own level and a dug basin |
+| A sawtooth shore along the harbour | The 2.5 m terrain grid | The ground is dug out on the water side of OSM's coastline and a stone quay wall stands on it |
+| A hang when the page loaded | The dash walker for road markings could stall on a floating-point remainder | Fixed |
+
+### What was added
+
+- **The map** reaches Skuteviken and Bergenhus: the fine grid is now 1760 × 2310 m (was 1460 × 1720), 4,519 buildings (was 2,800). The old area's heights were reused; only the new ground was fetched.
+- **Landmarks after photographs** (Wikipedia/Wikimedia Commons; `public/js/landmarks.js`): Bryggen, Domkirken, Korskirken, Mariakirken, Johanneskirken, Håkonshallen, Rosenkrantztårnet, Bergen stasjon, Rådhuset, Mathallen and the fish market, Den blå steinen, Bergens Tidende's neon sign, Musikkpaviljongen, Sjømannsmonumentet, the statues and the lake fountain. Each is built on its OSM outline, so it sits where it really is.
+- **Bryggen**: the ridges now run back from the quay, so every house shows its gable to the harbour, as in every photo of it. Before, the builder's rule for terraced rows had put the ridges along the row.
+- **Streets**: yellow centre lines, white edge lines, 417 zebra crossings, 42 km of granite kerbs, quay walls with bollards and fenders, nicer parked cars, and about 400 real shop names on signs.
+- **Colours** after photos: white-dominated wooden houses with cream, yellow, pale green and grey-blue ones, plastered blocks in white, cream, ochre, salmon and grey, and more clay-tile roofs.
+
+### Cost
+
+Road paint goes into each tile's decal batch and kerbs into its wall batch, so neither adds draw calls. The shop signs are two draw calls for the whole town. Each landmark is a handful of draw calls and is culled with its own bounding sphere. Load time under software rendering went from about 13 s to about 17 s with the bigger map.

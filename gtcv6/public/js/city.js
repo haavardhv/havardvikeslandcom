@@ -573,6 +573,8 @@ export function buildCity(scene, map, T, opts) {
           eg.obox(edgeM, cx - lx * 0.2, (top - 2.6) / 2, cz - lz * 0.2, len + 0.06, top + 2.6, 0.6, 0, Math.atan2(dx, dz) + Math.PI / 2, 0);
           since += len;
           if (since > 14) { since = 0; eg.geom(bollardM, bollardG, new THREE.Matrix4().makeTranslation(cx + lx * 0.45, top, cz + lz * 0.45)); }
+          // black tyre fenders hung along the quay face
+          for (let f2 = 0.5; f2 < len; f2 += 2.4) { const fx = x0 + dx * f2 - lx * 0.62, fz = z0 + dz * f2 - lz * 0.62; eg.obox(bollardM, fx, top - 0.75, fz, 0.7, 0.75, 0.3, 0, Math.atan2(dx, dz) + Math.PI / 2, 0); }
         }
       }
     }

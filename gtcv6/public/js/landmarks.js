@@ -61,13 +61,15 @@ export function prepareLandmarks(map) {
   take('rosen', byName(map, 'Rosenkrantztårnet'));
   take('johannes', byName(map, 'Johanneskirken') || atPoint(map, -772, 508));
   // restyled, with towers and details added below
-  const rad = byName(map, 'Bergen rådhus');
-  if (rad) { L.radhus = rad; Object.assign(rad, { c: '#a49d90', s: 'p', plain: 1 }); }
+  take('radhus', byName(map, 'Bergen rådhus'));
   take('station', byName(map, 'Bergen'));
   const kj = byName(map, 'Kjøttbasaren');
   if (kj) { L.kjott = kj; Object.assign(kj, { c: '#a8492f', s: 'b', rc: '#3b3c3f' }); }
   const sk = byName(map, 'Skansen brannstasjon');
   if (sk) { L.skansen = sk; Object.assign(sk, { c: '#f1eee6', s: 'w', rc: '#2f3134' }); }
+  // Kong Olav Vs plass 4: the salmon-pink building with Bergens Tidende's neon sign on its roof
+  const bt = atPoint(map, -602, 155);
+  if (bt) { L.bt = bt; Object.assign(bt, { c: '#e8c6b4', rc: '#a7553a', s: 'p' }); }
   const pm = byName(map, 'Permanenten');
   if (pm) { L.perm = pm; Object.assign(pm, { c: '#a3472f', s: 'b', rc: '#55806d' }); }
   const lib = byName(map, 'Bergen Offentlige Bibliotek');
@@ -84,7 +86,7 @@ export function prepareLandmarks(map) {
     const light = ['#efece3', '#e6cf86', '#d6a03f', '#d9b45c'].includes(b.c);
     b.trim = light ? '#f3f1ea' : '#62776a';
     b.rc = h * 7 % 1 < 0.82 ? '#b2552f' : '#4a4643';
-    b.s = 'y'; b.shop = 1;
+    b.s = 'y'; b.shop = 1; b.plain = 0;
     if (b.rf && (b.r === 'g' || b.r === 'h')) {
       const [x, z, ux, uz, hl, hw] = b.rf;
       if (hl < hw) b.rf = [x, z, -uz, ux, hw, hl];
@@ -305,6 +307,7 @@ export function buildLandmarks(scene, map, L, { terrain, polys }) {
   const M = makeMaterials(), D = decalMaterials();
   const glowMats = [[D.lancet, 0, 0.5], [D.round, 0, 0.45], [D.clock, 0.05, 0.9], [D.sash, 0, 0.35]];
   const groups = [];
+  let glowNeon = null;
   const out = { update: null, spots: [] };
   const geoOf = () => { const G = new Geo(); return G; };
   const finish = (G, name) => { const g = new THREE.Group(); g.name = name; G.build(g); scene.add(g); groups.push(g); return g; };
@@ -486,7 +489,7 @@ export function buildLandmarks(scene, map, L, { terrain, polys }) {
   if (L.hakon) {
     const b = L.hakon, ring = ringOf(b.p), [lo, hi] = groundUnder(ring), G = geoOf();
     const F = frameOf(b.p), wallTop = hi + 12, rise = F.hw * 1.3;
-    roofedBody(G, ring, lo - 3, wallTop, [{ cx: F.cx, cz: F.cz, ux: F.ux, uz: F.uz, hl: F.hl, hw: F.hw, rise }], M.rubble, M.slateDark);
+    roofedBody(G, ring, lo - 3, wallTop, [{ cx: F.cx, cz: F.cz, ux: F.ux, uz: F.uz, hl: F.hl, hw: F.hw, rise }], M.rubble, M.copper);
     // crow steps up both gables
     for (const s of [-1, 1]) {
       const n = 6;
@@ -498,15 +501,21 @@ export function buildLandmarks(scene, map, L, { terrain, polys }) {
       const [x, z] = F.at(s * (F.hl - 0.4), 0); boxAt(G, M.rubble, x, wallTop + rise - 0.4, z, 1.2, 2.0, 0.9, F.ang);
       for (const v of [-2.2, 0, 2.2]) { const [wx, wz] = F.at(s * F.hl, v); decal(G, D.lancet, wx, wz, F.ux * s, F.uz * s, wallTop - 6, 1.1, 4.2); }
     }
-    windowsAlong(G, D.round, ring, (x, z) => ground(x, z) + 5.5, 1.0, 2.2, 4.2, 8);
+    // two rows of Gothic windows along the sides: small below, tall pairs above
+    windowsAlong(G, D.lancet, ring, (x, z) => ground(x, z) + 2.4, 0.8, 1.6, 3.6, 8);
+    windowsAlong(G, D.lancet, ring, wallTop - 5.6, 1.0, 3.4, 3.6, 8);
+    // a parapet along the eaves
+    windowsAlong(G, D.slit, ring, wallTop - 0.9, 0.5, 0.7, 1.4, 8);
     finish(G, 'Håkonshallen');
     collide(b, wallTop, rise);
     out.spots.push({ n: 'Håkonshallen', x: F.cx, z: F.cz });
   }
   if (L.rosen) {
     const b = L.rosen, ring = ringOf(b.p), [lo, hi] = groundUnder(ring), G = geoOf();
-    const F = frameOf(b.p), wallTop = hi + 24, rise = F.hw * 1.6;
+    const F = frameOf(b.p), wallTop = hi + 24, rise = F.hw * 0.75;
     roofedBody(G, ring, lo - 3, wallTop, [{ cx: F.cx, cz: F.cz, ux: F.ux, uz: F.uz, hl: F.hl, hw: F.hw, rise }], M.rubble, M.slateDark);
+    // a battlemented top storey, a little proud of the walls
+    roofedBody(G, ring.map(([x, z]) => { const d = Math.hypot(x - F.cx, z - F.cz) || 1; return [x + (x - F.cx) / d * 0.35, z + (z - F.cz) / d * 0.35]; }), wallTop - 4, wallTop + 0.6, [], M.rubble, M.rubble);
     // the stair tower on its side, with a little spire
     const [sx, sz] = F.at(-F.hl * 0.4, F.hw + 1.4);
     cyl(G, M.rubble, sx, lo - 3, sz, 2.0, 2.0, wallTop - lo + 7, 12);
@@ -676,37 +685,74 @@ export function buildLandmarks(scene, map, L, { terrain, polys }) {
   {
     const G = geoOf();
     const granite = M.granite, bronze = M.bronze;
-    // Den blå steinen (Asbjørn Andresen, 1993) on Kong Olav Vs plass: a concrete core clad in
-    // slabs of Azul Bahia, a vivid blue gneiss with pale veins, low enough to sit on, beside a
+    // Den blå steinen (Asbjørn Andresen, 1993) on Kong Olav Vs plass, after photos: a long, low,
+    // sharp-edged wedge of polished dark blue stone (Azul Bahia slabs on a concrete core), about
+    // 10 m long, rising from knee height to 1.5 m, with a rough granite block beside it and a
     // square pool of 2.8 m
     {
       const blue = canvasTex(256, (g, S) => {
         const R2 = rnd(31);
-        g.fillStyle = '#2c4a9a'; g.fillRect(0, 0, S, S);
-        for (let k = 0; k < 900; k++) { g.fillStyle = `rgba(${R2() < 0.6 ? '20,35,90' : '120,150,220'},${R2() * 0.25})`; g.fillRect(R2() * S, R2() * S, 3 + R2() * 10, 2 + R2() * 6); }
-        g.strokeStyle = 'rgba(230,235,245,0.55)'; g.lineWidth = 1.5;
-        for (let k = 0; k < 14; k++) { g.beginPath(); let x = R2() * S, y = R2() * S; g.moveTo(x, y); for (let j = 0; j < 8; j++) { x += (R2() - 0.4) * 30; y += (R2() - 0.5) * 18; g.lineTo(x, y); } g.stroke(); }
-        g.strokeStyle = 'rgba(15,20,40,0.6)'; g.lineWidth = 2; for (let k = 0; k <= 2; k++) { g.beginPath(); g.moveTo(0, k * S / 2); g.lineTo(S, k * S / 2); g.stroke(); g.beginPath(); g.moveTo(k * S / 2, 0); g.lineTo(k * S / 2, S); g.stroke(); }
-      }, 1.4);
-      const blueM = new THREE.MeshStandardMaterial({ map: blue, roughness: 0.22, metalness: 0.05 });
+        g.fillStyle = '#2a3762'; g.fillRect(0, 0, S, S);
+        for (let k = 0; k < 1200; k++) { g.fillStyle = `rgba(${R2() < 0.6 ? '18,24,52' : '110,130,190'},${R2() * 0.22})`; g.fillRect(R2() * S, R2() * S, 3 + R2() * 14, 2 + R2() * 5); }
+        g.strokeStyle = 'rgba(200,205,220,0.35)'; g.lineWidth = 1.2;
+        for (let k = 0; k < 10; k++) { g.beginPath(); let x = R2() * S, y = R2() * S; g.moveTo(x, y); for (let j = 0; j < 8; j++) { x += (R2() - 0.3) * 34; y += (R2() - 0.5) * 12; g.lineTo(x, y); } g.stroke(); }
+        g.strokeStyle = 'rgba(10,12,25,0.7)'; g.lineWidth = 2; for (let k = 0; k <= 4; k++) { g.beginPath(); g.moveTo(k * S / 4, 0); g.lineTo(k * S / 4, S); g.stroke(); }
+      }, 2.5);
+      const blueM = new THREE.MeshStandardMaterial({ map: blue, roughness: 0.25, metalness: 0.05 });
       const named = art.find(a => /bl[åa] stein/i.test(a.n));
       const bx = named ? named.x : -576, bz = named ? named.z : 140, by = ground(bx, bz), ang = faceTo(bx, bz);
-      // the stone: a faceted, tilted block, lower at one end
-      const shape = new THREE.BoxGeometry(3.4, 2.0, 1.9, 3, 2, 2), pa = shape.attributes.position;
-      for (let i = 0; i < pa.count; i++) {
-        const x = pa.getX(i), y = pa.getY(i), z = pa.getZ(i);
-        const top = y > 0, slope = top ? 0.55 * (x / 1.7) : 0;
-        pa.setXYZ(i, x * (top ? 0.9 : 1), y + slope + (top ? 0.15 * Math.cos(z * 1.5) : 0), z * (top ? 0.82 : 1));
-      }
-      shape.computeVertexNormals(); shape.translate(0, 1.0, 0);
-      G.geom(blueM, shape, new THREE.Matrix4().makeRotationY(ang + 0.5).premultiply(new THREE.Matrix4().makeTranslation(bx, by - 0.05, bz)));
-      // the square pool beside it
-      const px = bx + Math.sin(ang + 0.5 + Math.PI / 2) * 3.2, pz = bz + Math.cos(ang + 0.5 + Math.PI / 2) * 3.2, py = ground(px, pz);
-      for (const [ox, oz, w, d] of [[0, 1.4, 3.0, 0.2], [0, -1.4, 3.0, 0.2], [1.4, 0, 0.2, 2.6], [-1.4, 0, 0.2, 2.6]]) G.obox(granite, px + ox, py + 0.15, pz + oz, w, 0.4, d, 0, 0, 0);
+      // the wedge: 10 m along its axis, 1.8 m wide, 0.5 m high at one end and 1.5 m at the other
+      const ux = Math.sin(ang), uz = Math.cos(ang), vx = uz, vz = -ux, len = 10, hw = 0.9;
+      const P = (u, v, y) => [bx + ux * u + vx * v, by + y, bz + uz * u + vz * v];
+      const H = (u) => 0.5 + (u + len / 2) / len * 1.0;
+      const a = P(-len / 2, -hw, 0), b = P(len / 2, -hw, 0), c = P(len / 2, hw, 0), d = P(-len / 2, hw, 0);
+      const at = P(-len / 2, -hw, H(-len / 2)), bt2 = P(len / 2, -hw, H(len / 2)), ct = P(len / 2, hw, H(len / 2)), dt = P(-len / 2, hw, H(-len / 2));
+      G.quad(blueM, at, bt2, ct, dt, [[0, 0], [len, 0], [len, 1.8], [0, 1.8]], [0, 1, 0]);
+      G.quad(blueM, a, b, bt2, at, [[0, 0], [len, 0], [len, H(len / 2)], [0, H(-len / 2)]], [-vx, 0, -vz]);
+      G.quad(blueM, d, c, ct, dt, [[0, 0], [len, 0], [len, H(len / 2)], [0, H(-len / 2)]], [vx, 0, vz]);
+      G.quad(blueM, b, c, ct, bt2, [[0, 0], [1.8, 0], [1.8, 1.5], [0, 1.5]], [ux, 0, uz]);
+      G.quad(blueM, a, d, dt, at, [[0, 0], [1.8, 0], [1.8, 0.5], [0, 0.5]], [-ux, 0, -uz]);
+      // the rough granite block beside it, and the square pool
+      { const [gx, , gz] = P(len / 2 + 1.5, 2.2, 0); G.obox(M.granite, gx, ground(gx, gz) + 0.3, gz, 3.2, 0.8, 1.2, 0, ang, 0); }
+      const [px, , pz] = P(-len / 2 - 2.4, 0, 0), py = ground(px, pz);
+      for (const [ox, oz, w, d2] of [[0, 1.4, 3.0, 0.2], [0, -1.4, 3.0, 0.2], [1.4, 0, 0.2, 2.6], [-1.4, 0, 0.2, 2.6]]) G.obox(granite, px + ox, py + 0.15, pz + oz, w, 0.4, d2, 0, 0, 0);
       const pool = new THREE.Mesh(new THREE.PlaneGeometry(2.6, 2.6), new THREE.MeshStandardMaterial({ color: 0x2d4650, roughness: 0.05, metalness: 0.2 }));
       pool.rotation.x = -Math.PI / 2; pool.position.set(px, py + 0.25, pz); scene.add(pool);
-      collideBox(bx, bz, 3.2, 1.9, ang + 0.5, by - 1, by + 2.4);
+      collideBox(bx, bz, 1.8, len, ang, by - 1, by + 1.5);
       out.spots.push({ n: 'Den blå steinen', x: bx, z: bz });
+      // Bergens Tidende's neon sign on the roof across the square, facing the stone
+      if (L.bt) {
+        const r = ringOf(L.bt.p);
+        let best = null;
+        for (let i = 0; i < r.length; i++) {
+          const [ax, az] = r[i], [cx2, cz2] = r[(i + 1) % r.length], el = Math.hypot(cx2 - ax, cz2 - az);
+          if (el < 6) continue;
+          const mx = (ax + cx2) / 2, mz = (az + cz2) / 2, dd = Math.hypot(mx - bx, mz - bz);
+          if (!best || dd < best.dd) best = { dd, mx, mz, tx: (cx2 - ax) / el, tz: (cz2 - az) / el, el };
+        }
+        if (best) {
+          let nx = -best.tz, nz = best.tx;
+          if ((bx - best.mx) * nx + (bz - best.mz) * nz < 0) { nx = -nx; nz = -nz; }
+          const neon = decalTex((g, w, h) => {
+            g.clearRect(0, 0, w, h);
+            g.font = `italic 700 118px Georgia, "Times New Roman", serif`; g.textAlign = 'center'; g.textBaseline = 'middle';
+            g.lineWidth = 10; g.strokeStyle = '#7a0d08'; g.strokeText('Bergens Tidende', w / 2, h * 0.68);
+            g.fillStyle = '#ff4a36'; g.fillText('Bergens Tidende', w / 2, h * 0.68);
+            g.strokeStyle = '#f4efe6'; g.lineWidth = 8; g.beginPath(); g.arc(w / 2, h * 0.26, 52, 0, 7); g.stroke();
+            g.strokeStyle = '#ff4a36'; g.lineWidth = 6; g.beginPath(); g.arc(w / 2, h * 0.26, 40, 0, 7); g.stroke();
+            g.fillStyle = '#f4efe6'; for (const s2 of [-1, 1]) { g.beginPath(); g.ellipse(w / 2 + s2 * 95, h * 0.24, 46, 16, s2 * 0.5, 0, 7); g.fill(); }
+          }, 1024, 320);
+          const neonM = new THREE.MeshBasicMaterial({ map: neon, transparent: true, alphaTest: 0.3, side: THREE.DoubleSide, color: 0xbbbbbb });
+          glowNeon = neonM;
+          const W = Math.min(14, best.el), Hh = W * 320 / 1024, y0 = L.bt.t + 0.6;
+          const [sx, sz] = [best.mx - nx * 1.2, best.mz - nz * 1.2];
+          const m = new THREE.Mesh(new THREE.PlaneGeometry(W, Hh), neonM);
+          m.position.set(sx, y0 + Hh / 2, sz); m.rotation.y = Math.atan2(nx, nz);
+          scene.add(m);
+          // the frame it stands on
+          for (const s2 of [-0.4, 0.4]) cyl(G, M.iron, sx + best.tx * W * s2, L.bt.t - 0.5, sz + best.tz * W * s2, 0.06, 0.06, 1.4, 6);
+        }
+      }
     }
     // Sjømannsmonumentet on Torgallmenningen: a tall granite column carved with seafarers in
     // relief, on steps, with bronze figures round its foot
@@ -808,9 +854,12 @@ export function buildLandmarks(scene, map, L, { terrain, polys }) {
   if (L.mathallen) {
     const b = L.mathallen, ring = ringOf(b.p), [lo, hi] = groundUnder(ring), G = geoOf();
     const slats = canvasTex(512, (g, S) => {
-      const R2 = rnd(12), cols = ['#c9912f', '#8e2d24', '#efede5', '#d8a43b', '#7a2a22', '#f3f1ea'];
-      g.fillStyle = '#25292d'; g.fillRect(0, 0, S, S);
-      let x = 0; while (x < S) { const w = 6 + R2() * 10, gap = R2() < 0.3 ? 8 + R2() * 14 : 2; g.fillStyle = cols[Math.floor(R2() * cols.length)]; g.fillRect(x, 0, w, S); x += w + gap; }
+      // glass in front, the wooden panels behind it in Bergen's colours, denser in places
+      const R2 = rnd(12), cols = ['#b98a3a', '#7e3028', '#e3e0d6', '#b98a3a', '#e3e0d6'];
+      const gr = g.createLinearGradient(0, 0, 0, S); gr.addColorStop(0, '#6f8794'); gr.addColorStop(1, '#3a4a53'); g.fillStyle = gr; g.fillRect(0, 0, S, S);
+      let x = 0; while (x < S) { const dense = Math.sin(x / S * Math.PI * 4) > 0, w = 5 + R2() * 5, gap = dense ? 3 + R2() * 4 : 14 + R2() * 24; g.fillStyle = cols[Math.floor(R2() * cols.length)]; g.globalAlpha = 0.85; g.fillRect(x, 0, w, S); x += w + gap; }
+      g.globalAlpha = 1; g.fillStyle = 'rgba(220,230,235,0.12)'; g.fillRect(0, 0, S, S);
+      g.fillStyle = '#9aa2a6'; for (let k = 0; k <= 4; k++) g.fillRect(k * S / 4 - 2, 0, 4, S); g.fillRect(0, 0, S, 6); g.fillRect(0, S - 6, S, 6);
     }, 6, { metresV: 4.2 });
     const glassT = canvasTex(256, (g, S) => {
       g.fillStyle = '#2d3a42'; g.fillRect(0, 0, S, S);
@@ -837,19 +886,18 @@ export function buildLandmarks(scene, map, L, { terrain, polys }) {
         stalls.push([x, z, Math.atan2(dx, dz)]);
       }
     }
-    const SG = geoOf(), awning = canvasTex(64, (g, S) => { for (let i = 0; i < 8; i++) { g.fillStyle = i % 2 ? '#f3f1ea' : '#c7281f'; g.fillRect(i * S / 8, 0, S / 8, S); } }, 2);
+    const SG = geoOf(), awning = canvasTex(64, (g, S) => { for (let i = 0; i < 8; i++) { g.fillStyle = i % 2 ? '#f3f1ea' : '#c7281f'; g.fillRect(i * S / 8, 0, S / 8, S); } }, 1.2);
     const awnM = new THREE.MeshStandardMaterial({ map: awning, roughness: 0.7, side: THREE.DoubleSide });
     const iceM = new THREE.MeshStandardMaterial({ color: 0xe8eef2, roughness: 0.3 }), fishM = new THREE.MeshStandardMaterial({ color: 0xe07a5f, roughness: 0.4 });
     for (const [x, z, a] of stalls.slice(0, 24)) {
-      const y = ground(x, z);
-      SG.obox(M.white, x, y + 0.45, z, 3.6, 0.9, 1.4, 0, a, 0);
-      SG.obox(iceM, x, y + 0.93, z, 3.4, 0.06, 1.2, 0, a, 0);
+      const y = ground(x, z), ra = a + Math.PI / 2;           // ra: the stall's long side along the quay
+      SG.obox(M.white, x, y + 0.45, z, 3.6, 0.9, 1.4, 0, ra, 0);
+      SG.obox(iceM, x, y + 0.93, z, 3.4, 0.06, 1.2, 0, ra, 0);
       for (const o of [-1.1, -0.3, 0.5, 1.2]) SG.obox(fishM, x + Math.sin(a) * o, y + 1.0, z + Math.cos(a) * o, 0.5, 0.08, 0.9, 0, a, 0);
       for (const [u, v] of [[-1.8, -0.8], [1.8, -0.8], [-1.8, 1.4], [1.8, 1.4]]) SG.obox(M.white, x + Math.sin(a) * u + Math.cos(a) * v, y + 1.25, z + Math.cos(a) * u - Math.sin(a) * v, 0.06, 2.5, 0.06, 0, a, 0);
-      // a pitched awning
-      const roof = new THREE.ConeGeometry(2.7, 0.9, 4, 1); roof.rotateY(Math.PI / 4); roof.scale(1.35, 1, 0.85); roof.translate(0, 2.95, 0.3);
-      SG.geom(awnM, roof, new THREE.Matrix4().makeRotationY(a).premultiply(new THREE.Matrix4().makeTranslation(x, y, z)));
-      collideBox(x, z, 3.6, 1.4, a, y - 1, y + 1.0);
+      // a pitched awning of striped canvas, two sloping halves
+      for (const s2 of [-1, 1]) { const v = s2 * 0.55; SG.obox(awnM, x + Math.cos(a) * v, y + 2.85, z - Math.sin(a) * v, 3.9, 0.04, 1.25, s2 * 0.42, ra, 0); }
+      collideBox(x, z, 3.6, 1.4, ra, y - 1, y + 1.0);
     }
     finish(SG, 'Fisketorget');
   }
@@ -872,7 +920,11 @@ export function buildLandmarks(scene, map, L, { terrain, polys }) {
     }, 3.6, { metresV: 3.6 });
     const G = geoOf();
     const bandM = new THREE.MeshStandardMaterial({ map: bands, roughness: 0.85 });
-    G.obox(bandM, cx, gy + 25, cz, bl - 0.4, 54, depth, 0, Math.atan2(tx, tz) + Math.PI / 2, 0);
+    // the low wing over the whole outline, the tower on its long arm, a little proud of it
+    const [lo, hi] = groundUnder(r);
+    roofedBody(G, r, lo - 3, hi + 11, [], bandM, new THREE.MeshStandardMaterial({ color: 0x7d776d, roughness: 0.9 }));
+    collide(L.radhus, hi + 11);
+    G.obox(bandM, cx - nx * 0.15, gy + 25, cz - nz * 0.15, bl + 0.3, 54, depth + 0.3, 0, Math.atan2(tx, tz) + Math.PI / 2, 0);
     G.obox(new THREE.MeshStandardMaterial({ color: 0x8f877b, roughness: 0.9 }), cx, gy + 52.4, cz, bl - 2.4, 1.4, depth - 2, 0, Math.atan2(tx, tz) + Math.PI / 2, 0);
     finish(G, 'Bergen rådhus');
     collideBox(cx, cz, bl - 0.4, depth, Math.atan2(tx, tz) + Math.PI / 2, gy - 2, gy + 53);
@@ -890,7 +942,16 @@ export function buildLandmarks(scene, map, L, { terrain, polys }) {
     collideBox(cx, cz, 4.2, 4.2, 0.6, gy - 1, top + 4);
   }
 
+  // names for the map
+  {
+    const bry = map.buildings.filter(b => b.k === 'bryggen');
+    if (bry.length) { let x = 0, z = 0; for (const b of bry) { const [cx, cz] = centroid(b.p); x += cx; z += cz; } out.spots.push({ n: 'Bryggen', x: x / bry.length, z: z / bry.length }); }
+    const lake = (map.waters || []).reduce((a, w) => (!a || w.a > a.a) ? w : a, null);
+    if (lake) { const [x, z] = centroid(lake.p); out.spots.push({ n: 'Lille Lungegårdsvann', x, z }); }
+    out.spots.push({ n: 'Skuteviken', x: -690, z: -1040 }, { n: 'Torgallmenningen', x: -470, z: 0 });
+  }
+
   out.update = (dt, lamp, time = 0) => {
-    if (out.fountain) { out.fountain.t.offset.y = -time * 1.6; const s = 1 + Math.sin(time * 3.1) * 0.04; out.fountain.crown.scale.set(s, 1.6 * s, s); } for (const [m, day, night] of glowMats) m.emissiveIntensity = day + (night - day) * lamp; };
+    if (out.fountain) { out.fountain.t.offset.y = -time * 1.6; const s = 1 + Math.sin(time * 3.1) * 0.04; out.fountain.crown.scale.set(s, 1.6 * s, s); } for (const [m, day, night] of glowMats) m.emissiveIntensity = day + (night - day) * lamp; if (glowNeon) glowNeon.color.setScalar(0.75 + 0.6 * lamp); };
   return out;
 }

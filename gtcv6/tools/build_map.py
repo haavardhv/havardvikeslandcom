@@ -404,11 +404,14 @@ print('terrain nodes under buildings capped', capped)
 
 
 # ------------------------------------------------------------------ building attributes
-WOOD = ['#efede6', '#efede6', '#f2efe6', '#e7e3d6', '#dcdcd4', '#e9ddb1', '#c8d6dd', '#d9cfc0', '#b9c6c9', '#e8e2cf']
-PLASTER = ['#e8e1d2', '#d9cdb5', '#cdbf9f', '#e2d6bd', '#bfb7a8', '#d8c3a5', '#a9a49b', '#e9e4d8']
+# Colours after photos of the town: wooden houses mostly white, with cream, yellow, pale green,
+# grey-blue and the odd red one between; plastered blocks in the centre white, cream, ochre,
+# salmon and grey; Bryggen red and oxblood with white and ochre.
+WOOD = ['#f3f1ea', '#f3f1ea', '#efede6', '#f6f4ee', '#e9e4d3', '#efe3b5', '#e4d28e', '#cfdccf', '#c9d6de', '#dcdcd6', '#e8d9c3', '#f3f1ea', '#b9473a', '#efede6']
+PLASTER = ['#efebe2', '#e8dfc9', '#e6d29a', '#dcc9a8', '#e7c9b5', '#d3d6d3', '#c7ccd0', '#efe6cf', '#d8b58a', '#bfb7a8', '#f2efe8']
 BRICK = ['#8a4a37', '#7b3f30', '#94533c']
-BRYGGEN = ['#96321f', '#c98f2e', '#e8e2d2', '#d9b75a', '#6e4a30', '#b0452a', '#a33a24', '#e3cf9a']
-ROOF_DARK, ROOF_RED, ROOF_BLACK, ROOF_FLAT, ROOF_COPPER = '#41444a', '#8d3f2d', '#2d2f33', '#5d5f62', '#5f8a76'
+BRYGGEN = ['#b23a2b', '#8c2c24', '#b23a2b', '#a5352e', '#efece3', '#c24e37', '#97302a', '#d6a03f', '#efece3', '#e6cf86']
+ROOF_DARK, ROOF_RED, ROOF_BLACK, ROOF_FLAT, ROOF_COPPER = '#41444a', '#a7553a', '#2d2f33', '#5d5f62', '#5f8a76'
 default_levels = {'house': 2, 'detached': 2, 'semidetached_house': 2, 'terrace': 3, 'apartments': 3, 'residential': 3, 'garage': 1, 'garages': 1,
                   'shed': 1, 'carport': 1, 'cabin': 1, 'barn': 2, 'retail': 4, 'commercial': 4, 'office': 5, 'hotel': 5, 'civic': 3, 'public': 3,
                   'government': 4, 'school': 3, 'university': 3, 'kindergarten': 1, 'church': 4, 'cathedral': 6, 'religious': 3,
@@ -462,13 +465,13 @@ for i, g in sorted(kept.items()):
             eave = max(base + nlev * 2.9, base + 2.6)
         cx, cz = poly.centroid.coords[0]
         hv = h01(bid)
-        centre = cx < -230 or kind in ('retail', 'commercial', 'office', 'hotel', 'civic', 'public', 'school', 'university', 'government')
+        centre = (cx < -230 and cz > -900) or kind in ('retail', 'commercial', 'office', 'hotel', 'civic', 'public', 'school', 'university', 'government')
         mat = t.get('building:material', '')
         if mat == 'brick' or (centre and hv < 0.12): col = BRICK[int(hv * 97) % 3]
         elif mat in ('wood', 'timber_framing') : col = WOOD[int(hv * 97) % len(WOOD)]
-        elif centre or mat in ('plaster', 'concrete', 'stone'): col = PLASTER[int(hv * 97) % len(PLASTER)]
+        elif centre or mat in ('plaster', 'concrete', 'stone') or levels >= 5: col = PLASTER[int(hv * 97) % len(PLASTER)]   # blocks of five storeys and more are plastered
         else: col = WOOD[int(hv * 97) % len(WOOD)]
-        roof = ROOF_RED if hv > 0.8 else (ROOF_BLACK if hv > 0.55 else ROOF_DARK)
+        roof = ROOF_RED if hv > 0.62 else (ROOF_BLACK if hv > 0.4 else ROOF_DARK)
         name = t.get('name', '')
         # the old wooden wharf houses of Bryggen (listed buildings between Torget and Mariakirken)
         bryggen = bool(t.get('heritage')) and -620 < cx < -420 and -620 < cz < -280 and kind not in ('church', 'civic')
