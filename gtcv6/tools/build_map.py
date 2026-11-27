@@ -43,7 +43,7 @@ OUT = sys.argv[2]
 LAT0, LON0 = 60.3931275, 5.3333919          # Cappes vei 6 (OSM address node 3126074741)
 MLAT = 111230.0
 MLON = 111320.0 * math.cos(math.radians(LAT0))
-X0, X1, Z0, Z1 = -690.0, 190.0, -750.0, 240.0   # playable area: Bryggen and Bergenhus to Fjellet and Marken
+X0, X1, Z0, Z1 = -690.0, 750.0, -750.0, 950.0   # playable area: Bryggen and Bergenhus to Fløyen, Grieghallen and AdO arena
 
 def P(n): return ((n['lon'] - LON0) * MLON, -(n['lat'] - LAT0) * MLAT)
 
@@ -730,9 +730,13 @@ print('trees', len(trees) // 2)
 
 # ------------------------------------------------------------------ funicular
 funi = []
+tunnel_pairs = set()            # the stretches that run in a tunnel (under Skansen, under Fjellveien)
 for w in ways.values():
     if w.get('tags', {}).get('railway') == 'funicular':
-        funi.append([nid for nid in w['nodes'] if nid in nodes])
+        ids = [nid for nid in w['nodes'] if nid in nodes]
+        funi.append(ids)
+        if w['tags'].get('tunnel') == 'yes':
+            for a, b2 in zip(ids, ids[1:]): tunnel_pairs.add((min(a, b2), max(a, b2)))
 # stitch the ways into one line from the lower station upwards
 segs = [s for s in funi if len(s) > 1]
 line = max(segs, key=len)
@@ -748,10 +752,76 @@ while changed:
         elif s[0] == line[0]: line = s[::-1][:-1] + line
         else: continue
         used.add(id(s)); changed = True
+if P(nodes[line[0]])[0] > P(nodes[line[-1]])[0]: line = line[::-1]    # start at the lower station (west)
 fl = [P(nodes[i]) for i in line]
-if fl[0][0] > fl[-1][0]: fl = fl[::-1]    # start at the lower station (west)
 funicular = flat(fl)
+funi_tunnel = [int((min(a, b2), max(a, b2)) in tunnel_pairs) for a, b2 in zip(line, line[1:])]     # per segment
+print('funicular tunnel segments', sum(funi_tunnel), 'of', len(funi_tunnel))
 print('funicular points', len(fl), 'from', [r1(v) for v in fl[0]], 'to', [r1(v) for v in fl[-1]])
+
+# ------------------------------------------------------------------ Bybanen: the tracks, the platforms and the train's route
+# Every light rail track in the area, the platforms along them, and one route for the train:
+# from the end of the track at Byparken, the straightest way on through the junctions.
+tram_ways = [w for w in ways.values() if w.get('tags', {}).get('railway') in ('light_rail', 'tram') and in_area(coords(w))
+             and w.get('tags', {}).get('tunnel') not in ('yes',)]
+tracks = [flat(coords(w)) for w in tram_ways if len(coords(w)) >= 2]
+# the railway into Bergen station gets rails too (drawn, not driven)
+for w in ways.values():
+    t = w.get('tags', {})
+    if t.get('railway') == 'rail' and t.get('tunnel') not in ('yes',) and in_area(coords(w)) and len(coords(w)) >= 2: tracks.append(flat(coords(w)))
+tadj = {}
+for w in tram_ways:
+    ids = [i for i in w['nodes'] if i in nodes]
+    for a, b2 in zip(ids, ids[1:]):
+        tadj.setdefault(a, set()).add(b2); tadj.setdefault(b2, set()).add(a)
+tram_route = []
+platforms = []
+if tadj:
+    track_lines = [LineString(coords(w)) for w in tram_ways if len(coords(w)) >= 2]
+    tl_union = unary_union(track_lines)
+    for w in ways.values():
+        t = w.get('tags', {})
+        if not (t.get('railway') == 'platform' or (t.get('public_transport') == 'platform' and (t.get('tram') == 'yes' or t.get('light_rail') == 'yes'))): continue
+        c = coords(w)
+        if len(c) < 4 or c[0] != c[-1] or not in_area(c): continue
+        pg = Polygon(c).buffer(0)
+        if pg.is_empty or pg.distance(tl_union) > 6: continue
+        platforms.append({'p': flat(c[:-1]), 'n': t.get('name', '')})
+    # start: the dead end nearest Byparken's platform
+    byp = next((Polygon([(pp[k], pp[k + 1]) for k in range(0, len(pp), 2)]) for pp in (pl['p'] for pl in platforms)), None)
+    ends = [n for n, a in tadj.items() if len(a) == 1]
+    ref = byp.centroid if byp is not None else Point(-431, 125)
+    start = min(ends, key=lambda n: Point(P(nodes[n])).distance(ref))
+    route, prev, cur, seen = [start], None, start, {start}
+    while True:
+        nxt = [n for n in tadj[cur] if n not in seen]
+        if not nxt: break
+        if prev is None: cur2 = nxt[0]
+        else:
+            px, pz = P(nodes[prev]); cx, cz = P(nodes[cur])
+            def turn(n):
+                nx, nz = P(nodes[n]); a1 = math.atan2(cz - pz, cx - px); a2 = math.atan2(nz - cz, nx - cx)
+                return abs((a2 - a1 + math.pi) % (2 * math.pi) - math.pi)
+            cur2 = min(nxt, key=turn)
+        prev, cur = cur, cur2; seen.add(cur); route.append(cur)
+    tram_route = flat([P(nodes[n]) for n in route])
+# landmarks for the minimap
+LANDMARKS = ['Grieghallen', 'AdO arena', 'Bergen stasjon', 'Bystasjonen', 'Lille Lungegårdsvann', 'Fløyen']
+landmarks = []
+for name in LANDMARKS:
+    best = None
+    for w in ways.values():
+        if w.get('tags', {}).get('name', '').lower() == name.lower():
+            c = coords(w)
+            if len(c) >= 3 and (best is None or len(c) > len(best)): best = c
+    if best is None:
+        n = next((n for n in nodes.values() if n.get('tags', {}).get('name', '').lower() == name.lower()), None)
+        if n: best = [P(n)]
+    if best:
+        x = sum(p[0] for p in best) / len(best); z = sum(p[1] for p in best) / len(best)
+        if X0 < x < X1 and Z0 < z < Z1: landmarks.append({'n': name, 'x': r1(x), 'z': r1(z)})
+print('landmarks', [l['n'] for l in landmarks])
+print('tram tracks', len(tracks), 'platforms', [p['n'] for p in platforms], 'route points', len(tram_route) // 2)
 
 # ------------------------------------------------------------------ terrain arrays
 def write_grid(g, h, path, scale):
@@ -803,6 +873,9 @@ out = {
     'roads': roads,
     'trees': trees,
     'funicular': funicular,
+    'funiTunnel': funi_tunnel,
+    'tram': {'tracks': tracks, 'platforms': platforms, 'route': tram_route},
+    'landmarks': landmarks,
     'graph': graph,
     'places': places,
     'barriers': barriers,

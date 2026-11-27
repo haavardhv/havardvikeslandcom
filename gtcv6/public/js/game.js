@@ -7,6 +7,7 @@ import { Physics } from './physics.js';
 import { Humanoid, Gull, makeScooter, makeItem, makeMarker, makeArrow, makePistol, PEOPLE, SCOOTER_LAMP } from './actors.js';
 import { Audio, lineDur } from './audio.js';
 import { stylePlaceBuildings, buildPlaces } from './places.js';
+import { buildTram } from './tram.js';
 
 const $ = id => document.getElementById(id);
 const params = new URLSearchParams(location.search);
@@ -216,6 +217,30 @@ const places = buildPlaces(scene, map, placeBuildings, {
   // which way the street is from a point: towards the nearest node of the walking graph
   streetDir: (x, z) => { const i = nearestNode(x, z, 30); if (i < 0) return null; const dx = gx(i) - x, dz = gz(i) - z, d = Math.hypot(dx, dz); return d > 0.3 ? [dx / d, dz / d] : null; },
 });
+// Bybanen: the rails, the platforms at Byparken and Kaigaten, and the tram
+const tram = buildTram(scene, map.tram, { terrain: city.terrain, polys: city.polys });
+function updateTram(dt) {
+  if (tram.update(dt) === 'bell' && Math.hypot(player.pos.x - tram.sections[0].x, player.pos.z - tram.sections[0].z) < 120) audio.tramBell();
+  // don't stand in its way
+  if (state.mode !== 'play' || dive.on) return;
+  const v = tram.velocity();
+  for (const sec of tram.sections) {
+    if (!sec.g.visible) continue;
+    const dx = player.pos.x - sec.x, dz = player.pos.z - sec.z;
+    const c = Math.cos(sec.h), sn = Math.sin(sec.h);
+    const lx = dx * c - dz * sn, lz = dx * sn + dz * c;            // across, along
+    const hw = tram.W / 2 + 0.35, hl = sec.len / 2 + 0.25;
+    if (Math.abs(lx) > hw || Math.abs(lz) > hl || player.pos.y - world.terrain.height(sec.x, sec.z) > 3.4) continue;
+    const side = lx >= 0 ? 1 : -1, push = hw - Math.abs(lx);
+    player.pos.x += c * side * push; player.pos.z -= sn * side * push;
+    if (Math.abs(v) > 1.5 && player.knockT <= 0) {
+      if (player.riding) { const s = player.riding; dismount(true); s.speed = 0; }
+      player.vel.set(c * side * 6, 4, -sn * side * 6); player.onGround = false;
+      player.knockT = 1.3; player.health = Math.max(5, player.health - 20); player.regenT = 4;
+      cam.shake = 0.9; audio.crash(); toast('Hit by Bybanen!', 2);
+    }
+  }
+}
 // A* over the street graph
 function route(ax, az, bx, bz) {
   const s = nearestNode(ax, az, 120), t = nearestNode(bx, bz, 120);
@@ -347,7 +372,7 @@ const camBox = new THREE.Vector3();
 function updateCamera(dt) {
   const p = player.pos;
   const inside = inHouse(p);
-  const want = lerp(player.riding ? 5.6 : inside ? 2.5 : 4.6, 3.1, gun.aimK);
+  const want = funiState.ride ? 13 : dive.on ? (dive.phase === 'free' ? 7 : 10) : lerp(player.riding ? 5.6 : inside ? 2.5 : 4.6, 3.1, gun.aimK);
   cam.dist = damp(cam.dist, want, 3, dt);
   const baseFov = camera.aspect < 0.8 ? 78 : 64;
   const fov = damp(camera.fov, (inside ? baseFov + 14 : baseFov) + (player.riding && turbo.on ? 9 : 0), 3, dt);
@@ -423,7 +448,9 @@ addEventListener('mousemove', e => {
   if (!locked || state.mode !== 'play') return;
   cam.yaw -= e.movementX * 0.0024;
   cam.pitch = clamp(cam.pitch + e.movementY * 0.002, -0.45, 1.25);
-  cam.lastLook = performance.now();
+  // a mouse under pointer lock reports tiny movements all the time, even at rest: only a real
+  // movement counts as looking around (and keeps the camera from swinging back behind you)
+  if (Math.abs(e.movementX) + Math.abs(e.movementY) > 2) cam.lastLook = performance.now();
 });
 function requestLock() {
   if (isTouch) return;
@@ -852,8 +879,8 @@ function say(n, text, dur = 0) {
 // street lamps come on.
 const sunDirV = new THREE.Vector3(), moonDirV = new THREE.Vector3();
 const NIGHT = {
-  top: new THREE.Color(0x04070e), hor: new THREE.Color(0x0d131e), dusk: new THREE.Color(0xd9875a), duskTop: new THREE.Color(0x3d4566),
-  hemi: new THREE.Color(0x4a5878), moon: new THREE.Color(0x9db3ff), sunLow: new THREE.Color(0xffa060), sunHigh: new THREE.Color(0xffeedd),
+  top: new THREE.Color(0x0b1424), hor: new THREE.Color(0x1c2638), dusk: new THREE.Color(0xd9875a), duskTop: new THREE.Color(0x3d4566),
+  hemi: new THREE.Color(0x6a7cab), moon: new THREE.Color(0xa9bcff), sunLow: new THREE.Color(0xffa060), sunHigh: new THREE.Color(0xffeedd),
 };
 const _dc = new THREE.Color();
 const smooth = (a, b, x) => { const t = clamp((x - a) / (b - a), 0, 1); return t * t * (3 - 2 * t); };
@@ -917,11 +944,12 @@ function updateDayNight(dt) {
   sunOffset.copy(bySun ? sunDirV : moonDirV);
   if (sunOffset.y < 0.18) { sunOffset.y = 0.18; sunOffset.normalize(); }
   if (bySun) { sun.intensity *= k; sun.color.lerpColors(NIGHT.sunLow, NIGHT.sunHigh, clamp(el / 0.35, 0, 1)); }
-  else { sun.intensity = 0.32 * (1 - k) * (1 - r * 0.55); sun.color.copy(NIGHT.moon); }
-  hemi.intensity *= lerp(0.16, 1, k);
+  else { sun.intensity = 0.6 * (1 - k) * (1 - r * 0.35); sun.color.copy(NIGHT.moon); }
+  // never pitch black: a blue night light everywhere, the lamps on top of it
+  hemi.intensity = Math.max(hemi.intensity * lerp(0.5, 1, k), 0.42);
   hemi.color.lerp(NIGHT.hemi, 1 - k);
-  scene.environmentIntensity = lerp(0.12, 0.75, k);
-  renderer.toneMappingExposure = lerp(1.3, 1.08, k);
+  scene.environmentIntensity = lerp(0.32, 0.75, k);
+  renderer.toneMappingExposure = lerp(1.5, 1.08, k);
   // the lamps come on at dusk (a little earlier under heavy cloud)
   const lamp = 1 - smooth(0.2, 0.6, k * (1 - 0.3 * r));
   dayState.lamp = lamp;
@@ -1439,7 +1467,7 @@ function updateGulls(dt) {
   }
 }
 function hitPlayer(a) {
-  if (state.mode !== 'play' || player.hurtT > 0.3) return;
+  if (state.mode !== 'play' || player.hurtT > 0.3 || funiState.ride) return;      // safe inside Fløibanen
   if (brollyBlocks(a)) return;
   const dmg = 4 + state.alarm;
   player.health = Math.max(0, player.health - dmg);
@@ -1786,6 +1814,127 @@ function updateGun(dt) {
   } else if (player.fig.aim) player.fig.aim = null;
 }
 
+// ------------------------------------------------------------------ skydiving from Fløyen
+// At the viewpoint on Fløyen there's a jump: E takes you 450 m up over the mountain, and you
+// fall. Steer with WASD, open the parachute (Space or click) and fly it down: A/D turn, W dives,
+// S flares. Forget to open it and that's the end of you. The canopy carries the Brann logo.
+const JUMP = (() => { const x = 516, z = -166; return { x, z, y: world.floorAt(x, z, 600, 700) }; })();
+const jumpSign = new THREE.Sprite(new THREE.SpriteMaterial({ map: textTexture(['Fallskjermhopp'], { w: 640, h: 128, bg: '#e2231a', fg: '#ffffff', font: '800 60px "Archivo", sans-serif', radius: 24, border: '#ffffff' }), fog: false }));
+jumpSign.scale.set(4.5, 0.9, 1); jumpSign.position.set(JUMP.x, JUMP.y + 4.2, JUMP.z);
+scene.add(jumpSign);
+const chute = (() => {
+  const g = new THREE.Group();
+  // the canopy: a ram-air wing, 8.5 m across, curved down at the tips, with cells
+  const top = new THREE.PlaneGeometry(8.5, 3.2, 24, 4); top.rotateX(-Math.PI / 2);
+  const a = top.attributes.position;
+  for (let i = 0; i < a.count; i++) { const x = a.getX(i), z = a.getZ(i); a.setY(i, -x * x / 13 + Math.cos(z / 1.6 * Math.PI / 2) * 0.25); }
+  top.computeVertexNormals();
+  const canvas = document.createElement('canvas'); canvas.width = 1024; canvas.height = 384;
+  const cg = canvas.getContext('2d');
+  const paint = (logo) => {
+    // drawn upside down: seen from behind and above, it reads the right way round
+    cg.setTransform(-1, 0, 0, -1, canvas.width, canvas.height);
+    cg.fillStyle = '#e2231a'; cg.fillRect(0, 0, 1024, 384);
+    cg.fillStyle = 'rgba(255,255,255,0.9)'; for (let k = 1; k < 9; k++) cg.fillRect(k * 1024 / 9 - 2, 0, 4, 384);
+    cg.fillStyle = '#ffffff'; cg.fillRect(0, 0, 1024, 14); cg.fillRect(0, 370, 1024, 14);
+    if (logo) cg.drawImage(logo, 512 - 330, 192 - 97, 660, 194);
+    else { cg.fillStyle = '#fff'; cg.font = '900 120px "Archivo", sans-serif'; cg.textAlign = 'center'; cg.textBaseline = 'middle'; cg.fillText('BRANN', 512, 200); }
+  };
+  paint(null);
+  const tex = new THREE.CanvasTexture(canvas); tex.colorSpace = THREE.SRGBColorSpace; tex.anisotropy = 8;
+  const img = new Image(); img.onload = () => { paint(img); tex.needsUpdate = true; }; img.src = '/img/brann.png';
+  const topM = new THREE.MeshStandardMaterial({ map: tex, roughness: 0.7, side: THREE.DoubleSide });
+  const canopy = new THREE.Mesh(top, topM); canopy.castShadow = true;
+  const under = new THREE.Mesh(top.clone().translate(0, -0.35, 0), new THREE.MeshStandardMaterial({ color: 0xb81c14, roughness: 0.8, side: THREE.DoubleSide }));
+  g.add(canopy, under);
+  // the lines, from the canopy's edge down to the harness
+  const lp = [];
+  for (let k = 0; k <= 6; k++) {
+    const x = -4.1 + k * 8.2 / 6, y = -x * x / 13 - 0.3;
+    for (const z of [-1.2, 1.2]) lp.push(x, y, z, Math.sign(x) * 0.25, -4.1, 0);
+  }
+  const lg = new THREE.BufferGeometry(); lg.setAttribute('position', new THREE.Float32BufferAttribute(lp, 3));
+  g.add(new THREE.LineSegments(lg, new THREE.LineBasicMaterial({ color: 0x333333 })));
+  g.visible = false;
+  scene.add(g);
+  return g;
+})();
+const dive = { on: false, phase: 'free', open: 0, landT: 0 };
+function startSkydive() {
+  fadeThen(() => {
+    player.pos.set(JUMP.x - 20, JUMP.y + 450, JUMP.z + 10);
+    player.vel.set(-6, 0, 2);
+    player.heading = Math.atan2(-1, 0.2);          // facing the town
+    player.onGround = false;
+    cam.yaw = player.heading + Math.PI; cam.pitch = 0.45;
+    dive.on = true; dive.phase = 'free'; dive.open = 0; dive.landT = 0;
+    if (gun.drawn) toggleGun(false);
+    if (brolly.up) setBrolly(false);
+    toast('Space or click: open the parachute', 3);
+  });
+}
+function endSkydive() {
+  dive.on = false; chute.visible = false;
+  player.fig.root.rotation.x = 0;
+  audio.wind(0);
+}
+function updateSkydive(dt, inp) {
+  const p = player.pos, v = player.vel;
+  const floor = world.floorAt(p.x, p.z, p.y + 0.5, 1.0);
+  const alt = p.y - Math.max(floor, -1);
+  // where you're heading, from the camera, as on foot
+  const fx = -Math.sin(cam.yaw), fz = -Math.cos(cam.yaw);
+  if (dive.phase === 'free') {
+    v.y = Math.max(-52, v.y - 9.8 * dt);
+    const tx = (fx * inp.y - fz * inp.x) * 16, tz = (fz * inp.y + fx * inp.x) * 16;
+    v.x = damp(v.x, tx, 1.2, dt); v.z = damp(v.z, tz, 1.2, dt);
+    if (Math.hypot(v.x, v.z) > 1) player.heading += angDiff(player.heading, Math.atan2(v.x, v.z)) * Math.min(1, dt * 3);
+    if (pressed.jump || pressed.punch) { dive.phase = 'chute'; audio.chute(); cam.shake = 0.6; chute.visible = true; }
+    audio.wind(Math.min(1, -v.y / 45));
+  } else {
+    dive.open = Math.min(1, dive.open + dt * 1.6);
+    // steer with A/D, or with the mouse: look where you want to go and the canopy turns that way
+    const h0 = player.heading, looking = performance.now() - cam.lastLook < 700;
+    if (Math.abs(inp.x) > 0.1) player.heading -= inp.x * 1.15 * dt;
+    else if (looking) player.heading += clamp(angDiff(player.heading, cam.yaw + Math.PI) * 1.5 * dt, -1.15 * dt, 1.15 * dt);
+    dive.turn = damp(dive.turn || 0, angDiff(h0, player.heading) / Math.max(dt, 1e-3) / 1.15, 6, dt);
+    const fwd = inp.y > 0.3 ? 12.5 : inp.y < -0.3 ? 5 : 9, sink = inp.y > 0.3 ? 6.8 : inp.y < -0.3 ? 2.6 : 4.4;
+    v.x = damp(v.x, Math.sin(player.heading) * fwd, 2.2, dt); v.z = damp(v.z, Math.cos(player.heading) * fwd, 2.2, dt);
+    v.y = damp(v.y, -sink, 2.5 * (0.4 + dive.open), dt);
+    audio.wind(0.25 + Math.abs(dive.turn || 0) * 0.1);
+    // the camera swings round behind you as you turn (unless you're looking around)
+    if (!looking) cam.yaw += angDiff(cam.yaw, player.heading + Math.PI) * Math.min(1, dt * 2.2);
+  }
+  p.addScaledVector(v, dt);
+  p.x = clamp(p.x, AX0, AX1); p.z = clamp(p.z, AZ0, AZ1);
+  // the figure: belly down in free fall, hanging in the harness under the canopy
+  const tilt = 1.25;
+  player.fig.animate(dt, 0, 'jump', false);
+  player.fig.root.position.copy(p);
+  const roll = dive.phase === 'free' ? 0 : -(dive.turn || 0) * 0.25;
+  player.fig.root.rotation.set(dive.phase === 'free' ? tilt : 0, player.heading, roll, 'YXZ');
+  if (chute.visible) {
+    const k = dive.open;
+    chute.position.set(p.x, p.y + 1.6 + 4.3 * (0.4 + 0.6 * k), p.z);
+    chute.rotation.set(0.12, player.heading, roll * 0.8, 'YXZ');
+    chute.scale.set(0.3 + 0.7 * k, 0.6 + 0.4 * k, 0.4 + 0.6 * k);
+  }
+  // landing: in the sea, on the ground (or a roof), gently or not
+  const g2 = world.floorAt(p.x, p.z, p.y + 0.5, 1.0);
+  if (p.y < 0.1 && world.terrain.height(p.x, p.z) < -0.3) { endSkydive(); splash(); return; }
+  if (p.y <= g2 + 0.02) {
+    p.y = g2;
+    const hard = -v.y;
+    endSkydive();
+    player.onGround = true;
+    if (hard > 22) { player.vel.set(0, 0, 0); die('SPLAT', 'You forgot to open the parachute. It had the Brann logo on it and everything.'); return; }
+    if (hard > 6) { player.knockT = 1.0; player.health = Math.max(10, player.health - 15); cam.shake = 0.6; audio.land(); toast('Rough landing!', 1.5); }
+    else { audio.land(); save.money += 25; toast('Nice landing!  +25 kr', 2); }
+    player.vel.set(v.x * 0.3, 0, v.z * 0.3);
+  }
+  return alt;
+}
+
 // ------------------------------------------------------------------ punch
 function doPunch() {
   if (player.punchCd > 0 || player.knockT > 0 || player.riding) return;
@@ -1819,6 +1968,7 @@ function doPunch() {
 
 // ------------------------------------------------------------------ player update
 const pInfo = {};
+let skyAlt = 0;
 let lastSurfaceTag = null;
 function surfaceAt() {
   const p = player.pos;
@@ -1836,7 +1986,17 @@ function updatePlayer(dt) {
   player.regenT -= dt;
   if (player.regenT <= 0 && player.health < 100) player.health = Math.min(100, player.health + 6 * dt);
 
-  // use: get on / off scooters
+  // Fløibanen: get on a waiting car
+  if (funiState.ride) { pressed.use = pressed.jump = pressed.punch = false; player.fig.animate(dt, 0, 'idle'); return; }
+  if (pressed.use && player.knockT <= 0 && !player.carrying && funiCarHere() >= 0) {
+    pressed.use = false;
+    funiState.ride = { car: funiCarHere(), moved: false };
+    if (gun.drawn) toggleGun(false);
+    audio.door();
+    toast(funiState.u[funiState.ride.car] < 0.5 ? 'Fløibanen: up to Fløyen' : 'Fløibanen: down to town', 2.5);
+  }
+  // use: get on / off scooters, or jump from Fløyen
+  if (pressed.use && player.knockT <= 0 && !player.riding && !player.carrying && Math.hypot(player.pos.x - JUMP.x, player.pos.z - JUMP.z) < 3.5 && Math.abs(player.pos.y - JUMP.y) < 3) { pressed.use = false; startSkydive(); }
   if (pressed.use && player.knockT <= 0) {
     if (player.riding) dismount();
     else {
@@ -1844,6 +2004,7 @@ function updatePlayer(dt) {
       if (s) mount(s);
     }
   }
+  if (dive.on) { skyAlt = updateSkydive(dt, inp); pressed.jump = pressed.punch = pressed.use = false; return; }
   if (pressed.gun) cycleHand();
   if (pressed.punch) { if (gun.drawn) shoot(); else doPunch(); }
 
@@ -2587,6 +2748,7 @@ function splash() {
   player.vel.set(0, 0, 0);
 }
 function die(title, sub) {
+  if (dive.on) endSkydive();
   state.mode = 'dead';
   audio.fail();
   banner(title, sub, 'fail', 3.5);
@@ -2720,7 +2882,64 @@ $('reset').addEventListener('click', () => {
 // ------------------------------------------------------------------ main loop
 let last = performance.now(), time = 0, frameAvg = 16, adaptT = 0, gpsT = 0, frameNo = 0;
 renderer.shadowMap.autoUpdate = false;
-const funiState = { t: 0 };
+// Fløibanen: two cars on a timetable, passing halfway. Each waits at its station, then runs
+// to the other end. Stand by a waiting car and press E to ride; you get off at the other end.
+const FUNI_WAIT = 18, FUNI_RUN = 75;
+const funiState = { t: 0, ride: null, u: [0, 1] };
+const funiWin = city.cars.map(car => car.children[1] && car.children[1].material);
+// the platform beside each end of the line, where you get on and off
+const funiStop = [0, 1].map(u => {
+  const c = city.funiCurve, p = c.getPointAt(u), q = c.getPointAt(u ? u - 0.01 : 0.01);
+  const dx = q.x - p.x, dz = q.z - p.z, l = Math.hypot(dx, dz) || 1;
+  for (const side of [1, -1]) for (const d of [3.5, 5, 7]) {
+    const x = p.x - dz / l * d * side + (u ? -dx / l * 3 : dx / l * 3), z = p.z + dx / l * d * side + (u ? -dz / l * 3 : dz / l * 3);
+    const y = world.floorAt(x, z, p.y + 3, 5);
+    if (y > -50 && Math.abs(y - (p.y - 0.8)) < 3) return new THREE.Vector3(x, y, z);
+  }
+  return new THREE.Vector3(p.x + 3, world.floorAt(p.x + 3, p.z, p.y + 3, 6), p.z);
+});
+function updateFuni(dt) {
+  const f = funiState, cyc = 2 * (FUNI_WAIT + FUNI_RUN);
+  f.t = (f.t + dt) % cyc;
+  // car 0: waits at the bottom, runs up, waits at the top, runs down; car 1 the other way round
+  const t = f.t, ease = x => x * x * (3 - 2 * x);
+  const u0 = t < FUNI_WAIT ? 0 : t < FUNI_WAIT + FUNI_RUN ? ease((t - FUNI_WAIT) / FUNI_RUN) : t < 2 * FUNI_WAIT + FUNI_RUN ? 1 : 1 - ease((t - 2 * FUNI_WAIT - FUNI_RUN) / FUNI_RUN);
+  f.u = [u0, 1 - u0];
+  f.waiting = t < FUNI_WAIT || (t >= FUNI_WAIT + FUNI_RUN && t < 2 * FUNI_WAIT + FUNI_RUN);
+  city.cars.forEach((car, i) => {
+    const u = clamp(f.u[i], 0, 0.995);
+    const p = city.funiCurve.getPointAt(u), p2 = city.funiCurve.getPointAt(u + 0.005);
+    car.position.copy(p);
+    car.lookAt(p2.x, p.y, p2.z);
+    if (funiWin[i]) { funiWin[i].emissive.setHex(0xffd9a0); funiWin[i].emissiveIntensity = dayState.lamp * 1.4; }
+  });
+  // riding: you're in the car; at the other end you step out onto the platform
+  const r = f.ride;
+  if (r) {
+    const car = city.cars[r.car];
+    player.pos.copy(car.position); player.vel.set(0, 0, 0);
+    player.fig.root.visible = false;
+    if (!f.waiting) r.moved = true;
+    if (r.moved && f.waiting) {
+      const end = f.u[r.car] > 0.5 ? 1 : 0;
+      f.ride = null;
+      player.pos.copy(funiStop[end]); player.onGround = true;
+      player.fig.root.visible = true;
+      toast(end ? 'Fløyen, 320 moh. Mind the gulls.' : 'Vetrlidsallmenningen. Torget is just down the street.', 3);
+      audio.door();
+    }
+  }
+}
+// the car waiting at the station you're standing at, if any
+function funiCarHere() {
+  const f = funiState;
+  if (!f.waiting || f.ride || player.riding || dive.on) return -1;
+  for (let i = 0; i < 2; i++) {
+    const end = f.u[i] > 0.5 ? 1 : 0;
+    if (player.pos.distanceTo(funiStop[end]) < 6 || player.pos.distanceTo(city.cars[i].position) < 7) return i;
+  }
+  return -1;
+}
 function frame(now) {
   requestAnimationFrame(frame);
   let dt = clamp((now - last) / 1000, 0, 0.05);
@@ -2732,6 +2951,8 @@ function frame(now) {
   skyU.time.value = time;
   sky.position.copy(camera.position);
   updateDayNight(dt);
+  // high up in a skydive the town below shows through the weather, as from the sky camera
+  if (dive.on && skyAlt > 20) { scene.fog.near += skyAlt; scene.fog.far += skyAlt * 1.8; }
 
   if (state.mode === 'title') {
     updateTitleCam(time);
@@ -2741,6 +2962,7 @@ function frame(now) {
       else if (!window.__director) player.fig.animate(dt, 0, state.mode === 'dead' ? 'down' : state.mode === 'switch' ? 'idle' : 'walk');
       for (const s of scooters) if (s !== player.riding) updateScooter(s, dt, { x: 0, y: 0 });
       updateHeadlight();
+      updateTram(dt);
       updateDoors(dt);
       updateAlarm(dt);
       if (state.mode === 'play') updateMission(dt);
@@ -2759,6 +2981,10 @@ function frame(now) {
     for (const a of gulls) if (['orbit', 'dive', 'climb', 'carry'].includes(a.state)) blips.push({ x: a.pos.x, z: a.pos.z, c: a.state === 'carry' ? '#f2c12e' : '#d2301f', r: 4 });
     { const [hx, hz] = L2W(4, 4.2); blips.push({ x: hx, z: hz, c: '#f4f1ea', r: 6, edge: true }); }
     for (const pl of PLACES) blips.push({ x: pl.x, z: pl.z, c: pl.st.bg, r: 7, label: pl.n, edge: pl.k === 'food' });
+    blips.push({ x: JUMP.x, z: JUMP.z, c: '#e2231a', r: 6, label: 'Skydive' });
+    blips.push({ x: funiStop[0].x, z: funiStop[0].z, c: '#2f6db5', r: 5, label: 'Fløibanen' });
+    for (const lm of map.landmarks || []) if (lm.n !== 'Fløyen') blips.push({ x: lm.x, z: lm.z, c: '#cfd6dc', r: 4, label: lm.n });
+    for (const sec of tram.sections) if (sec.g.visible) blips.push({ x: sec.x, z: sec.z, c: '#f07c1a', r: 4 });
     // GPS route to the current target, recomputed now and then
     gpsT -= dt;
     if (gpsT <= 0) {
@@ -2776,6 +3002,10 @@ function frame(now) {
     else if (state.mode === 'play' && player.riding && Math.abs(player.riding.speed) < 1) prompt = '<kbd>E</kbd>Get off';
     else if (state.mode === 'play' && player.riding && player.riding.speed > 4 && !save.rideHint) prompt = isTouch ? '<kbd>Jump</kbd>trick <kbd>Run</kbd>boost <kbd>Drift</kbd>hold to drift' : '<kbd>Space</kbd>trick <kbd>Shift</kbd>boost <kbd>Right mouse</kbd>hold to drift';
     if (player.riding && (player.riding.driftT > 1 || player.riding.trick) && !save.rideHint) { save.rideHint = true; persist(); }
+    if (state.mode === 'play' && !prompt && funiCarHere() >= 0) prompt = `<kbd>E</kbd>Ride Fløibanen ${funiState.u[funiCarHere()] < 0.5 ? 'up to Fløyen' : 'down to town'}`;
+    if (state.mode === 'play' && funiState.ride) prompt = funiState.waiting && !funiState.ride.moved ? 'Fløibanen: leaving shortly…' : 'Fløibanen';
+    if (state.mode === 'play' && !player.riding && !dive.on && !prompt && Math.hypot(player.pos.x - JUMP.x, player.pos.z - JUMP.z) < 3.5 && Math.abs(player.pos.y - JUMP.y) < 3) prompt = '<kbd>E</kbd>Skydive from 450 m';
+    if (dive.on && state.mode === 'play') prompt = `Altitude ${Math.max(0, Math.round(skyAlt))} m · ` + (dive.phase === 'free' ? (isTouch ? '<kbd>Jump</kbd>open the parachute' : '<kbd>Space</kbd>open the parachute') : 'A/D steer · W dive · S flare');
     if (!prompt && brolly.shelterT > 0.3) prompt = `Sheltering under the umbrella… ${Math.ceil(SHELTER_T - brolly.shelterT)}`;
     hud.prompt.hidden = !prompt;
     if (prompt && hud.prompt.innerHTML !== prompt) hud.prompt.innerHTML = prompt;
@@ -2817,17 +3047,9 @@ function frame(now) {
   updateGulls(dt);
   updateRain(dt);
   if (sw && sw.high) rain.visible = false;      // no rain streaks across the sky camera
+  if (camera.position.y < world.terrain.height(camera.position.x, camera.position.z) - 0.5) rain.visible = false;   // underground: in Fløibanen's tunnels
 
-  // funicular cars shuttle up and down, passing halfway
-  funiState.t += dt / 70;
-  const ft = (Math.sin(funiState.t * Math.PI * 2) + 1) / 2;
-  city.cars.forEach((car, i) => {
-    const u = clamp(i === 0 ? ft : 1 - ft, 0, 0.995);
-    const p = city.funiCurve.getPointAt(u);
-    const p2 = city.funiCurve.getPointAt(u + 0.005);
-    car.position.copy(p);
-    car.lookAt(p2.x, p.y, p2.z);
-  });
+  updateFuni(dt);
 
   // the sun's shadow box follows the player
   const focus = state.mode === 'title' ? L2V(3, H.FU, 0) : (state.mode === 'cut' ? L2V(3, H.FL, 6) : player.pos);
@@ -2859,4 +3081,4 @@ $('play').disabled = false;
 $('play').textContent = save.mission > 0 ? (save.mission >= MISSIONS.length ? 'Free roam' : 'Continue') : 'Play';
 
 // debug hooks for testing
-window.__gt = { gameTime: () => time, places, street, gun, shoot, toggleGun, brolly, cycleHand, npcs, turbo, clock, dayState, nightPeople, lampLights, audio, switchTo, swapTo, mates: () => housemates, active: () => active, OUT_SPOTS, offer: () => offer, acceptOffer, declineOffer, makeOffer, scene, renderer, camera, player, cam, world, state, startMission, save, weather, scooters, gulls, mission: () => mission, startGame, raiseAlarm, ending, L2V, L2W, W2L, H, house, city, route, BAKERY, CHECKPOINTS: () => CHECKPOINTS, inHouse, housemates, PLACES, hitPlayer, dropBolle, bolle: () => ({ drop: bolleDrop, carrying: !!player.carrying }) };
+window.__gt = { gameTime: () => time, places, street, tram, dive, funiState, funiStop, funiCarHere, startSkydive, JUMP, gun, shoot, toggleGun, brolly, cycleHand, npcs, turbo, clock, dayState, nightPeople, lampLights, audio, switchTo, swapTo, mates: () => housemates, active: () => active, OUT_SPOTS, offer: () => offer, acceptOffer, declineOffer, makeOffer, scene, renderer, camera, player, cam, world, state, startMission, save, weather, scooters, gulls, mission: () => mission, startGame, raiseAlarm, ending, L2V, L2W, W2L, H, house, city, route, BAKERY, CHECKPOINTS: () => CHECKPOINTS, inHouse, housemates, PLACES, hitPlayer, dropBolle, bolle: () => ({ drop: bolleDrop, carrying: !!player.carrying }) };

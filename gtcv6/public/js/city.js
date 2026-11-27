@@ -624,6 +624,41 @@ export function buildCity(scene, map, T, opts) {
     });
     trunks.castShadow = crowns.castShadow = true;
     scene.add(trunks, crowns);
+
+    // the forest on Fløyen: spruce, with some birch, all over the mountainside above Fjellveien,
+    // off the roads and paths, out of the buildings
+    const fspots = [];
+    for (let z = g.z0 + 4; z < g.z0 + (g.nz - 1) * g.step - 4 && fspots.length < 9000; z += 6.5)
+      for (let x = g.x0 + 4; x < g.x0 + (g.nx - 1) * g.step - 4 && fspots.length < 9000; x += 6.5) {
+        const px = x + (R() - 0.5) * 5, pz = z + (R() - 0.5) * 5;
+        const h = terrain.height(px, pz);
+        if (h < 88 + (R() - 0.5) * 10) continue;
+        const cl = terrain.cls(px, pz);
+        if (cl === 3 || cl === 4) continue;
+        if (onRoad(px, pz) || onRoad(px + 2.5, pz) || onRoad(px - 2.5, pz) || onRoad(px, pz + 2.5) || onRoad(px, pz - 2.5)) continue;
+        if (polys.query(px - 3, pz - 3, px + 3, pz + 3).length) continue;
+        if (opts.keepClear(px, pz)) continue;
+        fspots.push([px, pz, R() < 0.72]);
+      }
+    const spruceG = new THREE.ConeGeometry(1.7, 7.5, 7); spruceG.translate(0, 5.2, 0);
+    const stemG = new THREE.CylinderGeometry(0.16, 0.24, 2.4, 5); stemG.translate(0, 1.2, 0);
+    const conifers = fspots.filter(f => f[2]), broad = fspots.filter(f => !f[2]);
+    const stems = new THREE.InstancedMesh(stemG, trunks.material, fspots.length);
+    const spruces = new THREE.InstancedMesh(spruceG, new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 1, flatShading: true }), Math.max(1, conifers.length));
+    const birches = new THREE.InstancedMesh(crownG, crowns.material, Math.max(1, broad.length));
+    const darks = [0x2c4a2a, 0x335330, 0x27412a, 0x3a5a34];
+    let si = 0, bi = 0;
+    fspots.forEach(([x, z, con], i) => {
+      const k = con ? 0.75 + R() * 0.7 : 0.6 + R() * 0.5;
+      m4.compose(pp.set(x, terrain.height(x, z) - 0.15, z), q.setFromAxisAngle(new THREE.Vector3(0, 1, 0), R() * 6), s.set(k, k * (0.9 + R() * 0.3), k));
+      stems.setMatrixAt(i, m4);
+      if (con) { spruces.setMatrixAt(si, m4); spruces.setColorAt(si++, col.set(darks[Math.floor(R() * darks.length)])); }
+      else { birches.setMatrixAt(bi, m4); birches.setColorAt(bi++, col.set(greens[Math.floor(R() * greens.length)])); }
+      polys.add(Float32Array.from([x - 0.25, z - 0.25, x + 0.25, z - 0.25, x + 0.25, z + 0.25, x - 0.25, z + 0.25]), terrain.height(x, z) - 1, terrain.height(x, z) + 3 * k, { tree: true, noCam: true });
+    });
+    spruces.count = si; birches.count = bi;
+    stems.castShadow = spruces.castShadow = birches.castShadow = true;
+    scene.add(stems, spruces, birches);
   }
 
   // -------------------------------------------------------------- walls, fences, hedges (OSM barriers)
@@ -797,13 +832,90 @@ export function buildCity(scene, map, T, opts) {
   }
 
   // -------------------------------------------------------------- Fløibanen
-  const fl = map.funicular;
+  // The line climbs on the surface where it is in the open, and in its two tunnels (under Skansen
+  // from the lower station, and under Fjellveien) it runs on a steady incline between the portals,
+  // well under the ground. Only the open stretches are drawn; the tunnels get a lit lining and
+  // a concrete portal at each mouth.
+  const fl = map.funicular, tun = map.funiTunnel || [];
+  const N = fl.length / 2;
+  const fx = i => fl[i * 2], fz = i => fl[i * 2 + 1];
+  const fy = new Array(N);
+  for (let i = 0; i < N; i++) fy[i] = terrain.height(fx(i), fz(i)) + 0.8;
+  const inTun = i => tun[i] === 1;                 // segment i runs from point i to point i + 1
+  const runs = [];                                 // [first point, last point, tunnel?]
+  for (let i = 0; i < N - 1; i++) {
+    const t = inTun(i);
+    if (runs.length && runs[runs.length - 1][2] === t) runs[runs.length - 1][1] = i + 1;
+    else runs.push([i, i + 1, t]);
+  }
+  for (const [a, b, t] of runs) {
+    if (!t) continue;
+    // a straight incline between the mouths, going deeper (5.5 m of ground over the track)
+    // within 15 m of each mouth, so the lining never shows through the hillside
+    const d = [0];
+    for (let i = a + 1; i <= b; i++) d.push(d[d.length - 1] + Math.hypot(fx(i) - fx(i - 1), fz(i) - fz(i - 1)));
+    const L = d[d.length - 1] || 1;
+    for (let i = a + 1; i < b; i++) {
+      const lin = fy[a] + (fy[b] - fy[a]) * d[i - a] / L;
+      const fromMouth = Math.min(a === 0 ? Infinity : d[i - a], L - d[i - a]);
+      fy[i] = Math.min(lin, terrain.height(fx(i), fz(i)) - 5.5 * Math.min(1, fromMouth / 15));
+    }
+  }
   const fpts = [];
-  for (let i = 0; i < fl.length; i += 2) fpts.push(new THREE.Vector3(fl[i], terrain.height(fl[i], fl[i + 1]) + 0.8, fl[i + 1]));
+  for (let i = 0; i < N; i++) fpts.push(new THREE.Vector3(fx(i), fy[i], fz(i)));
   const funiCurve = new THREE.CatmullRomCurve3(fpts, false, 'centripetal');
-  const track = new THREE.Mesh(new THREE.TubeGeometry(funiCurve, 400, 1.1, 4, false), new THREE.MeshStandardMaterial({ color: 0x55524c, roughness: 0.9 }));
-  track.receiveShadow = true;
-  scene.add(track);
+  // where along the curve (0..1) each point is
+  const lens = funiCurve.getLengths(400), total = lens[lens.length - 1];
+  const uOf = (i) => { let best = 0, bd = Infinity; for (let k = 0; k <= 400; k++) { const p = funiCurve.getPointAt(k / 400); const dd = (p.x - fx(i)) ** 2 + (p.z - fz(i)) ** 2; if (dd < bd) { bd = dd; best = k / 400; } } return best; };
+  const trackM = new THREE.MeshStandardMaterial({ color: 0x55524c, roughness: 0.9 });
+  const liningT = (() => {
+    const c = document.createElement('canvas'); c.width = 256; c.height = 64;
+    const g = c.getContext('2d');
+    g.fillStyle = '#4a4844'; g.fillRect(0, 0, 256, 64);
+    for (let k = 0; k < 400; k++) { g.fillStyle = `rgba(${Math.random() < 0.5 ? '0,0,0' : '255,255,255'},0.06)`; g.fillRect(Math.random() * 256, Math.random() * 64, 3, 3); }
+    g.fillStyle = '#fff1c8'; g.fillRect(118, 28, 20, 8);                       // a lamp in the roof every few metres
+    const t = new THREE.CanvasTexture(c); t.wrapS = t.wrapT = THREE.RepeatWrapping; t.colorSpace = THREE.SRGBColorSpace;
+    return t;
+  })();
+  const portalM = new THREE.MeshStandardMaterial({ color: 0x9a978f, roughness: 0.9 }), dark = new THREE.MeshBasicMaterial({ color: 0x0b0c0d });
+  for (const [a, b, t] of runs) {
+    const u0 = a === 0 ? 0 : uOf(a), u1 = b === N - 1 ? 1 : uOf(b);
+    if (u1 - u0 < 0.002) continue;
+    const pts = [];
+    const n = Math.max(4, Math.round((u1 - u0) * 400));
+    for (let k = 0; k <= n; k++) pts.push(funiCurve.getPointAt(u0 + (u1 - u0) * k / n));
+    const part = new THREE.CatmullRomCurve3(pts);
+    if (!t) {
+      const m = new THREE.Mesh(new THREE.TubeGeometry(part, n * 2, 1.1, 4, false), trackM);
+      m.receiveShadow = true;
+      scene.add(m);
+      continue;
+    }
+    // the tunnel: a lining you see from inside, lamps along the roof
+    const len = u1 - u0 > 0 ? (u1 - u0) * total : 1;
+    const lt = liningT.clone(); lt.needsUpdate = true; lt.repeat.set(len / 6, 1);
+    const lining = new THREE.Mesh(new THREE.TubeGeometry(part, n * 2, 3.2, 10, false), new THREE.MeshStandardMaterial({ map: lt, emissive: 0xffffff, emissiveMap: lt, emissiveIntensity: 0.25, roughness: 0.95, side: THREE.BackSide }));
+    lining.position.y = 1.4;
+    scene.add(lining);
+    const bed = new THREE.Mesh(new THREE.TubeGeometry(part, n * 2, 1.1, 4, false), trackM);
+    scene.add(bed);
+    // a portal at each mouth that comes out into the open
+    for (const [uu, dir] of [[u0, 1], [u1, -1]]) {
+      if (uu <= 0.001 || uu >= 0.999) continue;                     // the lower station is a mouth in a building
+      const p = funiCurve.getPointAt(uu), tg = funiCurve.getTangentAt(uu);
+      const g = new THREE.Group();
+      g.position.copy(p); g.lookAt(p.x - tg.x * dir, p.y, p.z - tg.z * dir);     // facing out of the tunnel
+      const wall = new THREE.Mesh(new THREE.BoxGeometry(9, 6.5, 1.2), portalM); wall.position.set(0, 2.6, -0.4); wall.castShadow = true;
+      const mouth = new THREE.Mesh(new THREE.PlaneGeometry(4.4, 4.6), dark); mouth.position.set(0, 1.9, 0.25);
+      const lintel = new THREE.Mesh(new THREE.BoxGeometry(5.2, 0.5, 1.4), portalM); lintel.position.set(0, 4.35, 0.1);
+      // the opening: cut the wall in three so the mouth shows through
+      wall.geometry = new THREE.BoxGeometry(9, 2.1, 1.2); wall.position.set(0, 5.55, -0.4);
+      const left = new THREE.Mesh(new THREE.BoxGeometry(2.3, 6.5, 1.2), portalM); left.position.set(-3.35, 2.6, -0.4); left.castShadow = true;
+      const right = left.clone(); right.position.x = 3.35;
+      g.add(wall, left, right, lintel, mouth);
+      scene.add(g);
+    }
+  }
   const cars = [];
   for (const c of [0x2f6db5, 0xc4312a]) {
     const car = new THREE.Group();
