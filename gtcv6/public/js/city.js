@@ -241,7 +241,10 @@ export function buildCity(scene, map, T, opts) {
   const polys = new PolyWorld(16);
   const geo = new Geo();
   const col = new THREE.Color();
-  const carve = opts.carve;       // (x,z) => lowered height or null: only for the rendered mesh
+  // opts.hole: { o: [x, z], u: [x, z], v: [x, z], r: [u0, u1, v0, v1] }, a rectangle in a local frame
+  // (Cappes vei 6) where the rendered ground is cut away, so it never shows inside the house while
+  // the street right outside keeps its real height
+  const hole = opts.hole;
 
   // -------------------------------------------------------------- terrain mesh (fine)
   {
@@ -254,9 +257,7 @@ export function buildCity(scene, map, T, opts) {
     const centre = new THREE.Color(0x707173), rock = new THREE.Color(0x6b6a66);
     for (let j = 0; j < nz; j++) for (let i = 0; i < nx; i++) {
       const k = j * nx + i, x = g.x0 + i * g.step, z = g.z0 + j * g.step;
-      let h = map.terrH[k] * g.scale;
-      const cv = carve(x, z);
-      if (cv !== null && h > cv) h = cv;
+      const h = map.terrH[k] * g.scale;
       pos[k * 3] = x; pos[k * 3 + 1] = h; pos[k * 3 + 2] = z;
       uv[k * 2] = x / 3; uv[k * 2 + 1] = z / 3;
       const cl = map.groundCls[k];
@@ -295,12 +296,14 @@ export function buildCity(scene, map, T, opts) {
         sh.uniforms.pathTex = { value: pathTex };
         sh.uniforms.atlas = { value: atlas };
         sh.uniforms.rBox = { value: new THREE.Vector4(rm.x0, rm.z0, 1 / (rm.w * rm.res), 1 / (rm.h * rm.res)) };
+        sh.uniforms.holeF = { value: new THREE.Vector4(...(hole ? [...hole.o, ...hole.u] : [0, 0, 1, 0])) };
+        sh.uniforms.holeR = { value: new THREE.Vector4(...(hole ? hole.r : [1, 0, 1, 0])) };
         sh.vertexShader = sh.vertexShader
           .replace('#include <common>', '#include <common>\nvarying vec3 vWp;')
           .replace('#include <begin_vertex>', '#include <begin_vertex>\nvWp = (modelMatrix * vec4(transformed, 1.0)).xyz;');
         sh.fragmentShader = sh.fragmentShader
           .replace('#include <common>', `#include <common>
-            uniform sampler2D roadTex, pathTex, atlas; uniform vec4 rBox; varying vec3 vWp;
+            uniform sampler2D roadTex, pathTex, atlas; uniform vec4 rBox, holeF, holeR; varying vec3 vWp;
             vec3 atlasTile(float s, float ts, vec2 xz) {
               vec2 cell = vec2(mod(s, 4.0), floor(s / 4.0));
               vec2 p = xz / ts, f = fract(p);
@@ -309,6 +312,11 @@ export function buildCity(scene, map, T, opts) {
               return textureGrad(atlas, auv, dFdx(p) * 0.245, dFdy(p) * 0.245).rgb;
             }`)
           .replace('#include <color_fragment>', `#include <color_fragment>
+            {
+              vec2 hd = vWp.xz - holeF.xy;
+              float hu = dot(hd, holeF.zw), hv = dot(hd, vec2(-holeF.w, holeF.z));
+              if (hu > holeR.x && hu < holeR.y && hv > holeR.z && hv < holeR.w) discard;
+            }
             vec2 ruv = (vWp.xz - rBox.xy) * rBox.zw;
             vec3 rm = texture2D(roadTex, ruv).rgb;
             float gm = texture2D(pathTex, ruv).r;

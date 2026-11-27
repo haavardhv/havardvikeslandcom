@@ -1,6 +1,6 @@
 # Grand Theft Cappes Vei 6
 
-A small open-world browser game set in the rain on Cappes vei 6, in Fjellet, Bergen. You play in third person as any of the five friends who live there, and switch between them like in GTA: get home from Bryggen, throw a party on the terrace, steal an e-scooter (with the radio on), and carry the last skillingsbolle in town home past a gang of seagulls.
+A small open-world browser game set in the rain on Cappes vei 6, in Fjellet, Bergen. You play in third person as any of the five friends who live there, and switch between them like in GTA: get home from Bryggen, throw a party on the terrace, steal one of the forty e-scooters parked around town (with the radio on) and drift it round the corners, and carry the last skillingsbolle in town home past a gang of seagulls.
 
 It is a separate site from the main "something great is coming" page and is meant to live on its own subdomain (for example `gtcv6.havardvikesland.com`).
 
@@ -17,10 +17,12 @@ It is a separate site from the main "something great is coming" page and is mean
 - **Streets that fit, from OpenStreetMap.** Widths come from `width`, then `lanes`, then a typical width for the kind of street; `surface` decides between asphalt, setts, paving and gravel; `sidewalk=*` adds pavements. The height of every street is solved over the whole network, so streets agree where they meet and run smoothly along their length, and the terrain is levelled to it. The streets are painted onto that terrain from two 50 cm textures, so what you see is exactly what you walk and ride on. Only steps keep their own treads. Street lamps, parked cars, benches, walls, fences and hedges come from OpenStreetMap or are placed along the streets.
 - **Weather** follows Bergen: rain showers come and go, with short sunny breaks. About 30 people are out on the streets around you, and 30 gulls sit on the quays and squares or circle overhead.
 - **Radio Fjellet 6.** Get on an e-scooter and the radio comes on, like a car radio in GTA. The station plays the game's theme song and four more songs on one global clock that keeps running while you are off the scooter: get off for ten seconds and the song is ten seconds further on when you get back on. Between the songs the DJ, Regnar, introduces them, with station IDs, outros and the news (the gull report, traffic, a party nobody has told the landlord about); the scripts are in [RADIO.md](RADIO.md). A second voice cuts in over the music when something happens while you ride: you crash, the sun comes out, the Måkealarm gets serious. It shows the station and song when you tune in. R turns it off and on.
-- **Måkealarm** is the wanted level, five seagull icons. Punch gulls or people and the gang dives at you. Hide indoors and the alarm drops faster.
+- **E-scooters all over town.** Forty of them: six at landmarks (Cappes vei, Domkirkeplassen, Torget, Fjellveien, Asylplassen, Bryggen) and the rest parked along the streets, at the side of the road and never on steps. They are placed from the street graph with a fixed seed, so they are in the same places every time. Hold Shift at speed to **drift**: the back wheel lets go, the scooter turns faster than it travels and slides, with a tyre squeal and spray off the wet street. Let go after a good drift for a burst of speed, and long drifts pay a few kroner.
+- **A pistol.** G draws it and puts it away. With it out, the camera moves over your right shoulder and shows a crosshair, and click (or F) fires where the crosshair points, on foot or from a moving scooter. Twelve rounds, then an automatic reload. Shots knock people over and gulls out of the air (+10 kr), make parked scooters jump, chip walls and splash in Vågen, and every shot startles the gulls nearby. Shooting people or gulls raises the Måkealarm.
+- **Måkealarm** is the wanted level, five seagull icons. Punch or shoot gulls or people and the gang dives at you. Hide indoors and the alarm drops faster.
 - **Five missions on real streets, offered as texts.** You start in free roam. The next story mission comes as a text from one of the housemates, which you accept with Y or put off with N. Missions that start somewhere show a marker and the GPS route. The missions: walk home from Bryggen, borrow the landlord's things around the house, steal an e-scooter and race the real route to the bakery on Torget, carry the last skillingsbolle home, then get dinner from Guangdong House before it closes. Story missions are Håvard's: switch back to him to get them. A GPS line on the minimap shows the route (A* over the OSM street graph), and the HUD shows which street you are on. There are also 14 lost umbrellas at real spots. Progress is saved in the browser's `localStorage`.
 
-Controls: WASD to move, mouse to look, Shift to run, Space to jump, click or F to punch, E to get on and off scooters, R for the radio, Q or 1–5 to switch character, Y/N to answer a mission text, Esc to pause. Phones and tablets get touch controls.
+Controls: WASD to move, mouse to look, Shift to run (and to drift on a scooter), Space to jump, click or F to punch (or shoot), G for the pistol, E to get on and off scooters, R for the radio, Q or 1–5 to switch character, Y/N to answer a mission text, Esc to pause. Phones and tablets get touch controls.
 
 ## Files
 
@@ -29,13 +31,13 @@ Plain static files with no build step. The only library is three.js, vendored.
 | File | What it is |
 | --- | --- |
 | `public/index.html`, `public/style.css` | Title screen, HUD, pause menu, touch controls |
-| `public/js/game.js` | Main loop, player and camera, character switching, scooters and the radio, seagull AI, pedestrians on the street graph, mission offers and missions, HUD, minimap and GPS |
+| `public/js/game.js` | Main loop, player and camera, character switching, scooters (drifting) and the radio, the pistol and particle effects, seagull AI, pedestrians on the street graph, mission offers and missions, HUD, minimap and GPS |
 | `public/js/buildings.js` | Facades, roofs (height fields over the footprint), courtyards, canopies, the shared texture atlas, and the 100 m level-of-detail tiles for buildings and streets |
 | `public/js/city.js` | Builds the town from the map data: terrain meshes (with the streets painted on), buildings, steps, trees, water, Fløibanen; polygon collision for buildings |
 | `public/js/house6.js` | Cappes vei 6, its side passage and terrace, in a local frame aligned with the real outline |
 | `public/js/physics.js` | One collision interface over terrain, building polygons and the house's local box world |
 | `public/js/engine.js` | Geometry batching and the box collision world used for the house |
-| `public/js/actors.js`, `textures.js`, `audio.js` | People (one skinned mesh and texture atlas each), seagulls, scooters and pickups; procedural textures; synthesised sound and the scooter radio |
+| `public/js/actors.js`, `textures.js`, `audio.js` | People (one skinned mesh and texture atlas each, with an aiming pose), seagulls, scooters, the pistol and pickups; procedural textures; synthesised sound and the scooter radio |
 | `public/audio/` | The radio's five songs (MP3, 128 kbps) and, in `radio/`, its talk (96 kbps mono), loaded only when first tuned in |
 | `public/img/people/` | Face and shirt textures for Håvard, Øystein, Theodor, Martin and Jaakko |
 | `public/data/` | The packed map: `map.json` (buildings, streets, trees, funicular, walking graph, the house's frame), `terrain.bin` (2.5 m grid, about 900 × 1010 m, streets levelled), `coarse.bin` (60 m grid for the mountains), `ground.bin` (ground types), `roads.png` and `paths.png` (the street surfaces at 50 cm) |

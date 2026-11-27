@@ -98,6 +98,16 @@ export class Audio {
     this.motorGain = c.createGain(); this.motorGain.gain.value = 0;
     this.motor.connect(mf).connect(this.motorGain).connect(this.master);
     this.motor.start();
+    // tyres sliding on wet setts while the scooter drifts: a hiss with a squeal in it
+    {
+      const s = c.createBufferSource(); s.buffer = buf; s.loop = true;
+      const f1 = c.createBiquadFilter(); f1.type = 'bandpass'; f1.frequency.value = 1900; f1.Q.value = 6;
+      const f2 = c.createBiquadFilter(); f2.type = 'highpass'; f2.frequency.value = 2500; f2.Q.value = 0.5;
+      this.skidGain = c.createGain(); this.skidGain.gain.value = 0;
+      s.connect(f1).connect(this.skidGain); s.connect(f2).connect(this.skidGain);
+      this.skidGain.connect(this.master);
+      s.start(0, Math.random() * 2);
+    }
     this.motorF = mf;
     // the scooter radio: a station that has been broadcasting since the game started, so getting
     // on a scooter tunes in mid-song (or mid-sentence), like the radio in a car. Two players take
@@ -224,6 +234,25 @@ export class Audio {
     this.motor.frequency.setTargetAtTime(70 + s * 22, t, 0.08);
     this.motorF.frequency.setTargetAtTime(500 + s * 90, t, 0.08);
   }
+  // 0..1, how hard the scooter is sliding
+  skid(amount) { if (this.ctx && this.skidGain) this.skidGain.gain.setTargetAtTime(Math.min(1, amount) * 0.09, this.ctx.currentTime, 0.05); }
+  // the pistol: a hard crack, a thump, and the echo off the houses across the street
+  shot() {
+    if (!this.ctx) return;
+    this._noise(0.09, 'highpass', 1800, 0.7, 0.55);
+    this._noise(0.22, 'lowpass', 900, 0.8, 0.5);
+    this._tone('square', 160, 45, 0.16, 0.22);
+    this._noise(0.35, 'bandpass', 700, 0.9, 0.09, 0.11);
+    this._noise(0.5, 'bandpass', 500, 0.9, 0.05, 0.26);
+  }
+  dryFire() { if (this.ctx) this._noise(0.03, 'highpass', 3000, 1, 0.12); }
+  reload() {
+    if (!this.ctx) return;
+    this._noise(0.05, 'bandpass', 2400, 3, 0.18, 0.05);
+    this._noise(0.05, 'bandpass', 1800, 3, 0.2, 0.75);
+    this._noise(0.04, 'bandpass', 3200, 4, 0.18, 0.95);
+  }
+  ricochet() { if (this.ctx) { this._tone('sine', 3200, 1400, 0.22, 0.04, 0.02); this._noise(0.05, 'bandpass', 2500, 2, 0.08); } }
   _noise(dur, type, f, q, gain, when = 0) {
     const c = this.ctx, t = c.currentTime + when;
     const s = c.createBufferSource(); s.buffer = this.noise;

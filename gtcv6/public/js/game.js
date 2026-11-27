@@ -4,7 +4,7 @@ import { buildTextures, textTexture } from './textures.js';
 import { loadMapData, buildCity } from './city.js';
 import { buildHouse6 } from './house6.js';
 import { Physics } from './physics.js';
-import { Humanoid, Gull, makeScooter, makeItem, makeMarker, makeArrow, PEOPLE } from './actors.js';
+import { Humanoid, Gull, makeScooter, makeItem, makeMarker, makeArrow, makePistol, PEOPLE } from './actors.js';
 import { Audio } from './audio.js';
 
 const $ = id => document.getElementById(id);
@@ -159,8 +159,9 @@ const cityMats = {
 };
 const city = buildCity(scene, map, T, {
   ...cityMats,
-  // the rendered terrain is lowered around the house so it never shows inside it
-  carve: (x, z) => { const [u, v] = W2L(x, z); return (u > -2.6 && u < 10.6 && v > -2.6 && v < 8.4) ? H.FL - 0.5 : null; },
+  // the rendered ground is cut away over the house and its side passage, so it never shows inside
+  // them; everywhere else, the street in front of the door included, it keeps its real height
+  hole: { o: [OX, OZ], u: [HUX, HUZ], v: [HVX, HVZ], r: [-1.3, 8.05, 0.02, H.D + 0.05] },
   keepClear: (x, z) => { const [u, v] = W2L(x, z); return u > -4 && u < 12 && v > -4 && v < 14; },
 });
 // the house, its side passage and the terrace replace the ground there
@@ -349,7 +350,7 @@ const camBox = new THREE.Vector3();
 function updateCamera(dt) {
   const p = player.pos;
   const inside = inHouse(p);
-  const want = player.riding ? 5.6 : inside ? 2.5 : 4.6;
+  const want = lerp(player.riding ? 5.6 : inside ? 2.5 : 4.6, 3.1, gun.aimK);
   cam.dist = damp(cam.dist, want, 3, dt);
   const baseFov = camera.aspect < 0.8 ? 78 : 64;
   const fov = damp(camera.fov, inside ? baseFov + 14 : baseFov, 3, dt);
@@ -360,6 +361,8 @@ function updateCamera(dt) {
     cam.pitch = damp(cam.pitch, 0.28, 2, dt);
   }
   const pivot = _v.set(p.x, p.y + (player.knockT > 0 ? 0.6 : 1.55), p.z);
+  // over the right shoulder while the pistol is out
+  if (gun.aimK > 0.01) { pivot.x += Math.cos(cam.yaw) * 0.55 * gun.aimK; pivot.z -= Math.sin(cam.yaw) * 0.55 * gun.aimK; pivot.y += 0.05 * gun.aimK; }
   _dir.set(Math.sin(cam.yaw) * Math.cos(cam.pitch), Math.sin(cam.pitch), Math.cos(cam.yaw) * Math.cos(cam.pitch));
   const hit = world.raycast(pivot, _dir, cam.dist + 0.3);
   const d = Math.max(0.35, Math.min(cam.dist, hit - 0.3));
@@ -383,7 +386,7 @@ function updateCamera(dt) {
 
 // ------------------------------------------------------------------ input
 const keys = {};
-const pressed = { jump: false, punch: false, use: false, radio: false };
+const pressed = { jump: false, punch: false, use: false, radio: false, gun: false };
 const touch = { mx: 0, my: 0, run: false, stickId: null, lookId: null, sx: 0, sy: 0, lx: 0, ly: 0 };
 let locked = false;
 addEventListener('keydown', e => {
@@ -394,6 +397,7 @@ addEventListener('keydown', e => {
     if (e.code === 'KeyE' || e.code === 'Enter') pressed.use = true;
     if (e.code === 'KeyF') pressed.punch = true;
     if (e.code === 'KeyR') pressed.radio = true;
+    if (e.code === 'KeyG') pressed.gun = true;
     if (e.code === 'KeyY' && offer && !offer.accepted) acceptOffer();
     if (e.code === 'KeyN' && offer && !offer.accepted) declineOffer();
     if (e.code === 'KeyQ' || e.code === 'Tab') { openWheel(!wheelOpen); e.preventDefault(); }
@@ -491,8 +495,9 @@ function moveInput() {
 const hud = {
   money: $('money'), alarm: $('alarm'), health: $('health').firstElementChild, timer: $('timer'),
   objective: $('objective'), prompt: $('prompt'), phone: $('phone'), toast: $('toast'), banner: $('banner'),
-  umbrellas: $('umbrellas'), street: $('street'),
+  umbrellas: $('umbrellas'), street: $('street'), crosshair: $('crosshair'), ammo: $('ammo'),
 };
+const punchBtn = document.querySelector('#touch [data-k="punch"]');
 const gullSvg = '<svg viewBox="0 0 32 18" aria-hidden="true"><path d="M1 6c5-3 10-2 15 4 5-6 10-7 15-4-4 0-9 3-11 8l-4 1-4-1C10 9 5 6 1 6z"/></svg>';
 hud.alarm.innerHTML = gullSvg.repeat(5);
 let shownMoney = save.money;
@@ -840,10 +845,44 @@ addScooter(-425, -205, 2.5);          // Torget
 addScooter(40, -265, -1.2);           // Fjellveien, by the funicular halt
 addScooter(-58, 40, 0.8);             // Asylplassen
 addScooter(-552, -410, 0.8);          // Bryggen
+// and plenty more, parked along the streets all over town (the same spots every time): at a
+// street node, a little to the side, along the street, never on steps, in the sea or in a wall
+{
+  let seed = 12345;
+  const rnd = () => ((seed = (seed * 16807) % 2147483647) - 1) / 2147483646;
+  const cand = [];
+  for (let i = 0; i < gAdj.length; i++) if (gAdj[i].length) cand.push(i);
+  for (let i = cand.length - 1; i > 0; i--) { const j = Math.floor(rnd() * (i + 1)); [cand[i], cand[j]] = [cand[j], cand[i]]; }
+  const probe = new THREE.Vector3();
+  let added = 0;
+  for (const i of cand) {
+    if (added >= 34) break;
+    const j = gAdj[i][0], ex = gx(j) - gx(i), ez = gz(j) - gz(i), el = Math.hypot(ex, ez);
+    if (el < 3) continue;
+    const side = rnd() < 0.5 ? -1 : 1;
+    const x = gx(i) - ez / el * 1.6 * side, z = gz(i) + ex / el * 1.6 * side;
+    if (x < AX0 + 20 || x > AX1 - 20 || z < AZ0 + 20 || z > AZ1 - 20) continue;
+    const kind = city.onRoad(x, z);
+    if (!kind || kind === 'steps' || city.onSteps(x, z)) continue;
+    if (city.terrain.height(x, z) < 1 || inHouse({ x, y: 30, z })) continue;
+    const W = W2L(x, z); if (W[0] > -6 && W[0] < 14 && W[1] > -6 && W[1] < 16) continue;
+    if (scooters.some(s => Math.hypot(s.pos.x - x, s.pos.z - z) < 38)) continue;
+    const y = world.floorAt(x, z, 200, 300);
+    if (!(y > -50)) continue;
+    probe.set(x, y, z);
+    if (world.collide(probe, 0.45, 1.5, 0.3)) continue;
+    addScooter(x, z, Math.atan2(ex, ez) + (rnd() < 0.5 ? 0 : Math.PI));
+    added++;
+  }
+}
 const scInfo = {};
 function updateScooter(s, dt, input) {
-  const fwd = _v2.set(Math.sin(s.heading), 0, Math.cos(s.heading));
   const ridden = player.riding === s;
+  // parked and still: nothing to simulate until someone rides it or shoots it
+  if (!ridden && s.asleep) return false;
+  if (s.vdir === undefined) s.vdir = s.heading;
+  // the scooter points along `heading` but travels along `vdir`: they only part in a drift
+  const fwd = _v2.set(Math.sin(s.vdir), 0, Math.cos(s.vdir));
   // ground and slope
   const fl = world.floorAt(s.pos.x, s.pos.z, s.pos.y + 0.1, 0.5, scInfo);
   const onStairs = (scInfo.block && scInfo.block.stairs) || city.onSteps(s.pos.x, s.pos.z);
@@ -854,18 +893,44 @@ function updateScooter(s, dt, input) {
     const hb = world.floorAt(s.pos.x - fwd.x * 0.6, s.pos.z - fwd.z * 0.6, s.pos.y + 0.6, 0.9);
     if (hf > -50 && hb > -50) slope = (hf - hb) / 1.2;
   }
+  // Drift: hold Shift (Run) at speed and the back wheel lets go. The scooter turns faster than it
+  // travels, so it slides sideways; let go of Shift after a good drift for a burst of speed.
+  const drifting = ridden && grounded && input.run && s.speed > 4 && !onStairs;
+  if (drifting && !s.drifting) s.driftT = 0;
+  s.drifting = drifting;
   if (ridden && grounded) {
     const thr = input.y;
     if (thr > 0) s.speed += thr * (s.speed < 0 ? 12 : 5.5) * dt;
     else if (thr < 0) s.speed += thr * (s.speed > 0.5 ? 11 : 3) * dt;
-    const turn = 2.3 * clamp(Math.abs(s.speed) / 3, 0.25, 1) * (s.speed < 0 ? -1 : 1);
+    const turn = 2.3 * clamp(Math.abs(s.speed) / 3, 0.25, 1) * (s.speed < 0 ? -1 : 1) * (drifting ? 1.75 : 1);
     s.heading -= input.x * turn * dt;
-    s.lean = damp(s.lean, -input.x * clamp(s.speed / 10, 0, 1) * 0.35, 6, dt);
+    s.lean = damp(s.lean, -input.x * clamp(s.speed / 10, 0, 1) * (drifting ? 0.6 : 0.35), 6, dt);
   } else s.lean = damp(s.lean, 0, 6, dt);
+  // grip: the direction of travel follows where the scooter points, slowly while drifting
+  const slip = angDiff(s.vdir, s.heading);
+  s.vdir += slip * Math.min(1, dt * (drifting ? 1.5 : grounded ? 14 : 2));
+  if (s.speed < 0.5) s.vdir = s.heading;
+  // never more than about 40 degrees sideways: past that a scooter would just fall over
+  { const sl = angDiff(s.vdir, s.heading); if (Math.abs(sl) > 0.7) s.vdir = s.heading - Math.sign(sl) * 0.7; }
+  s.slip = angDiff(s.vdir, s.heading);
+  if (drifting) {
+    s.speed *= 1 - Math.min(0.9, Math.abs(Math.sin(s.slip))) * 0.55 * dt;   // sliding scrubs speed
+    if (Math.abs(s.slip) > 0.2) s.driftT += dt;
+  } else if (ridden && s.driftT > 0) {
+    // let go after a proper drift: a boost, bigger for longer drifts
+    if (s.driftT > 0.6 && grounded) {
+      const b = Math.min(4, 1.2 + s.driftT * 1.4);
+      s.speed += b; s.boostT = 1.3;
+      audio.start2(); cam.shake = Math.max(cam.shake, 0.25);
+      if (s.driftT > 1.5) { save.money += Math.round(s.driftT * 2); toast(`Drift! ${s.driftT.toFixed(1)} s  +${Math.round(s.driftT * 2)} kr`, 1.6); }
+    }
+    s.driftT = 0;
+  }
+  s.boostT = Math.max(0, (s.boostT || 0) - dt);
   if (grounded) {
     s.speed -= slope * 9.8 * 0.55 * dt;
     s.speed *= 1 - (ridden && input.y !== 0 ? 0.25 : 0.9) * dt;
-    const maxS = onStairs ? 4.5 : 12.5;
+    const maxS = onStairs ? 4.5 : 12.5 + (s.boostT > 0 ? 4 : 0);
     s.speed = clamp(s.speed, -3, maxS);
     if (onStairs && Math.abs(s.speed) > 1.5 && ridden) { cam.shake = Math.max(cam.shake, 0.35); if (Math.random() < dt * 8) audio.bump(); }
   }
@@ -897,6 +962,10 @@ function updateScooter(s, dt, input) {
   s.tilt = damp(s.tilt, -Math.atan(slope), 10, dt);
   s.obj.position.copy(s.pos);
   s.obj.rotation.set(s.tilt, s.heading, s.lean, 'YXZ');
+  if (!ridden) {
+    if (Math.abs(s.speed) < 0.05) s.speed = 0;
+    s.asleep = s.speed === 0 && s.vy === 0 && s.pos.y <= fl2 + 1e-3;
+  } else s.asleep = false;
   return crashed;
 }
 
@@ -1166,6 +1235,181 @@ function updatePlaces(dt, time) {
   }
 }
 
+// ------------------------------------------------------------------ effects: sparks, dust, feathers, spray
+// One Points object for every small particle in the game, plus a tracer and a muzzle flash.
+const FX_N = 400;
+const fx = {
+  pos: new Float32Array(FX_N * 3), col: new Float32Array(FX_N * 3),
+  vel: new Float32Array(FX_N * 3), life: new Float32Array(FX_N), max: new Float32Array(FX_N), grav: new Float32Array(FX_N), next: 0,
+};
+const fxGeo = new THREE.BufferGeometry();
+fxGeo.setAttribute('position', new THREE.BufferAttribute(fx.pos, 3).setUsage(THREE.DynamicDrawUsage));
+fxGeo.setAttribute('color', new THREE.BufferAttribute(fx.col, 3).setUsage(THREE.DynamicDrawUsage));
+fxGeo.boundingSphere = new THREE.Sphere(new THREE.Vector3(), 1e6);
+const fxPoints = new THREE.Points(fxGeo, new THREE.PointsMaterial({ size: 0.09, vertexColors: true, sizeAttenuation: true, transparent: true, depthWrite: false }));
+fxPoints.frustumCulled = false;
+scene.add(fxPoints);
+for (let i = 0; i < FX_N; i++) fx.pos[i * 3 + 1] = -1e5;
+const _fc = new THREE.Color();
+function emit(p, n, { color = 0xbbbbbb, speed = 2, up = 1, spread = 1, life = 0.6, grav = 9.8, dir = null } = {}) {
+  _fc.set(color);
+  for (let k = 0; k < n; k++) {
+    const i = fx.next; fx.next = (fx.next + 1) % FX_N;
+    fx.pos[i * 3] = p.x; fx.pos[i * 3 + 1] = p.y; fx.pos[i * 3 + 2] = p.z;
+    let vx = (Math.random() - 0.5) * 2 * spread, vy = Math.random() * up, vz = (Math.random() - 0.5) * 2 * spread;
+    if (dir) { vx += dir.x; vy += dir.y; vz += dir.z; }
+    fx.vel[i * 3] = vx * speed; fx.vel[i * 3 + 1] = vy * speed; fx.vel[i * 3 + 2] = vz * speed;
+    const sh = 0.8 + Math.random() * 0.4;
+    fx.col[i * 3] = _fc.r * sh; fx.col[i * 3 + 1] = _fc.g * sh; fx.col[i * 3 + 2] = _fc.b * sh;
+    fx.life[i] = fx.max[i] = life * (0.6 + Math.random() * 0.8); fx.grav[i] = grav;
+  }
+}
+const tracer = new THREE.Mesh(new THREE.BoxGeometry(0.018, 0.018, 1).translate(0, 0, 0.5),
+  new THREE.MeshBasicMaterial({ color: 0xffe7a0, transparent: true, opacity: 0.9, blending: THREE.AdditiveBlending, depthWrite: false, fog: false }));
+tracer.visible = false; tracer.frustumCulled = false;
+scene.add(tracer);
+const flashTex = (() => {
+  const c = document.createElement('canvas'); c.width = c.height = 64;
+  const g = c.getContext('2d'), gr = g.createRadialGradient(32, 32, 0, 32, 32, 32);
+  gr.addColorStop(0, 'rgba(255,250,220,1)'); gr.addColorStop(0.3, 'rgba(255,190,80,0.9)'); gr.addColorStop(1, 'rgba(255,120,20,0)');
+  g.fillStyle = gr; g.fillRect(0, 0, 64, 64);
+  const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; return t;
+})();
+const muzzleFlash = new THREE.Sprite(new THREE.SpriteMaterial({ map: flashTex, blending: THREE.AdditiveBlending, depthWrite: false, fog: false }));
+muzzleFlash.visible = false; muzzleFlash.scale.setScalar(0.45);
+scene.add(muzzleFlash);
+let tracerT = 0, flashT = 0;
+function updateFx(dt) {
+  for (let i = 0; i < FX_N; i++) {
+    if (fx.life[i] <= 0) continue;
+    fx.life[i] -= dt;
+    if (fx.life[i] <= 0) { fx.pos[i * 3 + 1] = -1e5; continue; }
+    fx.vel[i * 3 + 1] -= fx.grav[i] * dt;
+    fx.pos[i * 3] += fx.vel[i * 3] * dt; fx.pos[i * 3 + 1] += fx.vel[i * 3 + 1] * dt; fx.pos[i * 3 + 2] += fx.vel[i * 3 + 2] * dt;
+  }
+  fxGeo.attributes.position.needsUpdate = true;
+  fxGeo.attributes.color.needsUpdate = true;
+  tracerT -= dt; flashT -= dt;
+  tracer.visible = tracerT > 0; if (tracer.visible) tracer.material.opacity = tracerT / 0.07 * 0.9;
+  muzzleFlash.visible = flashT > 0;
+}
+
+// ------------------------------------------------------------------ the pistol
+// G draws and holsters it. With it drawn, click (or F) fires where the crosshair points, on foot
+// or from a moving scooter. Twelve rounds, then a reload. Hits knock people over and gulls out
+// of the air, and every shot startles the town: the Måkealarm goes up.
+const gun = { drawn: false, ammo: 12, mag: 12, reloadT: 0, cd: 0, obj: makePistol(), aimK: 0 };
+gun.obj.visible = false;
+player.fig.elbows[0].add(gun.obj);
+const _ro = new THREE.Vector3(), _rd = new THREE.Vector3(), _mz = new THREE.Vector3(), _tp = new THREE.Vector3(), _hp = new THREE.Vector3();
+function toggleGun(on = !gun.drawn) {
+  if (on && player.carrying) { toast('Put that down first', 1.5); return; }
+  gun.drawn = on;
+  gun.obj.visible = on;
+  if (!on) player.fig.aim = null;
+  audio.reload();
+  if (on && !save.gunHint) { save.gunHint = true; persist(); toast(isTouch ? 'Pistol out. Shoot to fire, Gun to put it away.' : 'Pistol out. Click to shoot, G to put it away.', 3.5); }
+}
+// distance along the ray (origin o, unit direction d) to a sphere, or Infinity
+function raySphere(o, d, c, r) {
+  const ox = c.x - o.x, oy = c.y - o.y, oz = c.z - o.z;
+  const t = ox * d.x + oy * d.y + oz * d.z;
+  if (t < 0) return Infinity;
+  const q = ox * ox + oy * oy + oz * oz - t * t;
+  return q < r * r ? t - Math.sqrt(r * r - q) : Infinity;
+}
+// distance along the ray to an upright capsule (a person), or Infinity
+function rayPerson(o, d, p, r = 0.38) {
+  let best = Infinity;
+  for (const h of [0.35, 0.8, 1.2, 1.55]) best = Math.min(best, raySphere(o, d, _tp.set(p.x, p.y + h, p.z), h > 1.5 ? 0.22 : r));
+  return best;
+}
+function shoot() {
+  if (gun.cd > 0 || gun.reloadT > 0 || player.knockT > 0) return;
+  if (gun.ammo <= 0) { audio.dryFire(); gun.cd = 0.25; startReload(); return; }
+  gun.ammo--; gun.cd = 0.2;
+  player.fig.recoil();
+  audio.shot();
+  cam.shake = Math.max(cam.shake, 0.22);
+  // the ray from the camera through the crosshair, starting at the player so nothing behind counts
+  camera.getWorldDirection(_rd);
+  _ro.copy(camera.position);
+  const skip = Math.max(0, (player.pos.x - _ro.x) * _rd.x + (player.pos.y + 1.4 - _ro.y) * _rd.y + (player.pos.z - _ro.z) * _rd.z);
+  _ro.addScaledVector(_rd, skip);
+  const RANGE = 110;
+  let tHit = world.raycast(_ro, _rd, RANGE), what = null;
+  for (const a of gulls) {
+    if (a.state === 'knocked' || a.pos.distanceToSquared(_ro) > RANGE * RANGE) continue;
+    const t = raySphere(_ro, _rd, a.pos, a.state === 'ground' ? 0.45 : 0.75);
+    if (t < tHit) { tHit = t; what = { gull: a }; }
+  }
+  for (const n of npcs) {
+    if (n.active || n.party || !n.fig.root.visible || n.downT > 0) continue;
+    const t = rayPerson(_ro, _rd, n.pos);
+    if (t < tHit) { tHit = t; what = { npc: n }; }
+  }
+  for (const sc of scooters) {
+    if (sc === player.riding) continue;
+    const t = raySphere(_ro, _rd, _tp.set(sc.pos.x, sc.pos.y + 0.45, sc.pos.z), 0.5);
+    if (t < tHit) { tHit = t; what = { scooter: sc }; }
+  }
+  const hitP = _hp.copy(_ro).addScaledVector(_rd, Math.min(tHit, RANGE));
+  // tracer and flash from the muzzle
+  gun.obj.userData.muzzle.getWorldPosition(_mz);
+  muzzleFlash.position.copy(_mz); muzzleFlash.material.rotation = Math.random() * 6; flashT = 0.05;
+  tracer.position.copy(_mz); tracer.lookAt(hitP); tracer.scale.set(1, 1, Math.max(0.1, _mz.distanceTo(hitP))); tracerT = 0.07;
+  emit(_mz, 3, { color: 0xffd080, speed: 1.2, up: 0.5, life: 0.12, grav: 0 });
+  // everyone nearby hears it: gulls on the ground take off, and the alarm goes up
+  for (const a of gulls) if (a.state === 'ground' && a.pos.distanceTo(player.pos) < 30) { a.state = 'takeoff'; a.t = 1.2; a.vel.set(a.pos.x - player.pos.x, 4, a.pos.z - player.pos.z).normalize().multiplyScalar(6); }
+  const calm = mission && mission.def.noPunchAlarm;
+  if (!what) {
+    if (tHit >= RANGE) return;
+    if (hitP.y < 0.4 && world.terrain.height(hitP.x, hitP.z) < -0.3) emit(hitP, 14, { color: 0xdfe9ee, speed: 2.5, up: 1.6, spread: 0.3, life: 0.6 });   // Vågen
+    else { emit(hitP, 10, { color: 0xa9a49a, speed: 1.8, up: 1, spread: 0.6, life: 0.5 }); emit(hitP, 4, { color: 0xffc860, speed: 3, up: 1, spread: 1, life: 0.15, grav: 4 }); if (Math.random() < 0.3) audio.ricochet(); }
+    return;
+  }
+  if (what.gull) {
+    const a = what.gull;
+    if (a.carry) { dropBolleAt(a.pos.clone().setY(world.floorAt(a.pos.x, a.pos.z, a.pos.y)), a); a.carry = null; }
+    a.state = 'knocked'; a.t = 1.8;
+    a.vel.set(_rd.x * 7, 2.5, _rd.z * 7);
+    emit(a.pos, 16, { color: 0xf4f4f0, speed: 1.6, up: 1.2, spread: 1, life: 1.3, grav: 1.2 });   // feathers
+    audio.squawk();
+    save.money += 10;
+    if (!calm) raiseAlarm(1);
+  } else if (what.npc) {
+    const n = what.npc;
+    knockNpc(n, player.pos);
+    n.downT = 5;
+    emit(hitP, 8, { color: 0xd9d4c8, speed: 1.4, up: 1, spread: 0.7, life: 0.4 });
+    audio.punch();
+    raiseAlarm(2);
+  } else if (what.scooter) {
+    const sc = what.scooter;
+    sc.asleep = false; sc.vy = 2.5; sc.speed += 1.5 * Math.sign(_rd.x * Math.sin(sc.heading) + _rd.z * Math.cos(sc.heading) || 1);
+    emit(hitP, 8, { color: 0xffc860, speed: 3, up: 1, spread: 1, life: 0.15, grav: 4 });
+    audio.ricochet();
+  }
+}
+function startReload() {
+  if (gun.reloadT > 0 || gun.ammo === gun.mag) return;
+  gun.reloadT = 1.3;
+  audio.reload();
+}
+function updateGun(dt) {
+  gun.cd -= dt;
+  if (gun.reloadT > 0) { gun.reloadT -= dt; if (gun.reloadT <= 0) gun.ammo = gun.mag; }
+  if (gun.drawn && (player.carrying || state.mode !== 'play')) { if (player.carrying) toggleGun(false); }
+  const aiming = gun.drawn && state.mode === 'play' && player.knockT <= 0;
+  gun.aimK = damp(gun.aimK, aiming && !player.riding && !inHouse(player.pos) ? 1 : 0, 10, dt);
+  if (aiming) {
+    // the arm points where the crosshair does: pitch from the camera, yaw relative to the body
+    camera.getWorldDirection(_rd);
+    const yaw = Math.atan2(_rd.x, _rd.z);
+    player.fig.aim = { pitch: clamp(Math.asin(clamp(_rd.y, -1, 1)) + 0.06, -0.9, 1.0), yaw: angDiff(player.heading, yaw) };
+  } else if (player.fig.aim) player.fig.aim = null;
+}
+
 // ------------------------------------------------------------------ punch
 function doPunch() {
   if (player.punchCd > 0 || player.knockT > 0 || player.riding) return;
@@ -1224,7 +1468,8 @@ function updatePlayer(dt) {
       if (s) mount(s);
     }
   }
-  if (pressed.punch) doPunch();
+  if (pressed.gun) toggleGun();
+  if (pressed.punch) { if (gun.drawn) shoot(); else doPunch(); }
 
   if (player.riding) {
     const s = player.riding;
@@ -1266,7 +1511,8 @@ function updatePlayer(dt) {
     v.x = damp(v.x, tvx, accel * (player.knockT > 0 ? 0.3 : 1), dt);
     v.z = damp(v.z, tvz, accel * (player.knockT > 0 ? 0.3 : 1), dt);
   }
-  if (mag > 0.1 && control) player.heading += angDiff(player.heading, Math.atan2(mx, mz)) * Math.min(1, dt * 12);
+  if (gun.aimK > 0.5 && control) player.heading += angDiff(player.heading, cam.yaw + Math.PI) * Math.min(1, dt * 15);   // face where you aim
+  else if (mag > 0.1 && control) player.heading += angDiff(player.heading, Math.atan2(mx, mz)) * Math.min(1, dt * 12);
   if (pressed.jump && player.onGround && control) { v.y = 6.4; player.onGround = false; audio.jump(); }
   pressed.jump = false;
   v.y -= 19 * dt;
@@ -1324,7 +1570,7 @@ function nearestScooter(r) {
 }
 function mount(s) {
   player.riding = s;
-  s.speed = 0;
+  s.speed = 0; s.driftT = 0; s.drifting = false; s.asleep = false; s.vdir = s.heading;
   player.vel.set(0, 0, 0);
   audio.start2();
   if (!s.stolen) { s.stolen = true; toast('Grand Theft Sparkesykkel'); save.money += 0; }
@@ -1541,7 +1787,7 @@ const MISSIONS = [
       m.step = 0; m.cp = 0;
       m.len = planCheckpoints();
       const s = scooters[0];
-      s.pos.set(SC_HOME[0], 0, SC_HOME[1]); s.heading = Math.atan2(HUX, HUZ); s.speed = 0; s.pos.y = world.floorAt(SC_HOME[0], SC_HOME[1], 300);
+      s.pos.set(SC_HOME[0], 0, SC_HOME[1]); s.heading = s.vdir = Math.atan2(HUX, HUZ); s.speed = 0; s.vy = 0; s.asleep = false; s.pos.y = world.floorAt(SC_HOME[0], SC_HOME[1], 300);
     },
     update(m) {
       if (m.step === 0) {
@@ -1894,6 +2140,8 @@ function swapTo(id) {
   if (nw.bubble) { nw.fig.root.remove(nw.bubble); nw.bubble = null; }
   player.fig = nw.fig;
   nw.fig.elbows[0].add(carryHold);
+  nw.fig.elbows[0].add(gun.obj);
+  old.fig.aim = null;
   player.pos.copy(nw.pos); player.vel.set(0, 0, 0); player.heading = nw.heading;
   player.knockT = 0; player.health = 100;
   cam.yaw = nw.heading + Math.PI; cam.pitch = 0.3; cam.cur = cam.dist = 4.4;
@@ -2095,7 +2343,7 @@ function frame(now) {
   let dt = Math.min(0.05, (now - last) / 1000);
   last = now;
   time += dt;
-  if (state.mode === 'pause') { pressed.jump = pressed.punch = pressed.use = pressed.radio = false; renderer.render(scene, camera); return; }
+  if (state.mode === 'pause') { pressed.jump = pressed.punch = pressed.use = pressed.radio = pressed.gun = false; audio.skid(0); renderer.render(scene, camera); return; }
 
   updateWeather(dt);
   skyU.time.value = time;
@@ -2106,7 +2354,7 @@ function frame(now) {
     updateTitleCam(time);
   } else {
     if (state.mode === 'play' || state.mode === 'dead' || state.mode === 'cut' || state.mode === 'switch') {
-      if (state.mode === 'play') updatePlayer(dt);
+      if (state.mode === 'play') { updateGun(dt); updatePlayer(dt); }
       else if (!window.__director) player.fig.animate(dt, 0, state.mode === 'dead' ? 'down' : state.mode === 'switch' ? 'idle' : 'walk');
       for (const s of scooters) if (s !== player.riding) updateScooter(s, dt, { x: 0, y: 0 });
       updateDoors(dt);
@@ -2142,9 +2390,22 @@ function frame(now) {
     let prompt = '';
     if (state.mode === 'play' && !player.riding) { const s = nearestScooter(1.7); if (s) prompt = `<kbd>${isTouch ? 'E' : 'E'}</kbd>${s.stolen ? 'Ride e-scooter' : 'Steal e-scooter'}`; }
     else if (state.mode === 'play' && player.riding && Math.abs(player.riding.speed) < 1) prompt = '<kbd>E</kbd>Get off';
+    else if (state.mode === 'play' && player.riding && player.riding.speed > 5 && !save.driftHint) prompt = `<kbd>${isTouch ? 'Run' : 'Shift'}</kbd>Hold to drift`;
+    if (player.riding && player.riding.driftT > 1 && !save.driftHint) { save.driftHint = true; persist(); }
     hud.prompt.hidden = !prompt;
     if (prompt && hud.prompt.innerHTML !== prompt) hud.prompt.innerHTML = prompt;
     audio.update(weather.rain, inHouse(camera.position), player.riding ? Math.abs(player.riding.speed) : 0);
+    {
+      const r = player.riding, slide = r && r.drifting && state.mode === 'play' ? Math.min(1, Math.abs(Math.sin(r.slip)) * 2.2) : 0;
+      audio.skid(slide);
+      // spray off the back wheel on the wet street
+      if (slide > 0.2) emit(_v.set(r.pos.x - Math.sin(r.heading) * 0.45, r.pos.y + 0.08, r.pos.z - Math.cos(r.heading) * 0.45), Math.ceil(slide * 3),
+        { color: 0xcfd8dc, speed: 1.6, up: 1.2, spread: 0.6, life: 0.45, dir: _v2.set(-Math.sin(r.vdir) * 0.6, 0.3, -Math.cos(r.vdir) * 0.6) });
+    }
+    hud.crosshair.hidden = !(gun.drawn && state.mode === 'play');
+    hud.ammo.hidden = !gun.drawn || state.mode !== 'play';
+    if (gun.drawn) { const t = gun.reloadT > 0 ? 'Reloading…' : `${gun.ammo} / ${gun.mag}`; if (hud.ammo.textContent !== t) hud.ammo.textContent = t; }
+    if (punchBtn) { const t = gun.drawn ? 'Shoot' : 'Punch'; if (punchBtn.textContent !== t) punchBtn.textContent = t; }
     // the radio plays while you ride; R turns it off and on
     if (pressed.radio && player.riding && state.mode === 'play') {
       save.radio = !save.radio; persist();
@@ -2155,7 +2416,8 @@ function frame(now) {
     radioReact();
     if (radioT > 0) { radioT -= dt; if (radioT <= 0 || !player.riding) { $('radio').hidden = true; radioT = 0; } }
   }
-  pressed.jump = pressed.punch = pressed.use = pressed.radio = false;
+  pressed.jump = pressed.punch = pressed.use = pressed.radio = pressed.gun = false;
+  updateFx(dt);
 
   updateMates(dt);
   updateNpcs(dt);
@@ -2204,4 +2466,4 @@ $('play').disabled = false;
 $('play').textContent = save.mission > 0 ? (save.mission >= MISSIONS.length ? 'Free roam' : 'Continue') : 'Play';
 
 // debug hooks for testing
-window.__gt = { gameTime: () => time, audio, switchTo, swapTo, mates: () => housemates, active: () => active, OUT_SPOTS, offer: () => offer, acceptOffer, declineOffer, makeOffer, scene, renderer, camera, player, cam, world, state, startMission, save, weather, scooters, gulls, mission: () => mission, startGame, raiseAlarm, ending, L2V, L2W, W2L, H, house, city, route, BAKERY, CHECKPOINTS: () => CHECKPOINTS, inHouse, housemates, PLACES, hitPlayer, dropBolle, bolle: () => ({ drop: bolleDrop, carrying: !!player.carrying }) };
+window.__gt = { gameTime: () => time, gun, shoot, toggleGun, npcs, audio, switchTo, swapTo, mates: () => housemates, active: () => active, OUT_SPOTS, offer: () => offer, acceptOffer, declineOffer, makeOffer, scene, renderer, camera, player, cam, world, state, startMission, save, weather, scooters, gulls, mission: () => mission, startGame, raiseAlarm, ending, L2V, L2W, W2L, H, house, city, route, BAKERY, CHECKPOINTS: () => CHECKPOINTS, inHouse, housemates, PLACES, hitPlayer, dropBolle, bolle: () => ({ drop: bolleDrop, carrying: !!player.carrying }) };

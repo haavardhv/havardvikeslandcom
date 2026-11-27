@@ -221,6 +221,8 @@ export class Humanoid {
     }
     this.phase = Math.random() * 10;
     this.punchT = 0;
+    this.aim = null;          // { pitch, yaw }: the right arm points the pistol (pitch up, yaw relative to the body)
+    this.recoilT = 0;
     this.state = 'idle';
   }
   // speed in m/s, state: idle | walk | jump | ride | down | sit | wave
@@ -257,7 +259,15 @@ export class Humanoid {
       lean += 0.12 * k;
       this.torso.rotation.y = -0.45 * k;
     } else this.torso.rotation.y *= 0.8;
-    const Lp = (a, b) => a + (b - a) * Math.min(1, dt * 14);
+    // aiming the pistol with the right arm (arms[0]), the torso turned towards the target
+    if (this.aim && state !== 'down') {
+      this.recoilT = Math.max(0, this.recoilT - dt);
+      const kick = Math.sin(Math.min(1, this.recoilT / 0.12) * Math.PI) * 0.35;
+      aL = -Math.PI / 2 - this.aim.pitch - kick; eL = -0.05 + kick * 0.5; aLz = 0.05;
+      if (state !== 'ride') lean = Math.min(lean, 0.06);
+      this.torso.rotation.y += (Math.max(-1.3, Math.min(1.3, this.aim.yaw)) - this.torso.rotation.y) * Math.min(1, dt * 18);
+    } else if (this.punchT <= 0 && Math.abs(this.torso.rotation.y) > 1e-3) this.torso.rotation.y *= 0.8;
+    const Lp = (a, b) => a + (b - a) * Math.min(1, dt * (this.aim ? 30 : 14));
     this.legs[0].rotation.x = Lp(this.legs[0].rotation.x, lL);
     this.legs[1].rotation.x = Lp(this.legs[1].rotation.x, lR);
     this.knees[0].rotation.x = Lp(this.knees[0].rotation.x, kL);
@@ -273,6 +283,27 @@ export class Humanoid {
     this.head.rotation.y = Math.sin(this.phase * 0.21) * 0.12;
   }
   punch() { this.punchT = 0.28; }
+  recoil() { this.recoilT = 0.12; }
+}
+
+// ---------------------------------------------------------------------------
+// A black pistol for the right hand. Built along the forearm: with the arm held straight out,
+// local -y points down the barrel and +z is the top of the slide. `muzzle` marks the barrel's end.
+export function makePistol() {
+  const g = new THREE.Group();
+  const black = mat(0x1a1b1d, { roughness: 0.35, metalness: 0.7 }), grip = mat(0x2a2522, { roughness: 0.8 });
+  const slide = box(0.034, 0.2, 0.042, black); slide.position.set(0, -0.06, 0.035);
+  const frame = box(0.03, 0.15, 0.03, black); frame.position.set(0, -0.04, 0.005);
+  const handle = box(0.032, 0.05, 0.11, grip); handle.position.set(0, 0.0, -0.04); handle.rotation.x = -0.25;
+  const guard = box(0.008, 0.05, 0.035, black); guard.position.set(0, -0.045, -0.018);
+  const sight = box(0.008, 0.01, 0.012, black); sight.position.set(0, -0.15, 0.06);
+  g.add(slide, frame, handle, guard, sight);
+  for (const o of g.children) o.castShadow = true;
+  const muzzle = new THREE.Object3D(); muzzle.position.set(0, -0.17, 0.035);
+  g.add(muzzle);
+  g.userData.muzzle = muzzle;
+  g.position.set(0, -0.3, 0.02);
+  return g;
 }
 
 // ---------------------------------------------------------------------------
