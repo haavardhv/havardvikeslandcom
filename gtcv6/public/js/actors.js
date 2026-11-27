@@ -50,7 +50,17 @@ function makeAtlas(look, person) {
       g.strokeStyle = look.hair; g.lineWidth = 5; g.beginPath(); g.moveTo(ex - w * 0.09, ey - h * 0.06); g.lineTo(ex + w * 0.08, ey - h * 0.065); g.stroke();
     }
     g.strokeStyle = 'rgba(120,70,50,0.35)'; g.lineWidth = 4; g.beginPath(); g.moveTo(x + w / 2, y + h * 0.5); g.lineTo(x + w / 2 - 6, y + h * 0.63); g.lineTo(x + w / 2 + 6, y + h * 0.64); g.stroke();
-    g.strokeStyle = '#a5625a'; g.lineWidth = 6; g.beginPath(); g.moveTo(x + w * 0.4, y + h * 0.74); g.quadraticCurveTo(x + w / 2, y + h * 0.77, x + w * 0.6, y + h * 0.74); g.stroke();
+    if (look.night) {
+      // eye shadow, lashes and red lips
+      for (const s of [-1, 1]) {
+        const ex = x + w / 2 + s * w * 0.18, ey = y + h * 0.47;
+        g.fillStyle = 'rgba(150,60,170,0.55)'; g.beginPath(); g.ellipse(ex, ey - h * 0.03, w * 0.09, h * 0.035, 0, Math.PI, 0); g.fill();
+        g.strokeStyle = '#111'; g.lineWidth = 4; g.beginPath(); g.ellipse(ex, ey, w * 0.08, h * 0.032, 0, Math.PI * 1.05, Math.PI * 1.95); g.stroke();
+      }
+      g.fillStyle = '#c4122e'; g.beginPath(); g.ellipse(x + w / 2, y + h * 0.745, w * 0.11, h * 0.028, 0, 0, Math.PI * 2); g.fill();
+    } else {
+      g.strokeStyle = '#a5625a'; g.lineWidth = 6; g.beginPath(); g.moveTo(x + w * 0.4, y + h * 0.74); g.quadraticCurveTo(x + w / 2, y + h * 0.77, x + w * 0.6, y + h * 0.74); g.stroke();
+    }
   };
   drawFace();
   const tex = new THREE.CanvasTexture(c);
@@ -77,12 +87,15 @@ function makeAtlas(look, person) {
 }
 
 export class Humanoid {
-  constructor({ jacket = 0xf2c12e, pants = 0x2b3140, skin = 0xe8c4a6, hat = 0xb3261e, hair = 0x5a3a22, umbrella = null, boots = 0x1b1b1b, scale = 1, person = null } = {}) {
+  // night: { top, skirt, boots, boa } dresses a woman for a night on the corner: bare arms and legs,
+  // a short skirt, knee boots, a boa, long hair, make-up, earrings and a handbag
+  constructor({ jacket = 0xf2c12e, pants = 0x2b3140, skin = 0xe8c4a6, hat = 0xb3261e, hair = 0x5a3a22, umbrella = null, boots = 0x1b1b1b, scale = 1, person = null, night = null } = {}) {
     const hex = v => typeof v === 'number' ? '#' + v.toString(16).padStart(6, '0') : v;
     const P = person ? PEOPLE[person] : null;
     const look = P
       ? { skin: P.skin, hair: P.hair, shirt: P.shirt, sleeve: P.sleeveCol, pants: P.pants, shoes: '#2a2522', short: P.sleeve === 'short', coat: false, hat: null }
       : { skin: hex(skin), hair: hex(hair), shirt: hex(jacket), sleeve: hex(jacket), pants: hex(pants), shoes: hex(boots), jacket: hex(jacket), short: false, coat: true, hat: hat === null ? null : hex(hat) };
+    if (night) Object.assign(look, { shirt: hex(night.top), sleeve: look.skin, pants: hex(night.skirt), shoes: hex(night.boots), jacket: hex(night.boa), short: true, coat: false, hat: null, night: true });
     if (P) this.name = P.name;
     this.root = new THREE.Group();
 
@@ -144,6 +157,11 @@ export class Humanoid {
     });
     // hair over the top and back
     add(new THREE.SphereGeometry(HR * 1.07, 18, 10, 0, Math.PI * 2, 0, Math.PI * 0.55), M(0, HY + 0.008, -0.016, 0.92, 1.12, 1.02, -0.42), head, solid(SWATCH.hair));
+    if (look.night) {
+      // long hair down the back and over the shoulders
+      add(new THREE.SphereGeometry(HR, 14, 10), M(0, HY - 0.13, -0.07, 1.05, 2.0, 0.62), head, solid(SWATCH.hair));
+      for (const s of [-1, 1]) add(new THREE.SphereGeometry(HR * 0.5, 8, 8), M(s * HR * 0.85, HY - 0.1, -0.02, 0.7, 2.2, 0.8), head, solid(SWATCH.hair));
+    }
     if (look.hat) add(new THREE.SphereGeometry(HR * 1.12, 16, 8, 0, Math.PI * 2, 0, Math.PI * 0.42), M(0, HY + 0.02, -0.005, 0.95, 1.15, 1.02, -0.15), head, solid(SWATCH.hat));
     // ears and neck
     for (const s of [-1, 1]) add(new THREE.SphereGeometry(0.022, 6, 6), M(s * HR * 0.9, HY - 0.005, -0.005, 0.5, 1.2, 0.9), head, solid(SWATCH.skin));
@@ -160,6 +178,11 @@ export class Humanoid {
       }
       return SW(look.coat ? SWATCH.jacket : SWATCH.shirt);
     });
+    if (look.night) {
+      // a short flared skirt and a feather boa
+      add(new THREE.CylinderGeometry(0.168, 0.235, 0.22, 16), M(0, 0.9, 0, 1.08, 1, 0.74), torso, solid(SWATCH.pants));
+      add(new THREE.TorusGeometry(0.115, 0.045, 7, 18), M(0, 1.47, 0.0, 1.15, 1, 0.82, Math.PI / 2 - 0.25), torso, solid(SWATCH.jacket));
+    }
     // shoulder caps
     for (const s of [-1, 1]) add(new THREE.SphereGeometry(0.062, 10, 8), M(s * 0.185, 1.415, 0, 1, 0.9, 0.95), torso, solid(look.coat ? SWATCH.jacket : SWATCH.shirt));
     if (look.coat) {
@@ -181,8 +204,8 @@ export class Humanoid {
     // legs
     for (let k = 0; k < 2; k++) {
       const hp = hips[k], kn = knees[k], x = hp.position.x;
-      add(limb(0.082, 0.056, 0.32), M(x, 0.92 - 0.22, 0), hp, solid(SWATCH.pants));
-      add(limb(0.055, 0.04, 0.32), M(x, 0.48 - 0.21, -0.005), kn, solid(SWATCH.pants));
+      add(limb(0.082, 0.056, 0.32), M(x, 0.92 - 0.22, 0), hp, solid(look.night ? SWATCH.skin : SWATCH.pants));
+      add(limb(look.night ? 0.06 : 0.055, 0.042, 0.32), M(x, 0.48 - 0.21, -0.005), kn, solid(look.night ? SWATCH.shoes : SWATCH.pants));
       add(limb(0.045, 0.05, 0.14), M(x, 0.05, 0.05, 1, 1, 0.68, Math.PI / 2), kn, solid(SWATCH.shoes));
     }
     const geo = new THREE.BufferGeometry();
@@ -192,7 +215,11 @@ export class Humanoid {
     geo.setAttribute('skinIndex', new THREE.Uint16BufferAttribute(si, 4));
     geo.setAttribute('skinWeight', new THREE.Float32BufferAttribute(swt, 4));
     geo.computeBoundingSphere();
-    const material = new THREE.MeshStandardMaterial({ map: makeAtlas(look, person), roughness: 0.88 });
+    const atlasTex = makeAtlas(look, person);
+    // the women on the corners glow a little, so their outfits read in the dark under the lamps
+    const material = new THREE.MeshStandardMaterial(look.night
+      ? { map: atlasTex, roughness: 0.6, emissive: 0xffffff, emissiveMap: atlasTex, emissiveIntensity: 0.5 }
+      : { map: atlasTex, roughness: 0.88 });
     const mesh = new THREE.SkinnedMesh(geo, material);
     mesh.add(body);
     mesh.updateMatrixWorld(true);
@@ -218,6 +245,22 @@ export class Humanoid {
       u.position.set(0, -0.3, 0.05);
       elbows[1].add(u);
       this.umbrella = u;
+    }
+    if (look.night) {
+      // a handbag on the left arm and gold hoops
+      const gold = mat(0xd9b13b, { roughness: 0.3, metalness: 0.8 });
+      const bag = new THREE.Group();
+      const body = new THREE.Mesh(new THREE.BoxGeometry(0.07, 0.13, 0.19), mat(night.bag || 0x141414, { roughness: 0.35 }));
+      body.position.set(0.03, -0.37, 0.02); body.castShadow = true;
+      const strap = new THREE.Mesh(new THREE.TorusGeometry(0.06, 0.008, 4, 10, Math.PI), gold);
+      strap.position.set(0.03, -0.3, 0.02); strap.rotation.y = Math.PI / 2;
+      bag.add(body, strap);
+      elbows[1].add(bag);
+      for (const sx of [-1, 1]) {
+        const hoop = new THREE.Mesh(new THREE.TorusGeometry(0.022, 0.004, 4, 12), gold);
+        hoop.position.set(sx * HR * 0.92, HY - 0.05 - 0.92 - 0.6, 0); hoop.rotation.y = Math.PI / 2;
+        head.add(hoop);
+      }
     }
     this.phase = Math.random() * 10;
     this.punchT = 0;
@@ -251,6 +294,7 @@ export class Humanoid {
       aL = Math.sin(this.phase * 0.3) * 0.03; aR = -aL; aLz = 0.06; aRz = -0.06;
     }
     if (this.umbrella) { aR = -0.45; eR = -1.0; aRz = -0.15; }
+    if (state === 'pose') { aL = -0.35; aLz = 0.75; eL = -1.75; aR = 0.05; eR = -0.35; aRz = 0.05; lean = -0.04; }
     if (state === 'wave') { aR = -2.7 + Math.sin(this.phase * 3) * 0.25; eR = -0.6; aRz = -0.35; }
     if (this.punchT > 0) {
       this.punchT -= dt;
@@ -371,6 +415,8 @@ export class Gull {
 }
 
 // ---------------------------------------------------------------------------
+// every scooter's headlamp shares this material, so the night can turn them all up at once
+export const SCOOTER_LAMP = mat(0xffffff, { emissive: 0xfff4e0, emissiveIntensity: 1 });
 export function makeScooter() {
   const g = new THREE.Group();
   const deckM = mat(0x22272b, { roughness: 0.5 }), bodyM = mat(0x2bb673, { roughness: 0.35 }), tyreM = mat(0x111111);
@@ -378,7 +424,7 @@ export function makeScooter() {
   const strip = box(0.21, 0.02, 0.6, bodyM); strip.position.set(0, 0.17, -0.05);
   const stem = box(0.06, 1.05, 0.06, bodyM); stem.position.set(0, 0.62, 0.45); stem.rotation.x = -0.18;
   const bar = box(0.55, 0.05, 0.05, deckM); bar.position.set(0, 1.12, 0.54);
-  const lamp = box(0.08, 0.06, 0.04, mat(0xffffff, { emissive: 0xffffff, emissiveIntensity: 1 })); lamp.position.set(0, 0.95, 0.53);
+  const lamp = box(0.08, 0.06, 0.04, SCOOTER_LAMP); lamp.position.set(0, 0.95, 0.53); lamp.castShadow = false;
   g.add(deck, strip, stem, bar, lamp);
   for (const z of [-0.45, 0.48]) {
     const w = new THREE.Mesh(new THREE.CylinderGeometry(0.11, 0.11, 0.07, 12), tyreM);

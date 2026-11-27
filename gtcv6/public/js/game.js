@@ -4,7 +4,7 @@ import { buildTextures, textTexture } from './textures.js';
 import { loadMapData, buildCity } from './city.js';
 import { buildHouse6 } from './house6.js';
 import { Physics } from './physics.js';
-import { Humanoid, Gull, makeScooter, makeItem, makeMarker, makeArrow, makePistol, PEOPLE } from './actors.js';
+import { Humanoid, Gull, makeScooter, makeItem, makeMarker, makeArrow, makePistol, PEOPLE, SCOOTER_LAMP } from './actors.js';
 import { Audio } from './audio.js';
 
 const $ = id => document.getElementById(id);
@@ -853,6 +853,20 @@ function updateDayNight(dt) {
   lampHalos.material.color.setRGB(1, 0.85, 0.6).multiplyScalar(0.9 * lamp);
   updateLampLights(dt, lamp);
 }
+// the scooter's headlight: one spot light, on the scooter you ride, at night
+const headlight = new THREE.SpotLight(0xfff0d8, 0, 34, 0.42, 0.55, 1.1);
+headlight.castShadow = false;
+scene.add(headlight, headlight.target);
+function updateHeadlight() {
+  const s = player.riding, k = dayState.lamp;
+  SCOOTER_LAMP.emissiveIntensity = lerp(1, 6, k);
+  if (!s || k < 0.02 || state.mode === 'title') { headlight.intensity = 0; return; }
+  const fx = Math.sin(s.heading), fz = Math.cos(s.heading);
+  headlight.position.set(s.pos.x + fx * 0.6, s.pos.y + 0.98, s.pos.z + fz * 0.6);
+  headlight.target.position.set(s.pos.x + fx * 9, s.pos.y - 0.4 - Math.sin(s.tilt) * 9, s.pos.z + fz * 9);
+  headlight.target.updateMatrixWorld();
+  headlight.intensity = 70 * k;
+}
 const clockText = () => { const m = Math.floor(clock.t * 24 * 60); return `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`; };
 
 // ------------------------------------------------------------------ the night: women on the corners
@@ -864,12 +878,12 @@ const NIGHT_LINES = ['Hey, handsome!', 'Nice scooter, darling.', 'Looking for co
 const nightPeople = [];
 {
   const looks = [
-    { jacket: 0xd9407a, hair: 0x1a1210, skin: 0xe8c4a6, boots: 0x1b1b1b },
-    { jacket: 0xf2efe8, hair: 0xd9b46a, skin: 0xf0d2bb, boots: 0xb3261e },
-    { jacket: 0x7b2fa0, hair: 0x2a1a12, skin: 0x8d5a3b, boots: 0x111111 },
-    { jacket: 0xc9a23a, hair: 0x8a2e1e, skin: 0xe8c4a6, boots: 0x2a2522 },
-    { jacket: 0xb3261e, hair: 0x101010, skin: 0xc68e62, boots: 0x111111 },
-    { jacket: 0x23b0b6, hair: 0xe0c48a, skin: 0xf0d2bb, boots: 0xf2efe8 },
+    { hair: 0x1a1210, skin: 0xe8c4a6, night: { top: 0xff2f8e, skirt: 0x111111, boots: 0xb3261e, boa: 0xff8fc8, bag: 0x111111 } },
+    { hair: 0xe8cf8a, skin: 0xf0d2bb, night: { top: 0xb3261e, skirt: 0xb3261e, boots: 0x111111, boa: 0xf4f1ea, bag: 0xb3261e } },
+    { hair: 0x2a1a12, skin: 0x8d5a3b, night: { top: 0xb46cff, skirt: 0xf2f0ea, boots: 0xf2f0ea, boa: 0xb46cff, bag: 0xf2f0ea } },
+    { hair: 0x8a2e1e, skin: 0xe8c4a6, night: { top: 0x111111, skirt: 0xd9b13b, boots: 0x111111, boa: 0xd9407a, bag: 0xd9b13b } },
+    { hair: 0x101010, skin: 0xc68e62, night: { top: 0x3fe0d0, skirt: 0x111111, boots: 0x3fe0d0, boa: 0x111111, bag: 0x111111 } },
+    { hair: 0xf2e6c2, skin: 0xf0d2bb, night: { top: 0xffd400, skirt: 0xff2f8e, boots: 0xf2f0ea, boa: 0xffd400, bag: 0xff2f8e } },
   ];
   const spots = [];
   for (const sp of lampSpots) {
@@ -884,7 +898,7 @@ const nightPeople = [];
     const ni = nearestNode(x, z, 30);
     const fx = ni >= 0 ? gx(ni) - x : 1, fz = ni >= 0 ? gz(ni) - z : 0, fl = Math.hypot(fx, fz) || 1;
     const px = x + fx / fl * 0.7, pz = z + fz / fl * 0.7;
-    const fig = new Humanoid({ ...looks[i], pants: 0x141414, hat: null, scale: 0.97 });
+    const fig = new Humanoid({ ...looks[i], hat: null, scale: 0.97 });
     fig.root.visible = false;
     scene.add(fig.root);
     const y = world.floorAt(px, pz, world.terrain.height(px, pz) + 2, 3);
@@ -907,7 +921,7 @@ function updateNightPeople(dt) {
     if (near && d < 5.5 && w.talkT <= 0) { say(w, NIGHT_LINES[Math.floor(Math.random() * NIGHT_LINES.length)]); w.talkT = 9 + Math.random() * 6; }
     if (near && d < 0.55 && d > 1e-4) { player.pos.x += dx / d * (0.55 - d); player.pos.z += dz / d * (0.55 - d); }
     w.phase += dt;
-    w.fig.animate(dt, 0, w.bubble && w.bubbleT > 1.4 ? 'wave' : 'idle');
+    w.fig.animate(dt, 0, w.bubble && w.bubbleT > 1.4 ? 'wave' : 'pose');
     w.fig.body.rotation.z = Math.sin(w.phase * 0.9) * 0.04;      // a slow sway, weight on one hip
     w.fig.root.position.copy(w.pos);
     w.fig.root.rotation.set(0, w.heading, 0);
@@ -2559,6 +2573,7 @@ function frame(now) {
       if (state.mode === 'play') { updateGun(dt); updatePlayer(dt); }
       else if (!window.__director) player.fig.animate(dt, 0, state.mode === 'dead' ? 'down' : state.mode === 'switch' ? 'idle' : 'walk');
       for (const s of scooters) if (s !== player.riding) updateScooter(s, dt, { x: 0, y: 0 });
+      updateHeadlight();
       updateDoors(dt);
       updateAlarm(dt);
       if (state.mode === 'play') updateMission(dt);
