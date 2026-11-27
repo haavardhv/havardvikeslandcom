@@ -21,11 +21,11 @@ const POOL = {
   id: ['id_01', 'id_02', 'id_03', 'id_04'],
   outro: ['outro_01', 'outro_02', 'outro_03'],
   // Regnar and Sol talking between the songs
-  chat: ['chat_weather', 'chat_gulls', 'chat_steep', 'chat_bryggen', 'chat_scooters', 'chat_party', 'chat_guangdong'],
+  chat: ['chat_weather', 'chat_gulls', 'chat_steep', 'chat_party'],
   ad: ['ad_maakeskrekk', 'ad_regnfrakk', 'ad_bratt', 'ad_sparksjo'],
   news: ['news_maakemelding', 'news_traffic', 'news_party'],
   // and over the music, halfway through a song
-  over: ['over_umbrella', 'over_sunglasses', 'over_dance', 'over_gull', 'over_bolle', 'over_floibanen', 'over_steps', 'over_fortyone'],
+  over: ['over_umbrella', 'over_sunglasses', 'over_bolle', 'over_fortyone'],
 };
 // what follows each song (RADIO.md, "How it plays")
 const AFTER = [['outro', 'chat'], ['chat', 'news'], ['ad', 'chat'], ['outro', 'news'], ['chat', 'ad']];
