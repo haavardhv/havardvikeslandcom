@@ -253,9 +253,9 @@ Every finding below came from screenshots of the real game in headless Chromium,
 - **The map** reaches Skuteviken and Bergenhus: the fine grid is now 1760 × 2310 m (was 1460 × 1720), 4,519 buildings (was 2,800). The old area's heights were reused; only the new ground was fetched.
 - **Landmarks after photographs** (Wikipedia/Wikimedia Commons; `public/js/landmarks.js`): Bryggen, Domkirken, Korskirken, Mariakirken, Johanneskirken, Håkonshallen, Rosenkrantztårnet, Bergen stasjon, Rådhuset, Mathallen and the fish market, Den blå steinen, Bergens Tidende's neon sign, Musikkpaviljongen, Sjømannsmonumentet, the statues and the lake fountain. Each is built on its OSM outline, so it sits where it really is.
 - **Bryggen**: the ridges now run back from the quay, so every house shows its gable to the harbour, as in every photo of it. Before, the builder's rule for terraced rows had put the ridges along the row.
-- **Streets**: yellow centre lines, white edge lines, 417 zebra crossings, 42 km of granite kerbs, quay walls with bollards and fenders, nicer parked cars, and about 400 real shop names on signs.
+- **Streets**: yellow centre lines, white edge lines, 417 zebra crossings, 42 km of granite kerbs, quay walls with bollards and fenders, nicer parked cars, and 420 real shop names on signs.
 - **Colours** after photos: white-dominated wooden houses with cream, yellow, pale green and grey-blue ones, plastered blocks in white, cream, ochre, salmon and grey, and more clay-tile roofs.
 
 ### Cost
 
-Road paint goes into each tile's decal batch and kerbs into its wall batch, so neither adds draw calls. The shop signs are two draw calls for the whole town. Each landmark is a handful of draw calls and is culled with its own bounding sphere. Load time under software rendering went from about 13 s to about 17 s with the bigger map.
+Road paint goes into each tile's decal batch and kerbs into its wall batch, so neither adds draw calls. The shop signs are two draw calls for the whole town. Each landmark is a handful of draw calls and is culled with its own bounding sphere. Measured in the same headless Chromium (software rendering), the game is ready to play after 6.3 s, up from 4.0 s, mostly for the bigger map.
