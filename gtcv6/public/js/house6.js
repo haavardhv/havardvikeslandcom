@@ -21,6 +21,12 @@ export function buildHouse6(group, T, H) {
   // 1.8 m tall, and must be able to step onto a bed or a sofa next to a door without hitting
   // the lintel. Furniture keeps the path from each door into its room clear.
   const DH = 2.2;
+  // The stairs start at the kitchen end of the upstairs hall, go down along the passage wall
+  // towards the street, and turn right at the bottom on three winders into the downstairs hall.
+  const SH0 = 2.6, SH1 = 5.35;    // the straight flight (and the hole in the upper floor), z
+  const SW0 = 1.65;               // the winders at the bottom: x 0.3..1.25, z 1.65..2.6
+  const SHH = 2.25;               // the stairwell opens from here, for headroom over the last treads
+  const SBE = 4.3;                // the banister ends here: you step onto the stairs beside the top
   const ix0 = t, ix1 = W - t, iz0 = t, iz1 = D - t;
 
   const std = (o, tex) => { const m = new THREE.MeshStandardMaterial({ roughness: 0.85, metalness: 0, ...o }); if (tex) m.map = tex; return m; };
@@ -156,10 +162,11 @@ export function buildHouse6(group, T, H) {
   deco(M.floor, ix0, FL - 0.06, iz0, ix1, FL, iz1, 'ny');
   world.add({ x0: ix0, x1: ix1, z0: iz0, z1: iz1, bottom: FL - 0.06, top: FL, solid: false });
   // grey and white block pattern in the hall at the foot of the stairs, dark tiles in the two bathrooms
+  deco(M.checker, 1.35, FL, 1.65, 3.0, FL + 0.004, 2.6);
   deco(M.checker, 1.35, FL, 2.6, 3.9, FL + 0.004, 5.6);
-  deco(M.checker, ix0, FL, 4.6, 1.35, FL + 0.004, 5.6);
   deco(M.checker, 3.9, FL, 2.6, 5.0, FL + 0.004, 4.4);
-  deco(M.tileD, 1.35, FL, iz0, 5.0, FL + 0.004, 2.5);
+  deco(M.tileD, 1.35, FL, iz0, 3.0, FL + 0.004, 1.55);
+  deco(M.tileD, 3.0, FL, iz0, 5.0, FL + 0.004, 2.5);
 
   // outer walls: grey cladding outside, white inside
   const UW = (a0, a1) => ({ a0, a1, y0: FU + 0.95, y1: FU + 2.25 });
@@ -189,14 +196,14 @@ export function buildHouse6(group, T, H) {
     deco(M.trim, a0 - 0.1, FL + 1.43, iz0, a1 + 0.1, FL + 1.47, iz0 + 0.16);
   }
 
-  // =================================================================== upper floor slab (stair hole x 0.3..1.25, z 1.3..4.6)
+  // =================================================================== upper floor slab (stairwell x 0.3..1.25, z 2.25..5.35)
   const slab = (ax0, ax1, az0, az1, mat) => {
     deco(M.paint, ax0, C1, az0, ax1, FU - 0.04, az1);
     deco(mat, ax0, FU - 0.04, az0, ax1, FU, az1, 'ny');
     world.add({ x0: ax0, x1: ax1, z0: az0, z1: az1, bottom: C1, top: FU });
   };
-  slab(ix0, 1.25, iz0, 1.3, M.floor);
-  slab(ix0, 1.25, 4.6, iz1, M.floor);
+  slab(ix0, 1.25, iz0, SHH, M.floor);
+  slab(ix0, 1.25, SH1, iz1, M.floor);
   slab(1.25, ix1, iz0, iz1, M.floor);
   deco(M.mat, 1.5, FU, 0.35, 2.4, FU + 0.012, 1.2);           // door mat
   deco(M.rug, 1.55, FU, 2.6, 2.45, FU + 0.012, 4.3);          // corridor rug
@@ -206,19 +213,44 @@ export function buildHouse6(group, T, H) {
 
   // =================================================================== stairs: steep, white, dark treads
   {
-    const n = 14, z0 = 1.3, z1 = 4.6, run = (z1 - z0) / n, rise = (FU - FL) / n;
-    for (let i = 0; i < n; i++) {
-      const sz = z0 + i * run, top = FU - (i + 1) * rise;
-      deco(M.white, ix0, FL, sz, 1.25, top - 0.03, sz + run);
-      deco(M.black, ix0, top - 0.03, sz - 0.02, 1.25, top, sz + run);
+    const n = 14, rise = (FU - FL) / n, straight = 10, run = (SH1 - SH0) / straight;
+    // the straight flight, from the top (z = SH1, by the kitchen) down towards the street
+    for (let i = 0; i < straight; i++) {
+      const sz1 = SH1 - i * run, sz0 = sz1 - run, top = FU - (i + 1) * rise;
+      deco(M.white, ix0, FL, sz0, 1.25, top - 0.03, sz1);
+      deco(M.black, ix0, top - 0.03, sz0 - 0.02, 1.25, top, sz1);
     }
-    world.add({ x0: ix0, x1: 1.25, z0, z1, bottom: FL, h00: FU + 0.02, h10: FU + 0.02, h01: FL + rise * 0.5, h11: FL + rise * 0.5, solid: false, stairs: true });
-    // banister on the corridor side (upper floor) and the stair's side wall (lower floor)
-    solid(M.white, 1.25, FL, z0, 1.35, FU + 0.95, z1, { walk: false });
-    deco(M.lightWood, 1.22, FU + 0.95, z0, 1.38, FU + 1.0, z1);
+    world.add({ x0: ix0, x1: 1.25, z0: SH0, z1: SH1, bottom: FL, h00: FL + 3.5 * rise, h10: FL + 3.5 * rise, h01: FU + 0.02, h11: FU + 0.02, solid: false, stairs: true });
+    // three winders turning right around the corner (1.25, SH0), into the hall
+    const px = 1.25, pz = SH0, sq = SH0 - SW0;
+    const tan30 = Math.tan(Math.PI / 6);
+    const slices = [
+      [[px, pz], [ix0, pz], [ix0, pz - sq * tan30]],
+      [[px, pz], [ix0, pz - sq * tan30], [ix0, SW0], [px - sq * tan30, SW0]],
+      [[px, pz], [px - sq * tan30, SW0], [px, SW0]],
+    ];
+    slices.forEach((poly, k) => {
+      const h = 3 - k;                       // treads at FL + 3, 2, 1 risers
+      const shape = new THREE.Shape(poly.map(([x, z]) => new THREE.Vector2(x, z)));
+      const body = new THREE.ExtrudeGeometry(shape, { depth: h * rise - 0.03, bevelEnabled: false });
+      geo.geom(M.white, body, new THREE.Matrix4().makeTranslation(0, FL + h * rise - 0.03, 0).multiply(new THREE.Matrix4().makeRotationX(Math.PI / 2)));
+      const cap = new THREE.ExtrudeGeometry(shape, { depth: 0.03, bevelEnabled: false });
+      geo.geom(M.black, cap, new THREE.Matrix4().makeTranslation(0, FL + h * rise, 0).multiply(new THREE.Matrix4().makeRotationX(Math.PI / 2)));
+    });
+    // walking surface over the winders: high where the flight arrives, low where you step off
+    world.add({ x0: ix0, x1: 1.25, z0: SW0, z1: SH0, bottom: FL, h00: FL + 2 * rise, h10: FL + 0.5 * rise, h11: FL + 2 * rise, h01: FL + 3.5 * rise, solid: false, stairs: true });
+    // the stair's side: a wall to the downstairs hall, and a banister upstairs where the floor
+    // drops away; near the top it stays open, so you step onto the stairs from the hall's end
+    solid(M.white, 1.25, FL, SH0, 1.35, FU + 0.95, SBE, { walk: false });
+    solid(M.white, 1.25, FL, SBE, 1.35, FU, 5.6, { walk: false });
+    deco(M.lightWood, 1.22, FU + 0.95, SHH, 1.38, FU + 1.0, SBE);
+    // over the winders the stairwell is open on the hall side too: banister and rail upstairs only
+    solid(M.white, 1.25, FU - 0.2, SHH, 1.35, FU + 0.95, SH0, { walk: false });
+    solid(M.white, ix0, FU - 0.2, SHH - 0.06, 1.25, FU + 0.95, SHH, { walk: false });
+    deco(M.lightWood, ix0, FU + 0.95, SHH - 0.09, 1.38, FU + 1.0, SHH + 0.03);
     // peg rack on the stair wall, as in the video
-    deco(M.lightWood, 0.3, FU + 1.5, 2.0, 0.34, FU + 1.6, 3.6);
-    for (let k = 0; k < 6; k++) geo.obox(M.lightWood, 0.38, FU + 1.6, 2.15 + k * 0.28, 0.16, 0.03, 0.03, 0, 0, -0.4);
+    deco(M.lightWood, 0.3, FU + 1.5, 3.3, 0.34, FU + 1.6, 4.9);
+    for (let k = 0; k < 6; k++) geo.obox(M.lightWood, 0.38, FU + 1.6, 3.45 + k * 0.28, 0.16, 0.03, 0.03, 0, 0, -0.4);
   }
 
   // =================================================================== upper floor partitions
@@ -242,25 +274,28 @@ export function buildHouse6(group, T, H) {
   //   street side (z = 0, buried)
   //   +---------+--------+--------------+---------------+
   //   | closet  | toilet | shower room  | bedroom with  |
-  //   +---------+---D----+-----D--------+ the lightwell |
-  //   | stairs  | hall           vestibule D (blue)     |
-  //   |   down  |                     +------D----------+
-  //   +---------+--D---------------+  | bedroom with    |
-  //   | bedroom with the black pillow | the white bed   |
+  //   +---------+---D----+              | the lightwell |
+  //   | winders -> hall  +-----D--------+               |
+  //   | stairs  |          vestibule  D   (blue)        |
+  //   | (up to  |                     +------D----------+
+  //   | kitchen)|                     | bedroom with    |
+  //   +---------+--D------------------+ the white bed   |
+  //   | bedroom with the black pillow |                 |
   //   +----------[glass door]---------+-----------------+
   //   terrace side (z = 8.4)      x = 0 is the side passage, x = 8 is no. 4
   const Q = (axis, c0, c1, a0, a1, ops = [], mA = M.paint, mB) => wall(axis, c0, c1, a0, a1, FL, C1, ops, mA, mB);
   const dL = (a0, a1) => ({ a0, a1, y0: FL, y1: FL + DH, door: true });
-  Q('z', 1.25, 1.35, iz0, 1.3, [], M.paint, M.tileW);                            // closet under the top of the stairs | toilet
-  Q('x', 2.5, 2.6, 1.35, 5.0, [dL(1.9, 2.8), dL(3.9, 4.8)], M.tileW, M.paint);  // toilet, shower room | hall
-  Q('z', 3.0, 3.1, iz0, 2.5, [], M.tileW, M.tileW);                              // toilet | shower room
+  Q('z', 1.25, 1.35, iz0, 1.55, [], M.paint, M.tileW);                           // closet | toilet
+  Q('x', 1.55, 1.65, ix0, 3.0, [dL(1.95, 2.75)], M.tileW, M.paint);              // closet, toilet | winders, hall
+  Q('x', 2.5, 2.6, 3.0, 5.0, [dL(3.9, 4.8)], M.tileW, M.paint);                  // shower room | hall
+  Q('z', 3.0, 3.1, iz0, 1.55, [], M.tileW, M.tileW);                             // toilet | shower room
+  Q('z', 3.0, 3.1, 1.55, 2.6, [], M.paint, M.tileW);                             // hall | shower room
   Q('z', 5.0, 5.1, iz0, 4.4, [dL(3.35, 4.3)]);                                   // shower room, hall | blue bedroom
   Q('x', 4.4, 4.5, 3.9, ix1, [dL(4.05, 4.95)]);                                  // hall, blue bedroom | white bedroom
   Q('z', 3.9, 4.0, 4.5, iz1, []);                                                // hall, black-pillow bedroom | white bedroom
   Q('x', 5.6, 5.7, ix0, 3.9, [dL(1.8, 2.75)]);                                   // hall | black-pillow bedroom
   // tiles on the outer wall and the stair wall in the two bathrooms
   deco(M.tileW, 1.35, FL, iz0, 5.0, C1, iz0 + 0.02);
-  deco(M.tileW, 1.35, FL, 1.3, 1.37, C1, 2.5);
 
   // =================================================================== doors
   door(1.45, FU, 0.15, 1.0, 2.15, 'x', M.door, true, 1.5);                  // front door, opens in
@@ -269,7 +304,7 @@ export function buildHouse6(group, T, H) {
   // inner doors stand open into their rooms, against the hinge side, out of the corridors
   door(2.6, FU, 1.75, 1.0, 2.15, 'z', innerDoor, false, -1.52, true);   // upper study
   door(5.15, FU, 4.45, 1.0, 2.15, 'x', innerDoor, false, -1.52, true);  // upper bedroom
-  door(2.8, FL, 2.55, -0.9, 2.15, 'x', innerDoor, false, 1.52, true);   // toilet
+  door(1.95, FL, 1.6, 0.8, 2.15, 'x', innerDoor, false, -1.52, true);   // toilet
   door(4.8, FL, 2.55, -0.9, 2.15, 'x', innerDoor, false, 1.52, true);   // shower room
   door(5.05, FL, 4.3, -0.95, 2.15, 'z', innerDoor, false, 1.52, true);  // blue bedroom
   door(4.05, FL, 4.45, 0.9, 2.15, 'x', innerDoor, false, 1.52, true);   // white bedroom
@@ -386,16 +421,17 @@ export function buildHouse6(group, T, H) {
   for (const lx of [5.63, 6.63]) for (const lz of [0.35, 0.78]) deco(M.lightWood, lx, u, lz, lx + 0.04, u + 0.72, lz + 0.04);
   chair(6.15, 1.25, M.black, 1);
   deco(M.lamp, 6.2, C2 - 0.05, 2.2, 6.6, C2, 2.6);
-  // kitchen: fridge, grey cabinets along the passage wall, worktop, stove, sink, upper cabinets
-  furn(M.white, ix0, u, 4.7, 0.95, u + 2.0, 5.35);
-  furn(M.cabinet, ix0, u, 5.35, 0.92, u + 0.86, iz1);
-  deco(M.lightWood, ix0, u + 0.86, 5.35, 0.96, u + 0.9, iz1);
+  // kitchen: grey cabinets along the passage wall from the top of the stairs, worktop, stove, sink,
+  // upper cabinets, and the fridge at the end of the run
+  furn(M.white, ix0, u, 7.45, 0.95, u + 2.0, iz1);
+  furn(M.cabinet, ix0, u, SH1, 0.92, u + 0.86, 7.45);
+  deco(M.lightWood, ix0, u + 0.86, SH1, 0.96, u + 0.9, 7.45);
   deco(M.black, 0.38, u + 0.9, 5.6, 0.85, u + 0.91, 6.15);
   deco(M.steel, 0.4, u + 0.9, 6.9, 0.8, u + 0.92, 7.4);
   deco(M.steel, 0.32, u + 0.92, 7.12, 0.37, u + 1.2, 7.18);
-  for (let z = 5.4; z < 8.0; z += 0.6) deco(M.metal, 0.92, u + 0.72, z + 0.25, 0.94, u + 0.74, z + 0.35);
-  deco(M.cabinet, ix0, u + 1.6, 5.35, 0.65, u + 2.35, 7.6);
-  deco(M.lamp, 0.62, u + 1.56, 5.4, 0.66, u + 1.6, 7.5);
+  for (let z = 5.4; z < 7.3; z += 0.6) deco(M.metal, 0.92, u + 0.72, z + 0.25, 0.94, u + 0.74, z + 0.35);
+  deco(M.cabinet, ix0, u + 1.6, SH1, 0.65, u + 2.35, 7.4);
+  deco(M.lamp, 0.62, u + 1.56, 5.4, 0.66, u + 1.6, 7.35);
   deco(M.lamp, 1.2, C2 - 0.05, 6.2, 1.6, C2, 6.6);
   // dining table by the window, white chairs
   furn(M.lightWood, 3.0, u + 0.72, 5.9, 4.0, u + 0.76, 7.7);
@@ -435,12 +471,12 @@ export function buildHouse6(group, T, H) {
   // =================================================================== furniture: lower floor
   chairY = l;
   // toilet: a small sink with a mirror, and the toilet beside it
-  furn(M.white, 1.45, l + 0.75, iz0, 1.95, l + 0.9, 0.75);
-  deco(M.steel, 1.67, l + 0.9, 0.36, 1.73, l + 1.05, 0.42);
-  deco(M.steel, 1.47, l + 1.1, iz0 + 0.02, 1.93, l + 1.75, iz0 + 0.04);
-  furn(M.white, 2.35, l, iz0, 2.85, l + 0.42, 0.95);
+  furn(M.white, 1.45, l + 0.75, iz0, 1.9, l + 0.9, 0.7);
+  deco(M.steel, 1.65, l + 0.9, 0.36, 1.71, l + 1.05, 0.42);
+  deco(M.steel, 1.47, l + 1.1, iz0 + 0.02, 1.88, l + 1.75, iz0 + 0.04);
+  furn(M.white, 2.35, l, iz0, 2.85, l + 0.42, 0.9);
   deco(M.white, 2.38, l + 0.42, iz0, 2.82, l + 0.85, 0.5);
-  deco(M.lamp, 2.0, C1 - 0.05, 1.2, 2.4, C1, 1.6);
+  deco(M.lamp, 2.0, C1 - 0.05, 0.75, 2.4, C1, 1.15);
   // shower room: shower with a curtain in the corner, wall-hung toilet, sink, shelves with plants
   deco(M.white, 3.1, l + 2.0, 1.29, 4.05, l + 2.02, 1.31);
   geo.obox(M.white, 3.6, l + 1.02, 1.3, 0.9, 1.95, 0.03, 0, 0.06, 0);
@@ -480,10 +516,10 @@ export function buildHouse6(group, T, H) {
   // between the two bathroom doors
   furn(M.white, 3.25, l, 4.95, 3.85, l + 1.75, 5.55);
   for (const wy of [l + 0.42, l + 1.3]) geo.geom(M.black, new THREE.CylinderGeometry(0.19, 0.19, 0.02, 18), new THREE.Matrix4().makeRotationZ(Math.PI / 2).premultiply(new THREE.Matrix4().makeTranslation(3.24, wy, 5.25)));
-  furn(M.white, 2.95, l, 2.62, 3.75, l + 0.9, 3.05);
-  deco(M.steel, 3.05, l + 1.1, 2.6, 3.65, l + 1.95, 2.62);
-  deco(M.glass, 3.3, l + 0.9, 2.8, 3.4, l + 1.12, 2.9);
-  for (let k = 0; k < 6; k++) geo.geom(k % 2 ? M.pink : M.cushion, new THREE.SphereGeometry(0.05, 6, 4), new THREE.Matrix4().makeTranslation(3.35 + Math.cos(k) * 0.07, l + 1.18 + (k % 3) * 0.04, 2.85 + Math.sin(k) * 0.07));
+  furn(M.white, 3.1, l, 2.62, 3.8, l + 0.9, 3.05);
+  deco(M.steel, 3.15, l + 1.1, 2.6, 3.75, l + 1.95, 2.62);
+  deco(M.glass, 3.4, l + 0.9, 2.8, 3.5, l + 1.12, 2.9);
+  for (let k = 0; k < 6; k++) geo.geom(k % 2 ? M.pink : M.cushion, new THREE.SphereGeometry(0.05, 6, 4), new THREE.Matrix4().makeTranslation(3.45 + Math.cos(k) * 0.07, l + 1.18 + (k % 3) * 0.04, 2.85 + Math.sin(k) * 0.07));
   deco(M.lamp, 2.4, C1 - 0.05, 3.8, 2.8, C1, 4.2);
   deco(M.lamp, 4.25, C1 - 0.05, 3.3, 4.65, C1, 3.7);
 

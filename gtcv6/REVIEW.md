@@ -195,3 +195,13 @@ The sketch gives the arrangement, and the sizes come from the house's outline an
 - **Scripted walk:** all 45 waypoints reached, through the street door, every doorway on both floors, down the stairs, through the black-pillow bedroom and out onto the terrace.
 - **Doors:** open doors stand against the nearer wall, so no leaf stands across a doorway's line of sight.
 - **Mission text:** the texts that send you to the terrace now say to go through the black-pillow bedroom.
+
+### The stairs, the right way round
+
+The stairs went down the wrong way. They now start at the kitchen end of the upstairs hall, beside the counter, as in the video (about 0:59 and 1:10). They go down along the passage wall towards the street, then turn right on three winder treads into the downstairs hall, by the two bathroom doors (about 1:17).
+
+- **Upstairs:** the fridge moved from the top of the stairs to the far end of the kitchen run. The old stairwell by the front door became hall floor.
+- **Stairwell opening:** it reaches 35 cm past the bottom of the straight flight, so your head clears the floor edge above the last treads.
+- **Banister and entry:** the banister stops 1 m short of the top, so you step onto the stairs from the end of the hall.
+- **Downstairs:** the toilet is shallower, and a closet sits in the corner beside the stair foot.
+- **Checks:** the flood fill reaches the whole house. The scripted walk reaches every waypoint down the new stairs and through every room (46 of 46), and every waypoint back up from the terrace to the upstairs hall (12 of 12).
