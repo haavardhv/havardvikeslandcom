@@ -239,9 +239,43 @@ function detailTexture(size, seed, base, amp) {
 }
 
 
+// Fløibanen's lower station on Vetrlidsallmenningen. The line starts inside it, but the map has no
+// building there (the track just begins in the open), so one is added over the bottom of the line
+// before the town is built, and is then built, lit and collided with like any other house: white
+// wooden cladding, a dark gable roof along the line, and a glass door at the downhill end, facing
+// the street. It hides the car waiting at the bottom. Returns the building.
+function addFuniStation(map, terrain) {
+  const f = map.funicular, x0 = f[0], z0 = f[1];
+  // the direction of the line over its first 14 m
+  let tx = f[2], tz = f[3];
+  for (let i = 2, acc = 0; i < f.length; i += 2) { acc += Math.hypot(f[i] - f[i - 2], f[i + 1] - f[i - 1]); tx = f[i]; tz = f[i + 1]; if (acc > 14) break; }
+  const l = Math.hypot(tx - x0, tz - z0) || 1, dx = (tx - x0) / l, dz = (tz - z0) / l, nx = -dz, nz = dx;
+  // a along the line (uphill), b across it: it fits between the street that loops round the
+  // bottom of the line and Øvre Fjellsmauet above it, and is long enough to hide an 11 m car
+  const A0 = -6, A1 = 8, B0 = -3.5, B1 = 4.5;
+  const W = (a, b) => [x0 + dx * a + nx * b, z0 + dz * a + nz * b];
+  const ring = [W(A0, B0), W(A1, B0), W(A1, B1), W(A0, B1)];
+  const p = ring.flat();
+  let gMin = Infinity, gMax = -Infinity;
+  for (let a = A0; a <= A1; a += 2) for (let b = B0; b <= B1; b += 2) { const [x, z] = W(a, b), h = terrain.height(x, z); gMin = Math.min(gMin, h); gMax = Math.max(gMax, h); }
+  const [cx, cz] = W((A0 + A1) / 2, (B0 + B1) / 2), hw = (B1 - B0) / 2;
+  const b = {
+    p, b: gMin - 0.5, t: gMax + 5.5, c: '#f2efe6', rc: '#41444a', s: 'w', shop: 1, name: 'Fløibanen',
+    d: [3, (B1 - 0) / (B1 - B0)],                     // edge 3 is the downhill end; the door is on the track's line
+    r: 'g', rf: [cx, cz, dx, dz, (A1 - A0) / 2, hw], rh: hw * Math.tan(0.55),
+  };
+  map.buildings.push(b);
+  // nothing that was standing in the open there: two trees and two benches
+  const keep = (arr) => { const out = []; for (let i = 0; i < arr.length; i += 2) if (!PolyWorld.inside(p, arr[i], arr[i + 1])) out.push(arr[i], arr[i + 1]); return out; };
+  map.trees = keep(map.trees);
+  map.benches = keep(map.benches);
+  return b;
+}
+
 // ---------------------------------------------------------------------------
 export function buildCity(scene, map, T, opts) {
   const terrain = new Terrain(map);
+  const funiStation = addFuniStation(map, terrain);
   const atlas = facadeAtlas(T);     // walls, roofs and street surfaces share one texture atlas
   const polys = new PolyWorld(16);
   const geo = new Geo();
@@ -953,5 +987,5 @@ export function buildCity(scene, map, T, opts) {
 
   geo.build(scene);
 
-  return { terrain, polys, funiCurve, cars, onSteps, onRoad, named, buildingLods, water, lamps, nightGlow };
+  return { terrain, polys, funiCurve, cars, funiStation, onSteps, onRoad, named, buildingLods, water, lamps, nightGlow };
 }

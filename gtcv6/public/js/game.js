@@ -235,20 +235,34 @@ function updateInteriorLights() {
     else { l.position.copy(L2V(...house.lights[i])); l.distance = 9; l.intensity = 5; }
   });
 }
-// the building's street door, and where you stand in front of it
-const OFFICE_STREET = (() => {
-  let x, z, nx, nz;
-  const b = officeBld;
-  if (b && b.d) {
-    const n = b.p.length / 2, i = b.d[0], j = (i + 1) % n;
-    const ax = b.p[i * 2], az = b.p[i * 2 + 1], bx = b.p[j * 2], bz = b.p[j * 2 + 1], L = Math.hypot(bx - ax, bz - az);
-    x = ax + (bx - ax) * b.d[1]; z = az + (bz - az) * b.d[1];
-    nx = (bz - az) / L; nz = -(bx - ax) / L;
-    if (PolyWorld.inside(b.p, x + nx * 0.5, z + nz * 0.5)) { nx = -nx; nz = -nz; }
-  } else {
-    [x, z] = OL2W(2.1, 5.85); nx = -OF.uz; nz = OF.ux;
-  }
+// A door in a building's wall, and where you stand in front of it, facing out: at the point
+// t (0..1) along edge i of its outline
+function doorSpot(b, i, t) {
+  const n = b.p.length / 2, j = (i + 1) % n;
+  const ax = b.p[i * 2], az = b.p[i * 2 + 1], bx = b.p[j * 2], bz = b.p[j * 2 + 1], L = Math.hypot(bx - ax, bz - az) || 1;
+  const x = ax + (bx - ax) * t, z = az + (bz - az) * t;
+  let nx = (bz - az) / L, nz = -(bx - ax) / L;
+  if (PolyWorld.inside(b.p, x + nx * 0.5, z + nz * 0.5)) { nx = -nx; nz = -nz; }
   const sx = x + nx * 1.3, sz = z + nz * 1.3;
+  return { doorX: x, doorZ: z, nx, nz, x: sx, z: sz, y: city.terrain.height(sx, sz), heading: Math.atan2(nx, nz) };
+}
+// the door in the wall of b nearest to the point (x, z)
+function doorToward(b, x, z) {
+  const n = b.p.length / 2;
+  let best = null, bd = Infinity;
+  for (let i = 0; i < n; i++) {
+    const j = (i + 1) % n, ax = b.p[i * 2], az = b.p[i * 2 + 1], bx = b.p[j * 2], bz = b.p[j * 2 + 1];
+    const L2 = (bx - ax) ** 2 + (bz - az) ** 2;
+    if (L2 < 1) continue;
+    const t = clamp(((x - ax) * (bx - ax) + (z - az) * (bz - az)) / L2, 0.15, 0.85);
+    const d = Math.hypot(ax + (bx - ax) * t - x, az + (bz - az) * t - z);
+    if (d < bd) { bd = d; best = [i, t]; }
+  }
+  return doorSpot(b, ...best);
+}
+// the office building's street door
+const OFFICE_STREET = officeBld && officeBld.d ? doorSpot(officeBld, ...officeBld.d) : (() => {
+  const [x, z] = OL2W(2.1, 5.85), nx = -OF.uz, nz = OF.ux, sx = x + nx * 1.3, sz = z + nz * 1.3;
   return { doorX: x, doorZ: z, nx, nz, x: sx, z: sz, y: city.terrain.height(sx, sz), heading: Math.atan2(nx, nz) };
 })();
 const OFFICE_EXIT = OL2V(...office.exitDoor);
@@ -278,6 +292,52 @@ function takeStairs(dir) {
     player.vel.set(0, 0, 0); player.heading = h;
     cam.yaw = h + Math.PI; cam.pitch = 0.3; cam.cur = cam.dist = up ? 2.5 : 4.4;
     toast(up ? 'Myreze, 4th floor' : 'Halfdan Kjerulfs gate', 2);
+  });
+}
+// Fløibanen works like the stairs to Myreze: E at the door of the station house at the bottom
+// (city.js adds it over the start of the line, on Vetrlidsallmenningen) takes you straight to the
+// top station at Fløyen, and E at the top station's door takes you back down. The two cars keep
+// running up and down the line on their timetable. The top door is on the town side of the
+// station, towards the view, and well clear of the parachute jump.
+const FUNI_DOOR = (() => {
+  const end = city.funiCurve.getPointAt(1);
+  const topBld = map.buildings.find(b => PolyWorld.inside(b.p, end.x, end.z));
+  const top = topBld ? doorToward(topBld, 522, -158) : { doorX: end.x + 4, doorZ: end.z + 6, nx: 0, nz: 1, x: end.x + 4, z: end.z + 7.3, heading: 0 };
+  const bottom = doorSpot(city.funiStation, ...city.funiStation.d);
+  for (const s of [top, bottom]) {
+    const g = city.terrain.height(s.x, s.z);
+    const y = world.floorAt(s.x, s.z, g + 3, 6);
+    s.y = y > -50 ? y : g;
+  }
+  return { top, bottom };
+})();
+{
+  // the sign over each door
+  const tex = textTexture(['FLØIBANEN'], { w: 512, h: 112, bg: '#1d3f73', fg: '#ffffff', font: '800 64px "Archivo", sans-serif', radius: 12, border: '#ffffff' });
+  for (const S of [FUNI_DOOR.bottom, FUNI_DOOR.top]) {
+    const sign = new THREE.Mesh(new THREE.PlaneGeometry(2.6, 0.57), new THREE.MeshStandardMaterial({ map: tex, roughness: 0.5, emissive: 0xffffff, emissiveMap: tex, emissiveIntensity: 0.15 }));
+    sign.position.set(S.doorX + S.nx * 0.12, city.terrain.height(S.doorX + S.nx, S.doorZ + S.nz) + 2.85, S.doorZ + S.nz * 0.12);
+    sign.rotation.y = S.heading;
+    scene.add(sign);
+  }
+}
+// 'up' at the station house at the bottom, 'down' at Fløyen, or null
+function funiHere() {
+  if (state.mode !== 'play' || player.riding || dive.on || player.knockT > 0) return null;
+  const p = player.pos;
+  for (const [dir, S] of [['up', FUNI_DOOR.bottom], ['down', FUNI_DOOR.top]]) {
+    if (Math.hypot(p.x - S.doorX, p.z - S.doorZ) < 2.4 && Math.abs(p.y - S.y) < 2.5) return dir;
+  }
+  return null;
+}
+function takeFuni(dir) {
+  audio.door();
+  fadeThen(() => {
+    const up = dir === 'up', S = up ? FUNI_DOOR.top : FUNI_DOOR.bottom;
+    player.pos.set(S.x, S.y, S.z);
+    player.vel.set(0, 0, 0); player.heading = S.heading; player.onGround = true;
+    cam.yaw = S.heading + Math.PI; cam.pitch = 0.3; cam.cur = cam.dist = 4.4;
+    toast(up ? 'Fløyen, 320 moh. Mind the gulls.' : 'Vetrlidsallmenningen. Torget is just down the street.', 3);
   });
 }
 const [AX0, AZ0, AX1, AZ1] = map.area;
@@ -460,7 +520,7 @@ const camBox = new THREE.Vector3();
 function updateCamera(dt) {
   const p = player.pos;
   const inside = isIndoors(p);
-  const want = funiState.ride ? 13 : dive.on ? (dive.phase === 'free' ? 7 : 10) : lerp(player.riding ? 5.6 : inside ? 2.5 : 4.6, 3.1, gun.aimK);
+  const want = dive.on ? (dive.phase === 'free' ? 7 : 10) : lerp(player.riding ? 5.6 : inside ? 2.5 : 4.6, 3.1, gun.aimK);
   cam.dist = damp(cam.dist, want, 3, dt);
   const baseFov = camera.aspect < 0.8 ? 78 : 64;
   const fov = damp(camera.fov, (inside ? baseFov + 14 : baseFov) + (player.riding && turbo.on ? 9 : 0), 3, dt);
@@ -1923,7 +1983,7 @@ function updateGulls(dt) {
   }
 }
 function hitPlayer(a) {
-  if (state.mode !== 'play' || player.hurtT > 0.3 || funiState.ride) return;      // safe inside Fløibanen
+  if (state.mode !== 'play' || player.hurtT > 0.3) return;
   if (brollyBlocks(a)) return;
   const dmg = 4 + state.alarm;
   player.health = Math.max(0, player.health - dmg);
@@ -2444,16 +2504,8 @@ function updatePlayer(dt) {
   player.regenT -= dt;
   if (player.regenT <= 0 && player.health < 100) player.health = Math.min(100, player.health + 6 * dt);
 
-  // Fløibanen: get on a waiting car
-  if (funiState.ride) { pressed.use = pressed.jump = pressed.punch = false; player.fig.animate(dt, 0, 'idle'); return; }
-  if (pressed.use && player.knockT <= 0 && !player.carrying && funiCarHere() >= 0) {
-    pressed.use = false;
-    funiState.ride = { car: funiCarHere(), moved: false };
-    if (gun.drawn) toggleGun(false);
-    audio.door();
-    toast(funiState.u[funiState.ride.car] < 0.5 ? 'Fløibanen: up to Fløyen' : 'Fløibanen: down to town', 2.5);
-  }
-  // use: the stairs at Halfdan Kjerulfs gate 4, get on / off scooters, or jump from Fløyen
+  // use: Fløibanen, the stairs at Halfdan Kjerulfs gate 4, get on / off scooters, or jump from Fløyen
+  if (pressed.use && funiHere()) { pressed.use = false; takeFuni(funiHere()); }
   if (pressed.use && stairsHere()) { pressed.use = false; takeStairs(stairsHere()); }
   if (pressed.use && player.knockT <= 0 && !player.riding && !player.carrying && Math.hypot(player.pos.x - JUMP.x, player.pos.z - JUMP.z) < 3.5 && Math.abs(player.pos.y - JUMP.y) < 3) { pressed.use = false; startSkydive(); }
   if (pressed.use && player.knockT <= 0 && player.riding && tryPickup()) pressed.use = false;
@@ -3343,22 +3395,11 @@ $('reset').addEventListener('click', () => {
 // ------------------------------------------------------------------ main loop
 let last = performance.now(), time = 0, frameAvg = 16, adaptT = 0, gpsT = 0, frameNo = 0;
 renderer.shadowMap.autoUpdate = false;
-// Fløibanen: two cars on a timetable, passing halfway. Each waits at its station, then runs
-// to the other end. Stand by a waiting car and press E to ride; you get off at the other end.
+// Fløibanen's two cars on a timetable, passing halfway. Each waits at its station, then runs to
+// the other end. They are scenery: you take Fløibanen through the station doors (funiHere).
 const FUNI_WAIT = 18, FUNI_RUN = 75;
-const funiState = { t: 0, ride: null, u: [0, 1] };
+const funiState = { t: 0, u: [0, 1] };
 const funiWin = city.cars.map(car => car.children[1] && car.children[1].material);
-// the platform beside each end of the line, where you get on and off
-const funiStop = [0, 1].map(u => {
-  const c = city.funiCurve, p = c.getPointAt(u), q = c.getPointAt(u ? u - 0.01 : 0.01);
-  const dx = q.x - p.x, dz = q.z - p.z, l = Math.hypot(dx, dz) || 1;
-  for (const side of [1, -1]) for (const d of [3.5, 5, 7]) {
-    const x = p.x - dz / l * d * side + (u ? -dx / l * 3 : dx / l * 3), z = p.z + dx / l * d * side + (u ? -dz / l * 3 : dz / l * 3);
-    const y = world.floorAt(x, z, p.y + 3, 5);
-    if (y > -50 && Math.abs(y - (p.y - 0.8)) < 3) return new THREE.Vector3(x, y, z);
-  }
-  return new THREE.Vector3(p.x + 3, world.floorAt(p.x + 3, p.z, p.y + 3, 6), p.z);
-});
 function updateFuni(dt) {
   const f = funiState, cyc = 2 * (FUNI_WAIT + FUNI_RUN);
   f.t = (f.t + dt) % cyc;
@@ -3374,32 +3415,6 @@ function updateFuni(dt) {
     car.lookAt(p2.x, p.y, p2.z);
     if (funiWin[i]) { funiWin[i].emissive.setHex(0xffd9a0); funiWin[i].emissiveIntensity = dayState.lamp * 1.4; }
   });
-  // riding: you're in the car; at the other end you step out onto the platform
-  const r = f.ride;
-  if (r) {
-    const car = city.cars[r.car];
-    player.pos.copy(car.position); player.vel.set(0, 0, 0);
-    player.fig.root.visible = false;
-    if (!f.waiting) r.moved = true;
-    if (r.moved && f.waiting) {
-      const end = f.u[r.car] > 0.5 ? 1 : 0;
-      f.ride = null;
-      player.pos.copy(funiStop[end]); player.onGround = true;
-      player.fig.root.visible = true;
-      toast(end ? 'Fløyen, 320 moh. Mind the gulls.' : 'Vetrlidsallmenningen. Torget is just down the street.', 3);
-      audio.door();
-    }
-  }
-}
-// the car waiting at the station you're standing at, if any
-function funiCarHere() {
-  const f = funiState;
-  if (!f.waiting || f.ride || player.riding || dive.on) return -1;
-  for (let i = 0; i < 2; i++) {
-    const end = f.u[i] > 0.5 ? 1 : 0;
-    if (player.pos.distanceTo(funiStop[end]) < 6 || player.pos.distanceTo(city.cars[i].position) < 7) return i;
-  }
-  return -1;
 }
 function frame(now) {
   requestAnimationFrame(frame);
@@ -3444,7 +3459,7 @@ function frame(now) {
     { const [hx, hz] = L2W(4, 4.2); blips.push({ x: hx, z: hz, c: '#f4f1ea', r: 6, edge: true, home: true }); }
     for (const pl of PLACES) blips.push({ x: pl.x, z: pl.z, c: pl.st.bg, r: 7, label: pl.n, edge: pl.k === 'food' });
     blips.push({ x: JUMP.x, z: JUMP.z, c: '#e2231a', r: 6, label: 'Skydive' });
-    blips.push({ x: funiStop[0].x, z: funiStop[0].z, c: '#2f6db5', r: 5, label: 'Fløibanen' });
+    blips.push({ x: FUNI_DOOR.bottom.doorX, z: FUNI_DOOR.bottom.doorZ, c: '#2f6db5', r: 5, label: 'Fløibanen' });
     for (const lm of map.landmarks || []) if (lm.n !== 'Fløyen') blips.push({ x: lm.x, z: lm.z, c: '#cfd6dc', r: 4, label: lm.n });
     for (const sec of tram.sections) if (sec.g.visible) blips.push({ x: sec.x, z: sec.z, c: '#f07c1a', r: 4 });
     bm.blips = blips.map(b => b.home ? { ...b, label: 'Cappes vei 6' } : b);
@@ -3480,8 +3495,7 @@ function frame(now) {
     else if (state.mode === 'play' && player.riding && Math.abs(player.riding.speed) < 1) prompt = '<kbd>E</kbd>Get off';
     else if (state.mode === 'play' && player.riding && player.riding.speed > 4 && !save.rideHint) prompt = isTouch ? '<kbd>Jump</kbd>trick <kbd>Run</kbd>boost <kbd>Drift</kbd>hold to drift' : '<kbd>Space</kbd>trick <kbd>Shift</kbd>boost <kbd>Right mouse</kbd>hold to drift';
     if (player.riding && (player.riding.driftT > 1 || player.riding.trick) && !save.rideHint) { save.rideHint = true; persist(); }
-    if (state.mode === 'play' && !prompt && funiCarHere() >= 0) prompt = `<kbd>E</kbd>Ride Fløibanen ${funiState.u[funiCarHere()] < 0.5 ? 'up to Fløyen' : 'down to town'}`;
-    if (state.mode === 'play' && funiState.ride) prompt = funiState.waiting && !funiState.ride.moved ? 'Fløibanen: leaving shortly…' : 'Fløibanen';
+    if (!prompt && funiHere()) prompt = funiHere() === 'up' ? '<kbd>E</kbd>Take Fløibanen up to Fløyen' : '<kbd>E</kbd>Take Fløibanen down to town';
     if (state.mode === 'play' && !player.riding && !dive.on && !prompt && Math.hypot(player.pos.x - JUMP.x, player.pos.z - JUMP.z) < 3.5 && Math.abs(player.pos.y - JUMP.y) < 3) prompt = '<kbd>E</kbd>Skydive from 450 m';
     if (!prompt && stairsHere()) prompt = stairsHere() === 'up' ? '<kbd>E</kbd>Take the stairs up to Myreze, 4th floor' : '<kbd>E</kbd>Take the stairs down to Halfdan Kjerulfs gate';
     if (dive.on && state.mode === 'play') prompt = `Altitude ${Math.max(0, Math.round(skyAlt))} m · ` + (dive.phase === 'free' ? (isTouch ? '<kbd>Jump</kbd>open the parachute' : '<kbd>Space</kbd>open the parachute') : 'A/D steer · W dive · S flare');
@@ -3560,4 +3574,4 @@ $('play').disabled = false;
 $('play').textContent = save.mission > 0 ? (save.mission >= MISSIONS.length ? 'Free roam' : 'Continue') : 'Play';
 
 // debug hooks for testing
-window.__gt = { openMap, closeMap, setWaypoint, clearWaypoint, waypoint: () => waypoint, wpGps: () => wpGps, bm, gameTime: () => time, nightPassenger, tryPickup, quietHere, places, street, tram, dive, funiState, funiStop, funiCarHere, startSkydive, JUMP, gun, shoot, toggleGun, brolly, cycleHand, npcs, turbo, clock, dayState, nightPeople, lampLights, audio, switchTo, swapTo, mates: () => housemates, active: () => active, OUT_SPOTS, offer: () => offer, acceptOffer, declineOffer, makeOffer, scene, renderer, camera, player, cam, world, state, startMission, save, weather, scooters, gulls, mission: () => mission, startGame, raiseAlarm, ending, L2V, L2W, W2L, H, house, city, route, BAKERY, CHECKPOINTS: () => CHECKPOINTS, inHouse, housemates, PLACES, hitPlayer, dropBolle, bolle: () => ({ drop: bolleDrop, carrying: !!player.carrying }) };
+window.__gt = { openMap, closeMap, setWaypoint, clearWaypoint, waypoint: () => waypoint, wpGps: () => wpGps, bm, gameTime: () => time, nightPassenger, tryPickup, quietHere, places, street, tram, dive, funiState, FUNI_DOOR, funiHere, takeFuni, startSkydive, JUMP, gun, shoot, toggleGun, brolly, cycleHand, npcs, turbo, clock, dayState, nightPeople, lampLights, audio, switchTo, swapTo, mates: () => housemates, active: () => active, OUT_SPOTS, offer: () => offer, acceptOffer, declineOffer, makeOffer, scene, renderer, camera, player, cam, world, state, startMission, save, weather, scooters, gulls, mission: () => mission, startGame, raiseAlarm, ending, L2V, L2W, W2L, H, house, city, route, BAKERY, CHECKPOINTS: () => CHECKPOINTS, inHouse, housemates, PLACES, hitPlayer, dropBolle, bolle: () => ({ drop: bolleDrop, carrying: !!player.carrying }) };
