@@ -495,7 +495,7 @@ const hud = {
   objective: $('objective'), prompt: $('prompt'), phone: $('phone'), toast: $('toast'), banner: $('banner'),
   umbrellas: $('umbrellas'), street: $('street'), crosshair: $('crosshair'), ammo: $('ammo'), boost: $('boostbar').firstElementChild, clock: $('clock'),
 };
-const punchBtn = document.querySelector('#touch [data-k="punch"]');
+const punchBtn = document.querySelector('#touch [data-k="punch"]'), handBtn = document.querySelector('#touch [data-k="gun"]');
 const gullSvg = '<svg viewBox="0 0 32 18" aria-hidden="true"><path d="M1 6c5-3 10-2 15 4 5-6 10-7 15-4-4 0-9 3-11 8l-4 1-4-1C10 9 5 6 1 6z"/></svg>';
 hud.alarm.innerHTML = gullSvg.repeat(5);
 let shownMoney = save.money;
@@ -548,7 +548,7 @@ function updateHud(dt) {
     tm.t -= dt;
     if (tm.t <= 0) { timers[k] = null; tm.fn(); }
   }
-  hurtEl.style.opacity = player.hurtT > 0 ? Math.min(1, player.hurtT * 2.5) : 0;
+  hurtEl.style.opacity = player.hurtT > 0.6 ? Math.min(1, (player.hurtT - 0.6) * 2.5) : 0;
 }
 
 // ------------------------------------------------------------------ minimap
@@ -1213,11 +1213,15 @@ function updateGulls(dt) {
   const indoors = inHouse(p);
   const head = _v2.set(p.x, p.y + 1.4, p.z);
   // how many attackers the alarm calls for
-  const want = state.alarm > 0 ? Math.min(10, state.alarm * 2) : 0;     // the same attack per alarm level, however big the flock
+  const want = [0, 1, 2, 3, 4, 6][state.alarm] || 0;     // the same attack per alarm level, however big the flock
+  // only a few dive at once, and none while you're still reeling from the last one
+  const maxDivers = Math.ceil(state.alarm / 2);
+  let divers = 0;
+  for (const a of gulls) if (a.state === 'dive') divers++;
   let have = gulls.filter(a => ['orbit', 'dive', 'climb'].includes(a.state)).length;
   if (have < want) {
     const cands = gulls.filter(a => a.state === 'circle' || a.state === 'ground' || a.state === 'leave').sort((x, y) => x.pos.distanceToSquared(p) - y.pos.distanceToSquared(p));
-    for (const a of cands.slice(0, want - have)) { a.state = 'orbit'; a.t = 1 + Math.random() * 2; a.ang = Math.random() * 6; }
+    for (const a of cands.slice(0, want - have)) { a.state = 'orbit'; a.t = 2 + Math.random() * 2; a.ang = Math.random() * 6; }
   } else if (have > want) {
     for (const a of gulls) { if (have <= want) break; if (['orbit', 'dive', 'climb'].includes(a.state)) { newCircle(a, false); a.state = 'leave'; a.t = 3; have--; } }
   }
@@ -1268,21 +1272,25 @@ function updateGulls(dt) {
         const hc = L2W(4, 4.2), cx = indoors ? hc[0] : p.x, cz = indoors ? hc[1] : p.z;
         desired.set(cx + Math.cos(a.ang) * r - a.pos.x, p.y + h + Math.sin(a.ang * 2) - a.pos.y, cz + Math.sin(a.ang) * r - a.pos.z).multiplyScalar(1.8);
         flap = 0.5;
-        if (a.t <= 0 && !indoors && player.knockT <= 0 && state.mode === 'play') { a.state = 'dive'; a.t = 2.4; audio.squawk(); }
+        if (a.t <= 0 && !indoors && player.knockT <= 0 && player.hurtT <= 0 && divers < maxDivers && state.mode === 'play') { a.state = 'dive'; a.t = 2.4; a.lock = null; divers++; audio.squawk(); }
         break;
       }
       case 'dive': {
-        const sp = 10 + state.alarm * 0.8;
-        desired.copy(head).sub(a.pos).normalize().multiplyScalar(sp);
+        // it homes in from afar, then commits to a line about 4.5 m out: move and it misses
+        const sp = 8.5 + state.alarm * 0.5;
+        if (!a.lock && a.pos.distanceTo(head) < 4.5) a.lock = head.clone().sub(a.pos).normalize();
+        if (a.lock) desired.copy(a.lock).multiplyScalar(sp);
+        else desired.copy(head).sub(a.pos).normalize().multiplyScalar(sp);
         flap = 0.15;
-        if (a.pos.distanceTo(head) < 0.85 && !indoors) { hitPlayer(a); a.state = 'climb'; a.t = 1.4; }
+        if (a.pos.distanceTo(head) < 0.75 && !indoors) { hitPlayer(a); a.state = 'climb'; a.t = 1.4; }
+        else if (a.lock && a.t < 1.9 && (a.pos.y < head.y - 1.2 || a.pos.distanceTo(head) > 6)) { a.state = 'climb'; a.t = 1.2; }   // missed
         else if (a.t <= 0 || indoors) { a.state = 'climb'; a.t = 1.2; }
         break;
       }
       case 'climb': {
         desired.set(a.vel.x, 6, a.vel.z).normalize().multiplyScalar(9);
         flap = 1;
-        if (a.t <= 0) { a.state = 'orbit'; a.t = 1.5 + Math.random() * 2.5 / Math.max(1, state.alarm * 0.6); }
+        if (a.t <= 0) { a.state = 'orbit'; a.t = 2.5 + Math.random() * 3 / Math.max(1, state.alarm * 0.5); }
         break;
       }
       case 'knocked': {
@@ -1338,14 +1346,15 @@ function updateGulls(dt) {
 }
 function hitPlayer(a) {
   if (state.mode !== 'play' || player.hurtT > 0.3) return;
-  const dmg = 7 + state.alarm * 2;
+  if (brollyBlocks(a)) return;
+  const dmg = 4 + state.alarm;
   player.health = Math.max(0, player.health - dmg);
-  player.hurtT = 0.6; player.regenT = 5;
+  player.hurtT = 1.2; player.regenT = 3;
   cam.shake = 0.7;
   audio.squawk(); audio.hurt();
   const away = new THREE.Vector3(player.pos.x - a.pos.x, 0, player.pos.z - a.pos.z).normalize();
   if (!player.riding) { player.vel.x += away.x * 4; player.vel.z += away.z * 4; player.vel.y = Math.max(player.vel.y, 3); player.onGround = false; }
-  else player.riding.speed *= 0.6;
+  else player.riding.speed *= 0.8;
   if (player.carrying) dropBolle();
   if (player.health <= 0) die('TATT AV MÅKENE', 'Taken by the gulls. They took 100 kr too.');
 }
@@ -1354,14 +1363,14 @@ function hitPlayer(a) {
 function raiseAlarm(n = 1) {
   const before = state.alarm;
   state.alarm = clamp(state.alarm + n, 0, 5);
-  state.alarmCool = 16;
+  state.alarmCool = 12;
   if (state.alarm > before) { state.alarmFlash = 2; if (before === 0) toast('Måkealarm! The gulls are coming for you.'); }
 }
 function updateAlarm(dt) {
   if (state.alarm < state.alarmMin) state.alarm = state.alarmMin;
   if (state.alarm > state.alarmMin) {
     state.alarmCool -= dt * (inHouse(player.pos) ? 2.5 : 1);
-    if (state.alarmCool <= 0) { state.alarm--; state.alarmCool = 14; if (state.alarm === 0) toast('The gulls lost interest.'); }
+    if (state.alarmCool <= 0) { state.alarm--; state.alarmCool = 10; if (state.alarm === 0) toast('The gulls lost interest.'); }
   }
 }
 
@@ -1519,7 +1528,60 @@ function toggleGun(on = !gun.drawn) {
   gun.obj.visible = on;
   if (!on) player.fig.aim = null;
   audio.reload();
-  if (on && !save.gunHint) { save.gunHint = true; persist(); toast(isTouch ? 'Pistol out. Shoot to fire, Gun to put it away.' : 'Pistol out. Click to shoot, G to put it away.', 3.5); }
+  if (on && !save.gunHint) { save.gunHint = true; persist(); toast(isTouch ? 'Pistol out. Shoot to fire; Gun again for the umbrella.' : 'Pistol out. Click to shoot; G again for the umbrella.', 3.5); }
+}
+
+// ------------------------------------------------------------------ the umbrella
+// G goes round what you hold: the pistol, then the umbrella, then nothing. Held open, the
+// umbrella takes the gulls' dives (they bounce off it), and if you stand still under it long
+// enough, they give up and the Måkealarm ends. It's held in the left hand, so it goes with the bolle.
+const brolly = { up: false, shelterT: 0, obj: new THREE.Group() };
+{
+  const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.012, 0.012, 1.0, 5), new THREE.MeshStandardMaterial({ color: 0x222222, roughness: 0.5 }));
+  pole.position.y = 0.45;
+  const can = new THREE.Mesh(new THREE.ConeGeometry(0.66, 0.3, 10, 1, true), new THREE.MeshStandardMaterial({ color: 0xc0201a, roughness: 0.45, side: THREE.DoubleSide }));
+  can.position.y = 0.98; can.castShadow = true;
+  const tip = new THREE.Mesh(new THREE.SphereGeometry(0.02, 6, 4), new THREE.MeshStandardMaterial({ color: 0x222222 }));
+  tip.position.y = 1.14;
+  brolly.obj.add(pole, can, tip);
+  brolly.obj.position.set(0, -0.3, 0.05);
+  brolly.obj.rotation.x = 1.45;      // upright over your head in the umbrella pose
+}
+const SHELTER_T = 7;
+function setBrolly(on) {
+  brolly.up = on;
+  brolly.shelterT = 0;
+  if (on) { player.fig.elbows[1].add(brolly.obj); player.fig.umbrella = brolly.obj; }
+  else { brolly.obj.removeFromParent(); player.fig.umbrella = null; }
+}
+// G: pistol, umbrella, empty hands (no pistol while carrying something)
+function cycleHand() {
+  if (gun.drawn) { toggleGun(false); setBrolly(true); audio.door(); }
+  else if (brolly.up) { setBrolly(false); audio.door(); }
+  else if (player.carrying) { setBrolly(true); audio.door(); }
+  else toggleGun(true);
+  if (brolly.up && !save.brollyHint) { save.brollyHint = true; persist(); toast('The umbrella keeps the gulls off. Stand still under it and they give up.', 4); }
+}
+// a gull dives into the open umbrella: it bounces off, and you're not hurt
+function brollyBlocks(a) {
+  if (!brolly.up || player.knockT > 0) return false;
+  audio.bump(); audio.squawk();
+  cam.shake = Math.max(cam.shake, 0.25);
+  emit(_v.copy(player.pos).setY(player.pos.y + 2.2), 6, { color: 0xf4f4f0, speed: 1.2, up: 1, spread: 1, life: 1, grav: 1.2 });
+  a.state = 'climb'; a.t = 1.4; a.vel.set(a.pos.x - player.pos.x, 4, a.pos.z - player.pos.z).normalize().multiplyScalar(7);
+  return true;
+}
+function updateBrolly(dt) {
+  if (!brolly.up || state.mode !== 'play') { brolly.shelterT = 0; return; }
+  const v = player.riding ? Math.abs(player.riding.speed) : Math.hypot(player.vel.x, player.vel.z);
+  if (state.alarm > state.alarmMin && v < 1.5 && !inHouse(player.pos)) {
+    brolly.shelterT += dt;
+    if (brolly.shelterT >= SHELTER_T) {
+      state.alarm = state.alarmMin; state.alarmCool = 10; brolly.shelterT = 0;
+      toast(state.alarm === 0 ? 'The gulls gave up. Måkealarm over.' : 'The gulls backed off.', 3);
+      audio.coin();
+    }
+  } else brolly.shelterT = Math.max(0, brolly.shelterT - dt * 2);
 }
 // distance along the ray (origin o, unit direction d) to a sphere, or Infinity
 function raySphere(o, d, c, r) {
@@ -1669,7 +1731,7 @@ function updatePlayer(dt) {
   player.punchCd -= dt;
   player.hurtT = Math.max(0, player.hurtT - dt);
   player.regenT -= dt;
-  if (player.regenT <= 0 && player.health < 100) player.health = Math.min(100, player.health + 4 * dt);
+  if (player.regenT <= 0 && player.health < 100) player.health = Math.min(100, player.health + 6 * dt);
 
   // use: get on / off scooters
   if (pressed.use && player.knockT <= 0) {
@@ -1679,7 +1741,7 @@ function updatePlayer(dt) {
       if (s) mount(s);
     }
   }
-  if (pressed.gun) toggleGun();
+  if (pressed.gun) cycleHand();
   if (pressed.punch) { if (gun.drawn) shoot(); else doPunch(); }
 
   if (player.riding) {
@@ -2358,6 +2420,8 @@ function swapTo(id) {
   nw.fig.elbows[0].add(carryHold);
   nw.fig.elbows[0].add(gun.obj);
   old.fig.aim = null;
+  old.fig.umbrella = null;
+  if (brolly.up) { nw.fig.elbows[1].add(brolly.obj); nw.fig.umbrella = brolly.obj; }
   player.pos.copy(nw.pos); player.vel.set(0, 0, 0); player.heading = nw.heading;
   player.knockT = 0; player.health = 100;
   cam.yaw = nw.heading + Math.PI; cam.pitch = 0.3; cam.cur = cam.dist = 4.4;
@@ -2570,7 +2634,7 @@ function frame(now) {
     updateTitleCam(time);
   } else {
     if (state.mode === 'play' || state.mode === 'dead' || state.mode === 'cut' || state.mode === 'switch') {
-      if (state.mode === 'play') { updateGun(dt); updatePlayer(dt); }
+      if (state.mode === 'play') { updateGun(dt); updatePlayer(dt); updateBrolly(dt); }
       else if (!window.__director) player.fig.animate(dt, 0, state.mode === 'dead' ? 'down' : state.mode === 'switch' ? 'idle' : 'walk');
       for (const s of scooters) if (s !== player.riding) updateScooter(s, dt, { x: 0, y: 0 });
       updateHeadlight();
@@ -2609,6 +2673,7 @@ function frame(now) {
     else if (state.mode === 'play' && player.riding && Math.abs(player.riding.speed) < 1) prompt = '<kbd>E</kbd>Get off';
     else if (state.mode === 'play' && player.riding && player.riding.speed > 4 && !save.rideHint) prompt = isTouch ? '<kbd>Jump</kbd>hold to drift <kbd>Run</kbd>boost <kbd>Trick</kbd>' : '<kbd>Space</kbd>drift <kbd>Shift</kbd>boost <kbd>Right-click</kbd>trick';
     if (player.riding && (player.riding.driftT > 1 || player.riding.trick) && !save.rideHint) { save.rideHint = true; persist(); }
+    if (!prompt && brolly.shelterT > 0.3) prompt = `Sheltering under the umbrella… ${Math.ceil(SHELTER_T - brolly.shelterT)}`;
     hud.prompt.hidden = !prompt;
     if (prompt && hud.prompt.innerHTML !== prompt) hud.prompt.innerHTML = prompt;
     audio.update(weather.rain, inHouse(camera.position), player.riding ? Math.abs(player.riding.speed) : 0, player.riding && turbo.on ? 1 : 0);
@@ -2628,9 +2693,10 @@ function frame(now) {
         { color: 0xcfd8dc, speed: 1.6, up: 1.2, spread: 0.6, life: 0.45, dir: _v2.set(-Math.sin(r.vdir) * 0.6, 0.3, -Math.cos(r.vdir) * 0.6) });
     }
     hud.crosshair.hidden = !(gun.drawn && state.mode === 'play');
-    hud.ammo.hidden = !gun.drawn || state.mode !== 'play';
-    if (gun.drawn) { const t = gun.reloadT > 0 ? 'Reloading…' : `${gun.ammo} / ${gun.mag}`; if (hud.ammo.textContent !== t) hud.ammo.textContent = t; }
+    hud.ammo.hidden = !(gun.drawn || brolly.up) || state.mode !== 'play';
+    if (gun.drawn || brolly.up) { const t = brolly.up ? 'Umbrella' : gun.reloadT > 0 ? 'Reloading…' : `${gun.ammo} / ${gun.mag}`; if (hud.ammo.textContent !== t) hud.ammo.textContent = t; }
     if (punchBtn) { const t = gun.drawn ? 'Shoot' : 'Punch'; if (punchBtn.textContent !== t) punchBtn.textContent = t; }
+    if (handBtn) { const t = gun.drawn ? 'Brolly' : brolly.up ? 'Hands' : 'Gun'; if (handBtn.textContent !== t) handBtn.textContent = t; }
     // the radio plays while you ride; R turns it off and on
     if (pressed.radio && player.riding && state.mode === 'play') {
       save.radio = !save.radio; persist();
@@ -2690,4 +2756,4 @@ $('play').disabled = false;
 $('play').textContent = save.mission > 0 ? (save.mission >= MISSIONS.length ? 'Free roam' : 'Continue') : 'Play';
 
 // debug hooks for testing
-window.__gt = { gameTime: () => time, gun, shoot, toggleGun, npcs, turbo, clock, dayState, nightPeople, lampLights, audio, switchTo, swapTo, mates: () => housemates, active: () => active, OUT_SPOTS, offer: () => offer, acceptOffer, declineOffer, makeOffer, scene, renderer, camera, player, cam, world, state, startMission, save, weather, scooters, gulls, mission: () => mission, startGame, raiseAlarm, ending, L2V, L2W, W2L, H, house, city, route, BAKERY, CHECKPOINTS: () => CHECKPOINTS, inHouse, housemates, PLACES, hitPlayer, dropBolle, bolle: () => ({ drop: bolleDrop, carrying: !!player.carrying }) };
+window.__gt = { gameTime: () => time, gun, shoot, toggleGun, brolly, cycleHand, npcs, turbo, clock, dayState, nightPeople, lampLights, audio, switchTo, swapTo, mates: () => housemates, active: () => active, OUT_SPOTS, offer: () => offer, acceptOffer, declineOffer, makeOffer, scene, renderer, camera, player, cam, world, state, startMission, save, weather, scooters, gulls, mission: () => mission, startGame, raiseAlarm, ending, L2V, L2W, W2L, H, house, city, route, BAKERY, CHECKPOINTS: () => CHECKPOINTS, inHouse, housemates, PLACES, hitPlayer, dropBolle, bolle: () => ({ drop: bolleDrop, carrying: !!player.carrying }) };
