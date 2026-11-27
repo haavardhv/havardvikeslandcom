@@ -372,7 +372,7 @@ const camBox = new THREE.Vector3();
 function updateCamera(dt) {
   const p = player.pos;
   const inside = inHouse(p);
-  const want = dive.on ? (dive.phase === 'free' ? 7 : 10) : lerp(player.riding ? 5.6 : inside ? 2.5 : 4.6, 3.1, gun.aimK);
+  const want = funiState.ride ? 13 : dive.on ? (dive.phase === 'free' ? 7 : 10) : lerp(player.riding ? 5.6 : inside ? 2.5 : 4.6, 3.1, gun.aimK);
   cam.dist = damp(cam.dist, want, 3, dt);
   const baseFov = camera.aspect < 0.8 ? 78 : 64;
   const fov = damp(camera.fov, (inside ? baseFov + 14 : baseFov) + (player.riding && turbo.on ? 9 : 0), 3, dt);
@@ -807,8 +807,8 @@ function say(n, text) {
 // street lamps come on.
 const sunDirV = new THREE.Vector3(), moonDirV = new THREE.Vector3();
 const NIGHT = {
-  top: new THREE.Color(0x04070e), hor: new THREE.Color(0x0d131e), dusk: new THREE.Color(0xd9875a), duskTop: new THREE.Color(0x3d4566),
-  hemi: new THREE.Color(0x4a5878), moon: new THREE.Color(0x9db3ff), sunLow: new THREE.Color(0xffa060), sunHigh: new THREE.Color(0xffeedd),
+  top: new THREE.Color(0x0b1424), hor: new THREE.Color(0x1c2638), dusk: new THREE.Color(0xd9875a), duskTop: new THREE.Color(0x3d4566),
+  hemi: new THREE.Color(0x6a7cab), moon: new THREE.Color(0xa9bcff), sunLow: new THREE.Color(0xffa060), sunHigh: new THREE.Color(0xffeedd),
 };
 const _dc = new THREE.Color();
 const smooth = (a, b, x) => { const t = clamp((x - a) / (b - a), 0, 1); return t * t * (3 - 2 * t); };
@@ -872,11 +872,12 @@ function updateDayNight(dt) {
   sunOffset.copy(bySun ? sunDirV : moonDirV);
   if (sunOffset.y < 0.18) { sunOffset.y = 0.18; sunOffset.normalize(); }
   if (bySun) { sun.intensity *= k; sun.color.lerpColors(NIGHT.sunLow, NIGHT.sunHigh, clamp(el / 0.35, 0, 1)); }
-  else { sun.intensity = 0.32 * (1 - k) * (1 - r * 0.55); sun.color.copy(NIGHT.moon); }
-  hemi.intensity *= lerp(0.16, 1, k);
+  else { sun.intensity = 0.6 * (1 - k) * (1 - r * 0.35); sun.color.copy(NIGHT.moon); }
+  // never pitch black: a blue night light everywhere, the lamps on top of it
+  hemi.intensity = Math.max(hemi.intensity * lerp(0.5, 1, k), 0.42);
   hemi.color.lerp(NIGHT.hemi, 1 - k);
-  scene.environmentIntensity = lerp(0.12, 0.75, k);
-  renderer.toneMappingExposure = lerp(1.3, 1.08, k);
+  scene.environmentIntensity = lerp(0.32, 0.75, k);
+  renderer.toneMappingExposure = lerp(1.5, 1.08, k);
   // the lamps come on at dusk (a little earlier under heavy cloud)
   const lamp = 1 - smooth(0.2, 0.6, k * (1 - 0.3 * r));
   dayState.lamp = lamp;
@@ -1381,7 +1382,7 @@ function updateGulls(dt) {
   }
 }
 function hitPlayer(a) {
-  if (state.mode !== 'play' || player.hurtT > 0.3) return;
+  if (state.mode !== 'play' || player.hurtT > 0.3 || funiState.ride) return;      // safe inside Fløibanen
   if (brollyBlocks(a)) return;
   const dmg = 4 + state.alarm;
   player.health = Math.max(0, player.health - dmg);
@@ -1886,6 +1887,15 @@ function updatePlayer(dt) {
   player.regenT -= dt;
   if (player.regenT <= 0 && player.health < 100) player.health = Math.min(100, player.health + 6 * dt);
 
+  // Fløibanen: get on a waiting car
+  if (funiState.ride) { pressed.use = pressed.jump = pressed.punch = false; player.fig.animate(dt, 0, 'idle'); return; }
+  if (pressed.use && player.knockT <= 0 && !player.carrying && funiCarHere() >= 0) {
+    pressed.use = false;
+    funiState.ride = { car: funiCarHere(), moved: false };
+    if (gun.drawn) toggleGun(false);
+    audio.door();
+    toast(funiState.u[funiState.ride.car] < 0.5 ? 'Fløibanen: up to Fløyen' : 'Fløibanen: down to town', 2.5);
+  }
   // use: get on / off scooters, or jump from Fløyen
   if (pressed.use && player.knockT <= 0 && !player.riding && !player.carrying && Math.hypot(player.pos.x - JUMP.x, player.pos.z - JUMP.z) < 3.5 && Math.abs(player.pos.y - JUMP.y) < 3) { pressed.use = false; startSkydive(); }
   if (pressed.use && player.knockT <= 0) {
@@ -2773,7 +2783,64 @@ $('reset').addEventListener('click', () => {
 // ------------------------------------------------------------------ main loop
 let last = performance.now(), time = 0, frameAvg = 16, adaptT = 0, gpsT = 0, frameNo = 0;
 renderer.shadowMap.autoUpdate = false;
-const funiState = { t: 0 };
+// Fløibanen: two cars on a timetable, passing halfway. Each waits at its station, then runs
+// to the other end. Stand by a waiting car and press E to ride; you get off at the other end.
+const FUNI_WAIT = 18, FUNI_RUN = 75;
+const funiState = { t: 0, ride: null, u: [0, 1] };
+const funiWin = city.cars.map(car => car.children[1] && car.children[1].material);
+// the platform beside each end of the line, where you get on and off
+const funiStop = [0, 1].map(u => {
+  const c = city.funiCurve, p = c.getPointAt(u), q = c.getPointAt(u ? u - 0.01 : 0.01);
+  const dx = q.x - p.x, dz = q.z - p.z, l = Math.hypot(dx, dz) || 1;
+  for (const side of [1, -1]) for (const d of [3.5, 5, 7]) {
+    const x = p.x - dz / l * d * side + (u ? -dx / l * 3 : dx / l * 3), z = p.z + dx / l * d * side + (u ? -dz / l * 3 : dz / l * 3);
+    const y = world.floorAt(x, z, p.y + 3, 5);
+    if (y > -50 && Math.abs(y - (p.y - 0.8)) < 3) return new THREE.Vector3(x, y, z);
+  }
+  return new THREE.Vector3(p.x + 3, world.floorAt(p.x + 3, p.z, p.y + 3, 6), p.z);
+});
+function updateFuni(dt) {
+  const f = funiState, cyc = 2 * (FUNI_WAIT + FUNI_RUN);
+  f.t = (f.t + dt) % cyc;
+  // car 0: waits at the bottom, runs up, waits at the top, runs down; car 1 the other way round
+  const t = f.t, ease = x => x * x * (3 - 2 * x);
+  const u0 = t < FUNI_WAIT ? 0 : t < FUNI_WAIT + FUNI_RUN ? ease((t - FUNI_WAIT) / FUNI_RUN) : t < 2 * FUNI_WAIT + FUNI_RUN ? 1 : 1 - ease((t - 2 * FUNI_WAIT - FUNI_RUN) / FUNI_RUN);
+  f.u = [u0, 1 - u0];
+  f.waiting = t < FUNI_WAIT || (t >= FUNI_WAIT + FUNI_RUN && t < 2 * FUNI_WAIT + FUNI_RUN);
+  city.cars.forEach((car, i) => {
+    const u = clamp(f.u[i], 0, 0.995);
+    const p = city.funiCurve.getPointAt(u), p2 = city.funiCurve.getPointAt(u + 0.005);
+    car.position.copy(p);
+    car.lookAt(p2.x, p.y, p2.z);
+    if (funiWin[i]) { funiWin[i].emissive.setHex(0xffd9a0); funiWin[i].emissiveIntensity = dayState.lamp * 1.4; }
+  });
+  // riding: you're in the car; at the other end you step out onto the platform
+  const r = f.ride;
+  if (r) {
+    const car = city.cars[r.car];
+    player.pos.copy(car.position); player.vel.set(0, 0, 0);
+    player.fig.root.visible = false;
+    if (!f.waiting) r.moved = true;
+    if (r.moved && f.waiting) {
+      const end = f.u[r.car] > 0.5 ? 1 : 0;
+      f.ride = null;
+      player.pos.copy(funiStop[end]); player.onGround = true;
+      player.fig.root.visible = true;
+      toast(end ? 'Fløyen, 320 moh. Mind the gulls.' : 'Vetrlidsallmenningen. Torget is just down the street.', 3);
+      audio.door();
+    }
+  }
+}
+// the car waiting at the station you're standing at, if any
+function funiCarHere() {
+  const f = funiState;
+  if (!f.waiting || f.ride || player.riding || dive.on) return -1;
+  for (let i = 0; i < 2; i++) {
+    const end = f.u[i] > 0.5 ? 1 : 0;
+    if (player.pos.distanceTo(funiStop[end]) < 6 || player.pos.distanceTo(city.cars[i].position) < 7) return i;
+  }
+  return -1;
+}
 function frame(now) {
   requestAnimationFrame(frame);
   let dt = clamp((now - last) / 1000, 0, 0.05);
@@ -2816,6 +2883,7 @@ function frame(now) {
     { const [hx, hz] = L2W(4, 4.2); blips.push({ x: hx, z: hz, c: '#f4f1ea', r: 6, edge: true }); }
     for (const pl of PLACES) blips.push({ x: pl.x, z: pl.z, c: pl.st.bg, r: 7, label: pl.n, edge: pl.k === 'food' });
     blips.push({ x: JUMP.x, z: JUMP.z, c: '#e2231a', r: 6, label: 'Skydive' });
+    blips.push({ x: funiStop[0].x, z: funiStop[0].z, c: '#2f6db5', r: 5, label: 'Fløibanen' });
     for (const lm of map.landmarks || []) if (lm.n !== 'Fløyen') blips.push({ x: lm.x, z: lm.z, c: '#cfd6dc', r: 4, label: lm.n });
     for (const sec of tram.sections) if (sec.g.visible) blips.push({ x: sec.x, z: sec.z, c: '#f07c1a', r: 4 });
     // GPS route to the current target, recomputed now and then
@@ -2835,6 +2903,8 @@ function frame(now) {
     else if (state.mode === 'play' && player.riding && Math.abs(player.riding.speed) < 1) prompt = '<kbd>E</kbd>Get off';
     else if (state.mode === 'play' && player.riding && player.riding.speed > 4 && !save.rideHint) prompt = isTouch ? '<kbd>Jump</kbd>trick <kbd>Run</kbd>boost <kbd>Drift</kbd>hold to drift' : '<kbd>Space</kbd>trick <kbd>Shift</kbd>boost <kbd>Right mouse</kbd>hold to drift';
     if (player.riding && (player.riding.driftT > 1 || player.riding.trick) && !save.rideHint) { save.rideHint = true; persist(); }
+    if (state.mode === 'play' && !prompt && funiCarHere() >= 0) prompt = `<kbd>E</kbd>Ride Fløibanen ${funiState.u[funiCarHere()] < 0.5 ? 'up to Fløyen' : 'down to town'}`;
+    if (state.mode === 'play' && funiState.ride) prompt = funiState.waiting && !funiState.ride.moved ? 'Fløibanen: leaving shortly…' : 'Fløibanen';
     if (state.mode === 'play' && !player.riding && !dive.on && !prompt && Math.hypot(player.pos.x - JUMP.x, player.pos.z - JUMP.z) < 3.5 && Math.abs(player.pos.y - JUMP.y) < 3) prompt = '<kbd>E</kbd>Skydive from 450 m';
     if (dive.on && state.mode === 'play') prompt = `Altitude ${Math.max(0, Math.round(skyAlt))} m · ` + (dive.phase === 'free' ? (isTouch ? '<kbd>Jump</kbd>open the parachute' : '<kbd>Space</kbd>open the parachute') : 'A/D steer · W dive · S flare');
     if (!prompt && brolly.shelterT > 0.3) prompt = `Sheltering under the umbrella… ${Math.ceil(SHELTER_T - brolly.shelterT)}`;
@@ -2879,16 +2949,7 @@ function frame(now) {
   updateRain(dt);
   if (sw && sw.high) rain.visible = false;      // no rain streaks across the sky camera
 
-  // funicular cars shuttle up and down, passing halfway
-  funiState.t += dt / 70;
-  const ft = (Math.sin(funiState.t * Math.PI * 2) + 1) / 2;
-  city.cars.forEach((car, i) => {
-    const u = clamp(i === 0 ? ft : 1 - ft, 0, 0.995);
-    const p = city.funiCurve.getPointAt(u);
-    const p2 = city.funiCurve.getPointAt(u + 0.005);
-    car.position.copy(p);
-    car.lookAt(p2.x, p.y, p2.z);
-  });
+  updateFuni(dt);
 
   // the sun's shadow box follows the player
   const focus = state.mode === 'title' ? L2V(3, H.FU, 0) : (state.mode === 'cut' ? L2V(3, H.FL, 6) : player.pos);
@@ -2920,4 +2981,4 @@ $('play').disabled = false;
 $('play').textContent = save.mission > 0 ? (save.mission >= MISSIONS.length ? 'Free roam' : 'Continue') : 'Play';
 
 // debug hooks for testing
-window.__gt = { gameTime: () => time, places, tram, dive, startSkydive, JUMP, gun, shoot, toggleGun, brolly, cycleHand, npcs, turbo, clock, dayState, nightPeople, lampLights, audio, switchTo, swapTo, mates: () => housemates, active: () => active, OUT_SPOTS, offer: () => offer, acceptOffer, declineOffer, makeOffer, scene, renderer, camera, player, cam, world, state, startMission, save, weather, scooters, gulls, mission: () => mission, startGame, raiseAlarm, ending, L2V, L2W, W2L, H, house, city, route, BAKERY, CHECKPOINTS: () => CHECKPOINTS, inHouse, housemates, PLACES, hitPlayer, dropBolle, bolle: () => ({ drop: bolleDrop, carrying: !!player.carrying }) };
+window.__gt = { gameTime: () => time, places, tram, dive, funiState, funiStop, funiCarHere, startSkydive, JUMP, gun, shoot, toggleGun, brolly, cycleHand, npcs, turbo, clock, dayState, nightPeople, lampLights, audio, switchTo, swapTo, mates: () => housemates, active: () => active, OUT_SPOTS, offer: () => offer, acceptOffer, declineOffer, makeOffer, scene, renderer, camera, player, cam, world, state, startMission, save, weather, scooters, gulls, mission: () => mission, startGame, raiseAlarm, ending, L2V, L2W, W2L, H, house, city, route, BAKERY, CHECKPOINTS: () => CHECKPOINTS, inHouse, housemates, PLACES, hitPlayer, dropBolle, bolle: () => ({ drop: bolleDrop, carrying: !!player.carrying }) };
