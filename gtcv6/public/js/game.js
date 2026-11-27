@@ -2948,6 +2948,7 @@ function frame(now) {
   updateGulls(dt);
   updateRain(dt);
   if (sw && sw.high) rain.visible = false;      // no rain streaks across the sky camera
+  if (camera.position.y < world.terrain.height(camera.position.x, camera.position.z) - 0.5) rain.visible = false;   // underground: in Fløibanen's tunnels
 
   updateFuni(dt);
 

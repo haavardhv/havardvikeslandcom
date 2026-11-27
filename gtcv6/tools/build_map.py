@@ -730,9 +730,13 @@ print('trees', len(trees) // 2)
 
 # ------------------------------------------------------------------ funicular
 funi = []
+tunnel_pairs = set()            # the stretches that run in a tunnel (under Skansen, under Fjellveien)
 for w in ways.values():
     if w.get('tags', {}).get('railway') == 'funicular':
-        funi.append([nid for nid in w['nodes'] if nid in nodes])
+        ids = [nid for nid in w['nodes'] if nid in nodes]
+        funi.append(ids)
+        if w['tags'].get('tunnel') == 'yes':
+            for a, b2 in zip(ids, ids[1:]): tunnel_pairs.add((min(a, b2), max(a, b2)))
 # stitch the ways into one line from the lower station upwards
 segs = [s for s in funi if len(s) > 1]
 line = max(segs, key=len)
@@ -748,9 +752,11 @@ while changed:
         elif s[0] == line[0]: line = s[::-1][:-1] + line
         else: continue
         used.add(id(s)); changed = True
+if P(nodes[line[0]])[0] > P(nodes[line[-1]])[0]: line = line[::-1]    # start at the lower station (west)
 fl = [P(nodes[i]) for i in line]
-if fl[0][0] > fl[-1][0]: fl = fl[::-1]    # start at the lower station (west)
 funicular = flat(fl)
+funi_tunnel = [int((min(a, b2), max(a, b2)) in tunnel_pairs) for a, b2 in zip(line, line[1:])]     # per segment
+print('funicular tunnel segments', sum(funi_tunnel), 'of', len(funi_tunnel))
 print('funicular points', len(fl), 'from', [r1(v) for v in fl[0]], 'to', [r1(v) for v in fl[-1]])
 
 # ------------------------------------------------------------------ Bybanen: the tracks, the platforms and the train's route
@@ -867,6 +873,7 @@ out = {
     'roads': roads,
     'trees': trees,
     'funicular': funicular,
+    'funiTunnel': funi_tunnel,
     'tram': {'tracks': tracks, 'platforms': platforms, 'route': tram_route},
     'landmarks': landmarks,
     'graph': graph,
