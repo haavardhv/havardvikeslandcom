@@ -1011,13 +1011,123 @@ const nightPeople = [];
     fig.root.visible = false;
     scene.add(fig.root);
     const y = world.floorAt(px, pz, world.terrain.height(px, pz) + 2, 3);
-    nightPeople.push({ fig, pos: new THREE.Vector3(px, y > -50 ? y : world.terrain.height(px, pz), pz), base: Math.atan2(fx, fz), heading: Math.atan2(fx, fz), shown: false, talkT: Math.random() * 4, bubble: null, bubbleT: 0, phase: Math.random() * 6 });
+    const pos = new THREE.Vector3(px, y > -50 ? y : world.terrain.height(px, pz), pz);
+    nightPeople.push({ fig, pos, home: pos.clone(), homeHeading: Math.atan2(fx, fz), base: Math.atan2(fx, fz), heading: Math.atan2(fx, fz), shown: false, talkT: Math.random() * 4, bubble: null, bubbleT: 0, phase: Math.random() * 6, ride: null, away: false });
   });
+}
+// Like GTA: pull up beside one of them on a scooter at night, slow, and press E. If you have the
+// money she climbs on the back. Find somewhere quiet (stopped, nobody about, away from the corners)
+// and wait: it all happens off camera, so to speak, while the scooter rocks, your kroner tick away
+// and your health and boost fill up. Ride off, press E, or run out of money and it's over; she gets
+// off and finds her own way back to her corner.
+const SERVICE = { price: 20, tick: 1.4, ticks: 8 };
+const PICKUP_LINES = ['Ooh, a sparkesykkel. Classy.', 'Somewhere quiet, darling.', 'Hold it steady, love.', 'Not too fast, I\'m in heels.'];
+const SERVICE_LINES = ['Mmm, Fjellet boys…', 'Mind the kickstand!', 'Oh, darling…', 'Careful, it rocks!', 'Ooh, the brakes!'];
+const nightPassenger = () => nightPeople.find(w => w.ride);
+function nightCandidate() {
+  const s = player.riding;
+  if (!s || state.mode !== 'play' || player.carrying || dayState.lamp <= 0.6 || Math.abs(s.speed) > 2.5 || s.trick || nightPassenger()) return null;
+  let best = null, bd = 3.5;
+  for (const w of nightPeople) {
+    if (!w.shown || w.away || !w.fig.root.visible || Math.abs(player.pos.y - w.pos.y) > 2) continue;
+    const d = Math.hypot(player.pos.x - w.pos.x, player.pos.z - w.pos.z);
+    if (d < bd) { bd = d; best = w; }
+  }
+  return best;
+}
+function nightPrompt() {
+  const w = nightPassenger();
+  if (w && w.ride.serving) return isTouch ? 'Ride off to stop' : '<kbd>E</kbd> or ride off to stop';
+  if (w) return w.ride.quietT > 0 ? 'Somewhere quiet… wait…' : 'Find somewhere quiet and stop';
+  if (nightCandidate()) return save.money >= SERVICE.price ? `<kbd>E</kbd>Pick her up · ${SERVICE.price} kr` : 'No kroner, no company';
+  return '';
+}
+// E on a scooter next to her: she climbs on. Returns true if E was used up here.
+function tryPickup() {
+  const w = nightPassenger();
+  if (w && w.ride.serving) { endService(w, 'That\'s all, sweetie?'); return true; }
+  const c = nightCandidate();
+  if (!c) return false;
+  if (save.money < SERVICE.price) { say(c, 'No kroner, no company, love.'); audio.bump(); return true; }
+  if (gun.drawn) toggleGun(false);
+  c.ride = { s: player.riding, quietT: 0, serving: false, tickT: 0, ticks: 0, rock: 0 };
+  if (c.bubble) { c.fig.root.remove(c.bubble); c.bubble = null; }
+  say(c, PICKUP_LINES[Math.floor(Math.random() * PICKUP_LINES.length)]);
+  audio.pickup();
+  toast('Find somewhere quiet', 2.2);
+  return true;
+}
+// somewhere quiet: nobody walking about nearby, not under a corner lamp, not in the house
+function quietHere() {
+  const p = player.pos;
+  if (inHouse(p)) return false;
+  for (const n of npcs) if (!n.active && n.placed && n.fig.root.visible && n.pos.distanceTo(p) < 18) return false;
+  for (const w of nightPeople) if (!w.ride && w.shown && Math.hypot(w.home.x - p.x, w.home.z - p.z) < 30) return false;
+  return true;
+}
+function endService(w, line) {
+  const r = w.ride;
+  if (r.serving) { audio.coin(); toast(`Paid ${r.ticks * SERVICE.price} kr`, 2.2); }
+  dropOff(w, line);
+}
+// she gets off on the left of the scooter (you get off on the right)
+function dropOff(w, line) {
+  const s = w.ride.s;
+  w.ride = null; w.away = true;
+  const sx = -Math.cos(s.heading) * 0.8, sz = Math.sin(s.heading) * 0.8;
+  w.pos.set(s.pos.x + sx, s.pos.y, s.pos.z + sz);
+  world.collide(w.pos, RADIUS, HEIGHT, STEP);
+  const fl = world.floorAt(w.pos.x, w.pos.z, w.pos.y + 1, 2);
+  if (fl > -50) w.pos.y = fl;
+  w.base = w.heading = s.heading + Math.PI / 2;
+  w.fig.body.rotation.x = 0;
+  if (line) say(w, line);
+}
+function updatePassenger(w, dt) {
+  const r = w.ride, s = r.s;
+  if (player.riding !== s || state.mode === 'dead') { dropOff(w, r.serving ? 'Hey! You still owe me!' : 'Ow! Idiot!'); return; }
+  if (s.trick) { dropOff(w, 'Are you mad?! I\'m off.'); return; }
+  if (gun.drawn) { dropOff(w, 'Put that thing away!'); return; }
+  if (dayState.lamp <= 0.6 && !r.serving) { dropOff(w, 'Sun\'s up. I\'m off, love.'); return; }
+  const still = Math.abs(s.speed) < 0.3 && !s.trick;
+  if (!r.serving) {
+    r.quietT = still && quietHere() ? r.quietT + dt : 0;
+    if (r.quietT > 1.5) { r.serving = true; r.tickT = 0.6; say(w, 'Here? Alright, darling.'); }
+  } else {
+    if (!still) { endService(w, 'In a hurry, are we?'); return; }
+    r.tickT -= dt;
+    if (r.tickT <= 0) {
+      r.tickT = SERVICE.tick;
+      if (save.money < SERVICE.price) { endService(w, 'No more kroner? Bye, love.'); return; }
+      save.money -= SERVICE.price; r.ticks++; persist();
+      player.health = Math.min(100, player.health + 10); player.regenT = 0;
+      turbo.charge = Math.min(1, turbo.charge + 0.15);
+      if (r.ticks % 3 === 1) say(w, SERVICE_LINES[Math.floor(Math.random() * SERVICE_LINES.length)]);
+      emit(_v.set(s.pos.x, s.pos.y + 1.9, s.pos.z), 4, { color: 0xff5fa8, speed: 0.3, up: 0.9, spread: 0.3, life: 0.9, grav: -0.6 });
+      if (r.ticks >= SERVICE.ticks) { endService(w, 'Same time tomorrow, handsome?'); return; }
+    }
+  }
+  // rock the scooter while it's going on (after the scooter and the rider have been posed)
+  r.rock = damp(r.rock, r.serving ? 1 : 0, 4, dt);
+  const rk = Math.sin(time * 9) * 0.06 * r.rock;
+  s.obj.rotation.z += rk; player.fig.root.rotation.z += rk;
+  // she stands on the back of the deck, holding on
+  const bx = -Math.sin(s.heading) * 0.36, bz = -Math.cos(s.heading) * 0.36;
+  w.pos.set(s.pos.x + bx, s.pos.y, s.pos.z + bz);
+  w.fig.animate(dt, 0, 'ride');
+  w.fig.root.visible = true;
+  w.fig.root.position.copy(w.pos).add(_v.set(0, 0.17 + Math.abs(rk) * 0.4, 0));
+  w.fig.root.rotation.set(s.tilt, s.heading, s.lean + rk, 'YXZ');
+  w.fig.body.rotation.z = 0;
+  if (w.bubble) { w.bubbleT -= dt; if (w.bubbleT <= 0) { w.fig.root.remove(w.bubble); w.bubble = null; } }
 }
 function updateNightPeople(dt) {
   const night = dayState.lamp > 0.6;
   for (const w of nightPeople) {
+    if (w.ride) { updatePassenger(w, dt); continue; }
     const dCam = w.pos.distanceTo(camera.position);
+    // dropped off somewhere: once you're out of sight she's back on her corner
+    if (w.away && dCam > 45) { w.away = false; w.pos.copy(w.home); w.base = w.heading = w.homeHeading; }
     if (night !== w.shown && dCam > 45) { w.shown = night; if (!night && w.bubble) { w.fig.root.remove(w.bubble); w.bubble = null; } }
     w.fig.root.visible = w.shown && dCam < 95;
     if (!w.fig.root.visible) continue;
@@ -1997,6 +2107,7 @@ function updatePlayer(dt) {
   }
   // use: get on / off scooters, or jump from Fløyen
   if (pressed.use && player.knockT <= 0 && !player.riding && !player.carrying && Math.hypot(player.pos.x - JUMP.x, player.pos.z - JUMP.z) < 3.5 && Math.abs(player.pos.y - JUMP.y) < 3) { pressed.use = false; startSkydive(); }
+  if (pressed.use && player.knockT <= 0 && player.riding && tryPickup()) pressed.use = false;
   if (pressed.use && player.knockT <= 0) {
     if (player.riding) dismount();
     else {
@@ -2997,8 +3108,9 @@ function frame(now) {
     }
     drawMinimap(blips);
     // prompt
-    let prompt = '';
-    if (state.mode === 'play' && !player.riding) { const s = nearestScooter(1.7); if (s) prompt = `<kbd>${isTouch ? 'E' : 'E'}</kbd>${s.stolen ? 'Ride e-scooter' : 'Steal e-scooter'}`; }
+    let prompt = nightPrompt();
+    if (prompt) { /* the night's business comes first */ }
+    else if (state.mode === 'play' && !player.riding) { const s = nearestScooter(1.7); if (s) prompt = `<kbd>${isTouch ? 'E' : 'E'}</kbd>${s.stolen ? 'Ride e-scooter' : 'Steal e-scooter'}`; }
     else if (state.mode === 'play' && player.riding && Math.abs(player.riding.speed) < 1) prompt = '<kbd>E</kbd>Get off';
     else if (state.mode === 'play' && player.riding && player.riding.speed > 4 && !save.rideHint) prompt = isTouch ? '<kbd>Jump</kbd>trick <kbd>Run</kbd>boost <kbd>Drift</kbd>hold to drift' : '<kbd>Space</kbd>trick <kbd>Shift</kbd>boost <kbd>Right mouse</kbd>hold to drift';
     if (player.riding && (player.riding.driftT > 1 || player.riding.trick) && !save.rideHint) { save.rideHint = true; persist(); }
@@ -3081,4 +3193,4 @@ $('play').disabled = false;
 $('play').textContent = save.mission > 0 ? (save.mission >= MISSIONS.length ? 'Free roam' : 'Continue') : 'Play';
 
 // debug hooks for testing
-window.__gt = { gameTime: () => time, places, street, tram, dive, funiState, funiStop, funiCarHere, startSkydive, JUMP, gun, shoot, toggleGun, brolly, cycleHand, npcs, turbo, clock, dayState, nightPeople, lampLights, audio, switchTo, swapTo, mates: () => housemates, active: () => active, OUT_SPOTS, offer: () => offer, acceptOffer, declineOffer, makeOffer, scene, renderer, camera, player, cam, world, state, startMission, save, weather, scooters, gulls, mission: () => mission, startGame, raiseAlarm, ending, L2V, L2W, W2L, H, house, city, route, BAKERY, CHECKPOINTS: () => CHECKPOINTS, inHouse, housemates, PLACES, hitPlayer, dropBolle, bolle: () => ({ drop: bolleDrop, carrying: !!player.carrying }) };
+window.__gt = { gameTime: () => time, nightPassenger, tryPickup, quietHere, places, street, tram, dive, funiState, funiStop, funiCarHere, startSkydive, JUMP, gun, shoot, toggleGun, brolly, cycleHand, npcs, turbo, clock, dayState, nightPeople, lampLights, audio, switchTo, swapTo, mates: () => housemates, active: () => active, OUT_SPOTS, offer: () => offer, acceptOffer, declineOffer, makeOffer, scene, renderer, camera, player, cam, world, state, startMission, save, weather, scooters, gulls, mission: () => mission, startGame, raiseAlarm, ending, L2V, L2W, W2L, H, house, city, route, BAKERY, CHECKPOINTS: () => CHECKPOINTS, inHouse, housemates, PLACES, hitPlayer, dropBolle, bolle: () => ({ drop: bolleDrop, carrying: !!player.carrying }) };
