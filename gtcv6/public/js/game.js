@@ -49,6 +49,8 @@ const skyU = {
   cloud: { value: 0.8 },
   time: { value: 0 },
   sunDir: { value: new THREE.Vector3() },
+  moonDir: { value: new THREE.Vector3(0, 1, 0) },
+  day: { value: 1 },
 };
 const sky = new THREE.Mesh(
   new THREE.SphereGeometry(2000, 32, 16),
@@ -56,7 +58,7 @@ const sky = new THREE.Mesh(
     uniforms: skyU, side: THREE.BackSide, depthWrite: false, fog: false,
     vertexShader: `varying vec3 vDir; void main(){ vDir = position; vec4 p = projectionMatrix * modelViewMatrix * vec4(position,1.0); gl_Position = p.xyww; }`,
     fragmentShader: `
-      uniform vec3 top, horizon, sunDir; uniform float cloud, time; varying vec3 vDir;
+      uniform vec3 top, horizon, sunDir, moonDir; uniform float cloud, time, day; varying vec3 vDir;
       float h21(vec2 p){ p = fract(p*vec2(123.34, 456.21)); p += dot(p, p+45.32); return fract(p.x*p.y); }
       float n2(vec2 p){ vec2 i=floor(p), f=fract(p); f=f*f*(3.-2.*f);
         return mix(mix(h21(i),h21(i+vec2(1,0)),f.x), mix(h21(i+vec2(0,1)),h21(i+vec2(1,1)),f.x), f.y); }
@@ -67,10 +69,16 @@ const sky = new THREE.Mesh(
         vec3 col = mix(horizon, top, pow(h, .55));
         float sun = pow(max(dot(d, sunDir), 0.), 40.) * (1. - cloud);
         col += vec3(1., .85, .6) * sun * .8;
+        // stars and the moon at night, where the clouds let them through
+        float night = 1. - day;
+        float star = step(.9965, h21(floor(d.xz / (d.y + .25) * 220.))) * smoothstep(.05, .3, d.y);
+        float md = dot(d, moonDir);
+        float moon = smoothstep(.9992, .9995, md) + pow(max(md, 0.), 60.) * .25;
+        col += (vec3(star) * .8 + vec3(.9, .93, 1.) * moon) * night * (1. - cloud * .75);
         vec2 uv = d.xz / (d.y + .12) * 1.4 + vec2(time*.012, time*.005);
         float n = fbm(uv);
         float c = smoothstep(.62 - cloud*.45, .95 - cloud*.2, n);
-        vec3 cc = mix(vec3(.96,.96,.97), vec3(.52,.56,.6), cloud);
+        vec3 cc = mix(vec3(.96,.96,.97), vec3(.52,.56,.6), cloud) * mix(.06, 1., day);
         col = mix(col, cc, c * smoothstep(0., .12, d.y) * (.55 + cloud*.4));
         gl_FragColor = vec4(col, 1.);
         #include <tonemapping_fragment>
@@ -96,6 +104,10 @@ scene.add(sun, sun.target);
 scene.fog = new THREE.Fog(0xa3acb2, 30, 700);
 
 const weather = { rain: 0.85, target: 0.85, t: 50, forced: null, sunny: false };
+// the time of day: one whole day every five real minutes (`?hour=22` starts the clock at 22:00)
+const DAY_LEN = 300;
+const clock = { t: params.has('hour') ? ((+params.get('hour') || 0) / 24) % 1 : 10 / 24 };
+const dayState = { k: 1, lamp: 0 };
 const C = {
   topWet: new THREE.Color(0x66737e), horWet: new THREE.Color(0x9aa3a8),
   topDry: new THREE.Color(0x4f86c0), horDry: new THREE.Color(0xc4d3dc),
@@ -131,10 +143,10 @@ envScene.add(envSky);
 // a dark band below the horizon, like the hills and sea around Bergen
 const envGround = new THREE.Mesh(new THREE.SphereGeometry(1500, 16, 8, 0, Math.PI * 2, Math.PI * 0.52, Math.PI * 0.48), new THREE.MeshBasicMaterial({ color: 0x2b3430, side: THREE.BackSide, fog: false }));
 envScene.add(envGround);
-let envRT = null, envRain = -1;
+let envRT = null, envRain = -1, envDay = -1;
 function updateEnv() {
-  if (Math.abs(weather.rain - envRain) < 0.06 && envRT) return;
-  envRain = weather.rain;
+  if (Math.abs(weather.rain - envRain) < 0.06 && Math.abs(dayState.k - envDay) < 0.05 && envRT) return;
+  envRain = weather.rain; envDay = dayState.k;
   const old = envRT;
   envRT = pmrem.fromScene(envScene, 0, 1, 2500);
   scene.environment = envRT.texture;
@@ -481,7 +493,7 @@ function moveInput() {
 const hud = {
   money: $('money'), alarm: $('alarm'), health: $('health').firstElementChild, timer: $('timer'),
   objective: $('objective'), prompt: $('prompt'), phone: $('phone'), toast: $('toast'), banner: $('banner'),
-  umbrellas: $('umbrellas'), street: $('street'), crosshair: $('crosshair'), ammo: $('ammo'), boost: $('boostbar').firstElementChild,
+  umbrellas: $('umbrellas'), street: $('street'), crosshair: $('crosshair'), ammo: $('ammo'), boost: $('boostbar').firstElementChild, clock: $('clock'),
 };
 const punchBtn = document.querySelector('#touch [data-k="punch"]');
 const gullSvg = '<svg viewBox="0 0 32 18" aria-hidden="true"><path d="M1 6c5-3 10-2 15 4 5-6 10-7 15-4-4 0-9 3-11 8l-4 1-4-1C10 9 5 6 1 6z"/></svg>';
@@ -517,6 +529,7 @@ document.body.appendChild(hurtEl);
 function updateHud(dt) {
   shownMoney = Math.abs(save.money - shownMoney) < 1 ? save.money : damp(shownMoney, save.money, 6, dt);
   hud.money.textContent = 'kr ' + Math.round(shownMoney).toLocaleString('nb-NO');
+  { const t = clockText(); if (hud.clock.textContent !== t) hud.clock.textContent = t; }
   const svgs = hud.alarm.children;
   for (let i = 0; i < 5; i++) svgs[i].classList.toggle('on', i < state.alarm);
   hud.alarm.classList.toggle('flash', state.alarm > 0 && state.alarmFlash > 0);
@@ -753,6 +766,154 @@ function say(n, text) {
   n.fig.root.add(n.bubble);
   n.bubbleT = 2.2;
 }
+// ------------------------------------------------------------------ day and night
+// The sun goes round once every five minutes. By night the sky goes dark blue with stars and a
+// moon in the gaps between the clouds, the moon lights the town, the windows glow, and the
+// street lamps come on.
+const sunDirV = new THREE.Vector3(), moonDirV = new THREE.Vector3();
+const NIGHT = {
+  top: new THREE.Color(0x04070e), hor: new THREE.Color(0x0d131e), dusk: new THREE.Color(0xd9875a), duskTop: new THREE.Color(0x3d4566),
+  hemi: new THREE.Color(0x4a5878), moon: new THREE.Color(0x9db3ff), sunLow: new THREE.Color(0xffa060), sunHigh: new THREE.Color(0xffeedd),
+};
+const _dc = new THREE.Color();
+const smooth = (a, b, x) => { const t = clamp((x - a) / (b - a), 0, 1); return t * t * (3 - 2 * t); };
+// street lamps: a pool of warm light on the street under every lamp (painted into the terrain, in
+// city.js), a halo round every head, and a few real lights that follow you from lamp to lamp
+const lampSpots = city.lamps ? city.lamps.spots : [];
+const radialTex = (stops) => {
+  const c = document.createElement('canvas'); c.width = c.height = 128;
+  const g = c.getContext('2d'), gr = g.createRadialGradient(64, 64, 0, 64, 64, 64);
+  for (const [o, col] of stops) gr.addColorStop(o, col);
+  g.fillStyle = gr; g.fillRect(0, 0, 128, 128);
+  const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; return t;
+};
+const lampHalos = (() => {
+  const pos = new Float32Array(lampSpots.length * 3);
+  lampSpots.forEach(([x, y, z], i) => { pos[i * 3] = x; pos[i * 3 + 1] = y + 4.62; pos[i * 3 + 2] = z; });
+  const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  const pts = new THREE.Points(g, new THREE.PointsMaterial({
+    size: 2.4, sizeAttenuation: true, map: radialTex([[0, 'rgba(255,240,210,1)'], [0.2, 'rgba(255,200,130,0.6)'], [1, 'rgba(255,160,80,0)']]),
+    color: 0x000000, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false,
+  }));
+  pts.frustumCulled = false; pts.visible = false;
+  scene.add(pts);
+  return pts;
+})();
+const LAMP_N = isTouch ? 3 : 6;
+const lampLights = Array.from({ length: LAMP_N }, () => { const l = new THREE.PointLight(0xffc27a, 0, 20, 1.4); scene.add(l); return l; });
+let lampPickT = 0;
+const lampOrder = lampSpots.map((_, i) => i);
+function updateLampLights(dt, k) {
+  const f = state.mode === 'title' ? camera.position : player.pos;
+  lampPickT -= dt;
+  if (lampPickT <= 0 && k > 0) {
+    lampPickT = 0.4;
+    const d2 = i => (lampSpots[i][0] - f.x) ** 2 + (lampSpots[i][2] - f.z) ** 2;
+    lampOrder.sort((a, b) => d2(a) - d2(b));
+    for (let j = 0; j < LAMP_N; j++) { const sp = lampSpots[lampOrder[j]]; if (sp) lampLights[j].position.set(sp[0], sp[1] + 4.4, sp[2]); }
+  }
+  for (const l of lampLights) {
+    const d = Math.hypot(l.position.x - f.x, l.position.z - f.z);
+    l.intensity = k * 11 * clamp(1 - (d - 28) / 18, 0, 1);       // the farthest fade out before they move on
+  }
+}
+function updateDayNight(dt) {
+  if (state.mode !== 'pause') clock.t = (clock.t + dt / DAY_LEN) % 1;
+  const a = (clock.t - 0.25) * Math.PI * 2;
+  sunDirV.set(-Math.cos(a) * 0.8, Math.sin(a) * 0.78 + 0.06, 0.55).normalize();
+  moonDirV.set(Math.cos(a) * 0.8, -Math.sin(a) * 0.6 + 0.25, -0.45).normalize();
+  const el = sunDirV.y, r = weather.rain;
+  const k = smooth(-0.1, 0.2, el), dusk = clamp(1 - Math.abs(el - 0.03) / 0.16, 0, 1) * (1 - r * 0.55);
+  dayState.k = k;
+  // the sky: the weather's colours by day, dark blue by night, warm at dusk and dawn
+  _dc.copy(skyU.top.value); skyU.top.value.lerpColors(NIGHT.top, _dc, k).lerp(NIGHT.duskTop, dusk * 0.35);
+  _dc.copy(skyU.horizon.value); skyU.horizon.value.lerpColors(NIGHT.hor, _dc, k).lerp(NIGHT.dusk, dusk * 0.55);
+  skyU.day.value = k;
+  skyU.sunDir.value.copy(sunDirV); skyU.moonDir.value.copy(moonDirV);
+  scene.fog.color.copy(skyU.horizon.value);
+  // the light: the sun by day, the moon by night (its direction never lower than ~10 degrees,
+  // so the shadows stay sensible)
+  const bySun = el > -0.04;
+  sunOffset.copy(bySun ? sunDirV : moonDirV);
+  if (sunOffset.y < 0.18) { sunOffset.y = 0.18; sunOffset.normalize(); }
+  if (bySun) { sun.intensity *= k; sun.color.lerpColors(NIGHT.sunLow, NIGHT.sunHigh, clamp(el / 0.35, 0, 1)); }
+  else { sun.intensity = 0.32 * (1 - k) * (1 - r * 0.55); sun.color.copy(NIGHT.moon); }
+  hemi.intensity *= lerp(0.16, 1, k);
+  hemi.color.lerp(NIGHT.hemi, 1 - k);
+  scene.environmentIntensity = lerp(0.12, 0.75, k);
+  renderer.toneMappingExposure = lerp(1.3, 1.08, k);
+  // the lamps come on at dusk (a little earlier under heavy cloud)
+  const lamp = 1 - smooth(0.2, 0.6, k * (1 - 0.3 * r));
+  dayState.lamp = lamp;
+  if (city.lamps) city.lamps.headMat.emissiveIntensity = lerp(0.15, 4.5, lamp);
+  if (city.nightGlow) city.nightGlow.value = lamp;
+  lampHalos.visible = lamp > 0.01;
+  if (city.lamps) city.lamps.glow.value = lamp;
+  rainU.color.value.setHex(0xb8c6d2).multiplyScalar(lerp(0.28, 1, k));
+  lampHalos.material.color.setRGB(1, 0.85, 0.6).multiplyScalar(0.9 * lamp);
+  updateLampLights(dt, lamp);
+}
+const clockText = () => { const m = Math.floor(clock.t * 24 * 60); return `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`; };
+
+// ------------------------------------------------------------------ the night: women on the corners
+// When the lamps are on, a few women work the street corners in the centre, under the lamps
+// around Torget, Strandkaien and Vågsallmenningen. They call out as you pass and are gone by
+// morning. They come and go out of sight, so nobody pops in or out in front of you.
+const NIGHT_LINES = ['Hey, handsome!', 'Nice scooter, darling.', 'Looking for company tonight?', 'Cold night, sweetheart.',
+  'Lost, honey?', 'Buy a girl a bolle?', 'Not in that raincoat, love.', 'Ooh, a pistol. Scary.', 'Keep walking, cutie.'];
+const nightPeople = [];
+{
+  const looks = [
+    { jacket: 0xd9407a, hair: 0x1a1210, skin: 0xe8c4a6, boots: 0x1b1b1b },
+    { jacket: 0xf2efe8, hair: 0xd9b46a, skin: 0xf0d2bb, boots: 0xb3261e },
+    { jacket: 0x7b2fa0, hair: 0x2a1a12, skin: 0x8d5a3b, boots: 0x111111 },
+    { jacket: 0xc9a23a, hair: 0x8a2e1e, skin: 0xe8c4a6, boots: 0x2a2522 },
+    { jacket: 0xb3261e, hair: 0x101010, skin: 0xc68e62, boots: 0x111111 },
+    { jacket: 0x23b0b6, hair: 0xe0c48a, skin: 0xf0d2bb, boots: 0xf2efe8 },
+  ];
+  const spots = [];
+  for (const sp of lampSpots) {
+    const [x, , z] = sp;
+    if (x < -480 || x > -240 || z < -340 || z > -110) continue;
+    if (spots.some(o => Math.hypot(o[0] - x, o[2] - z) < 40)) continue;
+    spots.push(sp);
+    if (spots.length >= looks.length) break;
+  }
+  spots.forEach(([x, , z], i) => {
+    // stand by the lamp, facing the street
+    const ni = nearestNode(x, z, 30);
+    const fx = ni >= 0 ? gx(ni) - x : 1, fz = ni >= 0 ? gz(ni) - z : 0, fl = Math.hypot(fx, fz) || 1;
+    const px = x + fx / fl * 0.7, pz = z + fz / fl * 0.7;
+    const fig = new Humanoid({ ...looks[i], pants: 0x141414, hat: null, scale: 0.97 });
+    fig.root.visible = false;
+    scene.add(fig.root);
+    const y = world.floorAt(px, pz, world.terrain.height(px, pz) + 2, 3);
+    nightPeople.push({ fig, pos: new THREE.Vector3(px, y > -50 ? y : world.terrain.height(px, pz), pz), base: Math.atan2(fx, fz), heading: Math.atan2(fx, fz), shown: false, talkT: Math.random() * 4, bubble: null, bubbleT: 0, phase: Math.random() * 6 });
+  });
+}
+function updateNightPeople(dt) {
+  const night = dayState.lamp > 0.6;
+  for (const w of nightPeople) {
+    const dCam = w.pos.distanceTo(camera.position);
+    if (night !== w.shown && dCam > 45) { w.shown = night; if (!night && w.bubble) { w.fig.root.remove(w.bubble); w.bubble = null; } }
+    w.fig.root.visible = w.shown && dCam < 95;
+    if (!w.fig.root.visible) continue;
+    if (w.bubble) { w.bubbleT -= dt; if (w.bubbleT <= 0) { w.fig.root.remove(w.bubble); w.bubble = null; } }
+    const dx = player.pos.x - w.pos.x, dz = player.pos.z - w.pos.z, d = Math.hypot(dx, dz);
+    const near = state.mode === 'play' && d < 9 && Math.abs(player.pos.y - w.pos.y) < 2.5;
+    // turn to watch you go by, then back to the street
+    w.heading += angDiff(w.heading, near ? Math.atan2(dx, dz) : w.base) * Math.min(1, dt * 3);
+    w.talkT -= dt;
+    if (near && d < 5.5 && w.talkT <= 0) { say(w, NIGHT_LINES[Math.floor(Math.random() * NIGHT_LINES.length)]); w.talkT = 9 + Math.random() * 6; }
+    if (near && d < 0.55 && d > 1e-4) { player.pos.x += dx / d * (0.55 - d); player.pos.z += dz / d * (0.55 - d); }
+    w.phase += dt;
+    w.fig.animate(dt, 0, w.bubble && w.bubbleT > 1.4 ? 'wave' : 'idle');
+    w.fig.body.rotation.z = Math.sin(w.phase * 0.9) * 0.04;      // a slow sway, weight on one hip
+    w.fig.root.position.copy(w.pos);
+    w.fig.root.rotation.set(0, w.heading, 0);
+  }
+}
+
 function updateNpcs(dt) {
   const focus = state.mode === 'title' ? camera.position : player.pos;
   for (const n of npcs) {
@@ -2381,7 +2542,7 @@ renderer.shadowMap.autoUpdate = false;
 const funiState = { t: 0 };
 function frame(now) {
   requestAnimationFrame(frame);
-  let dt = Math.min(0.05, (now - last) / 1000);
+  let dt = clamp((now - last) / 1000, 0, 0.05);
   last = now;
   time += dt;
   if (state.mode === 'pause') { pressed.jump = pressed.punch = pressed.use = pressed.radio = pressed.gun = pressed.trick = false; audio.skid(0); renderer.render(scene, camera); return; }
@@ -2389,7 +2550,7 @@ function frame(now) {
   updateWeather(dt);
   skyU.time.value = time;
   sky.position.copy(camera.position);
-  skyU.sunDir.value.copy(sunOffset);
+  updateDayNight(dt);
 
   if (state.mode === 'title') {
     updateTitleCam(time);
@@ -2468,6 +2629,7 @@ function frame(now) {
 
   updateMates(dt);
   updateNpcs(dt);
+  updateNightPeople(dt);
   updateGulls(dt);
   updateRain(dt);
   if (sw && sw.high) rain.visible = false;      // no rain streaks across the sky camera
@@ -2513,4 +2675,4 @@ $('play').disabled = false;
 $('play').textContent = save.mission > 0 ? (save.mission >= MISSIONS.length ? 'Free roam' : 'Continue') : 'Play';
 
 // debug hooks for testing
-window.__gt = { gameTime: () => time, gun, shoot, toggleGun, npcs, turbo, audio, switchTo, swapTo, mates: () => housemates, active: () => active, OUT_SPOTS, offer: () => offer, acceptOffer, declineOffer, makeOffer, scene, renderer, camera, player, cam, world, state, startMission, save, weather, scooters, gulls, mission: () => mission, startGame, raiseAlarm, ending, L2V, L2W, W2L, H, house, city, route, BAKERY, CHECKPOINTS: () => CHECKPOINTS, inHouse, housemates, PLACES, hitPlayer, dropBolle, bolle: () => ({ drop: bolleDrop, carrying: !!player.carrying }) };
+window.__gt = { gameTime: () => time, gun, shoot, toggleGun, npcs, turbo, clock, dayState, nightPeople, lampLights, audio, switchTo, swapTo, mates: () => housemates, active: () => active, OUT_SPOTS, offer: () => offer, acceptOffer, declineOffer, makeOffer, scene, renderer, camera, player, cam, world, state, startMission, save, weather, scooters, gulls, mission: () => mission, startGame, raiseAlarm, ending, L2V, L2W, W2L, H, house, city, route, BAKERY, CHECKPOINTS: () => CHECKPOINTS, inHouse, housemates, PLACES, hitPlayer, dropBolle, bolle: () => ({ drop: bolleDrop, carrying: !!player.carrying }) };

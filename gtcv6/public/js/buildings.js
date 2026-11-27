@@ -308,6 +308,23 @@ export function buildBuildings(scene, map, terrain, polys, T, opts) {
   const winTex = windowAtlas();
   const facadeMat = facadeMaterial(facadeTex);
   const winMat = new THREE.MeshStandardMaterial({ map: winTex, vertexColors: true, roughness: 0.35, metalness: 0.05 });
+  // At night the glass of some windows glows: a window is marked lit by a vertex colour a hair
+  // off white (blue 0.996), which nobody can see by day; the glass is where the texture is blue-grey.
+  const nightGlow = { value: 0 };
+  winMat.onBeforeCompile = (sh) => {
+    sh.uniforms.nightGlow = nightGlow;
+    sh.fragmentShader = sh.fragmentShader
+      .replace('#include <common>', '#include <common>\nuniform float nightGlow;')
+      .replace('#include <emissivemap_fragment>', `#include <emissivemap_fragment>
+        #ifdef USE_COLOR
+        {
+          float litW = step(0.9995, vColor.r) * step(0.9995, vColor.g) * (1.0 - step(0.9985, vColor.b));
+          float glassM = smoothstep(0.015, 0.06, diffuseColor.b - diffuseColor.r);
+          totalEmissiveRadiance += vec3(1.0, 0.7, 0.4) * litW * glassM * nightGlow * 1.8;
+        }
+        #endif`);
+  };
+  winMat.customProgramCacheKey = () => 'nightWindows';
   const tiles = new Map();
   const tileOf = (x, z) => {
     const k = Math.floor(x / TILE) * 1000 + Math.floor(z / TILE);
@@ -322,6 +339,8 @@ export function buildBuildings(scene, map, terrain, polys, T, opts) {
   const col = new THREE.Color(), white = new THREE.Color(1, 1, 1);
   const shade = (c, k) => new THREE.Color(c.r * k, c.g * k, c.b * k);
   const W4 = [white, white, white, white];
+  const lit = new THREE.Color(1, 1, 0.996), L4 = [lit, lit, lit, lit];
+  const RL = (() => { let sd = 777; return () => ((sd = (sd * 16807) % 2147483647) - 1) / 2147483646; })();
   const wu = cellUV(WIN.white, 0.5, 0.5), WU4 = [wu, wu, wu, wu];
   const winUV = (kind) => [cellUV(kind, 0, 0), cellUV(kind, 1, 0), cellUV(kind, 1, 1), cellUV(kind, 0, 1)];
   const DOORCOLS = ['#2b2f33', '#7a2e28', '#2f4a35', '#3b5a78', '#f2f1ec', '#5b3a29'];
@@ -421,7 +440,7 @@ export function buildBuildings(scene, map, terrain, polys, T, opts) {
             const kind = church ? WIN.church : winKind;
             const t0 = t - ww / 2 / L, t1 = t + ww / 2 / L;
             if (t0 < 0.02 || t1 > 0.98) continue;
-            T0.win.quad(q(t0, y0), q(t1, y0), q(t1, yTop), q(t0, yTop), N, W4, winUV(kind), 0);
+            T0.win.quad(q(t0, y0), q(t1, y0), q(t1, yTop), q(t0, yTop), N, RL() < 0.45 ? L4 : W4, winUV(kind), 0);
             // sill
             const s0 = q(t0 - 0.06 / L, y0 - 0.06), s1 = q(t1 + 0.06 / L, y0 - 0.06);
             T0.win.quad(s0, s1, [s1[0] + nx * 0.1, s1[1], s1[2] + nz * 0.1], [s0[0] + nx * 0.1, s0[1], s0[2] + nz * 0.1], [0, 1, 0], W4, WU4, 0);
@@ -429,7 +448,7 @@ export function buildBuildings(scene, map, terrain, polys, T, opts) {
               // a shopfront under this window
               const sy1 = floor0 + 2.6, sy0 = floor0 + 0.15;
               const st0 = t - 1.0 / L, st1 = t + 1.0 / L;
-              if (st0 > 0.02 && st1 < 0.98) T0.win.quad(q(st0, sy0), q(st1, sy0), q(st1, sy1), q(st0, sy1), N, W4, winUV(WIN.shop), 0);
+              if (st0 > 0.02 && st1 < 0.98) T0.win.quad(q(st0, sy0), q(st1, sy0), q(st1, sy1), q(st0, sy1), N, L4, winUV(WIN.shop), 0);
             }
           }
         }
@@ -441,7 +460,7 @@ export function buildBuildings(scene, map, terrain, polys, T, opts) {
           if (fm - top > 2.2 && tm - hwin > 0.1 && tm + hwin < 0.9) {
             const wy0 = top + 0.45;
             const wy1 = Math.min(top + 1.5, Math.min(F(...P(tm - hwin, 0).filter((_, k) => k !== 1)), F(...P(tm + hwin, 0).filter((_, k) => k !== 1))) - 0.4);
-            if (wy1 - wy0 > 0.6) T0.win.quad(q(tm - hwin, wy0), q(tm + hwin, wy0), q(tm + hwin, wy1), q(tm - hwin, wy1), N, W4, winUV(WIN.attic), 0);
+            if (wy1 - wy0 > 0.6) T0.win.quad(q(tm - hwin, wy0), q(tm + hwin, wy0), q(tm + hwin, wy1), q(tm - hwin, wy1), N, RL() < 0.35 ? L4 : W4, winUV(WIN.attic), 0);
           }
         }
         if (doorHere) {
@@ -636,5 +655,5 @@ export function buildBuildings(scene, map, terrain, polys, T, opts) {
     scene.add(lod);
     lods.push(lod);
   }
-  return { named, lods, facadeMat };
+  return { named, lods, facadeMat, nightGlow };
 }

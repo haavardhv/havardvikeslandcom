@@ -245,6 +245,9 @@ export function buildCity(scene, map, T, opts) {
   // (Cappes vei 6) where the rendered ground is cut away, so it never shows inside the house while
   // the street right outside keeps its real height
   const hole = opts.hole;
+  // the street lamps' light on the ground: a map painted once the lamps are placed, faded in by
+  // `lampGlow` (0 by day, 1 at night) in the terrain shader, so it follows the ground exactly
+  const lampU = { lampTex: { value: null }, lampGlow: { value: 0 } };
 
   // -------------------------------------------------------------- terrain mesh (fine)
   {
@@ -298,12 +301,13 @@ export function buildCity(scene, map, T, opts) {
         sh.uniforms.rBox = { value: new THREE.Vector4(rm.x0, rm.z0, 1 / (rm.w * rm.res), 1 / (rm.h * rm.res)) };
         sh.uniforms.holeF = { value: new THREE.Vector4(...(hole ? [...hole.o, ...hole.u] : [0, 0, 1, 0])) };
         sh.uniforms.holeR = { value: new THREE.Vector4(...(hole ? hole.r : [1, 0, 1, 0])) };
+        Object.assign(sh.uniforms, lampU);
         sh.vertexShader = sh.vertexShader
           .replace('#include <common>', '#include <common>\nvarying vec3 vWp;')
           .replace('#include <begin_vertex>', '#include <begin_vertex>\nvWp = (modelMatrix * vec4(transformed, 1.0)).xyz;');
         sh.fragmentShader = sh.fragmentShader
           .replace('#include <common>', `#include <common>
-            uniform sampler2D roadTex, pathTex, atlas; uniform vec4 rBox, holeF, holeR; varying vec3 vWp;
+            uniform sampler2D roadTex, pathTex, atlas, lampTex; uniform vec4 rBox, holeF, holeR; uniform float lampGlow; varying vec3 vWp;
             vec3 atlasTile(float s, float ts, vec2 xz) {
               vec2 cell = vec2(mod(s, 4.0), floor(s / 4.0));
               vec2 p = xz / ts, f = fract(p);
@@ -331,6 +335,8 @@ export function buildCity(scene, map, T, opts) {
               float ao = clamp(dot(vColor.rgb, vec3(0.333)) / 0.4, 0.55, 1.0);
               diffuseColor.rgb = mix(diffuseColor.rgb, c * ao, roadAmt);
             }`)
+          .replace('#include <emissivemap_fragment>', `#include <emissivemap_fragment>
+            if (lampGlow > 0.0) totalEmissiveRadiance += vec3(1.0, 0.72, 0.42) * texture2D(lampTex, (vWp.xz - rBox.xy) * rBox.zw).r * lampGlow * diffuseColor.rgb * 1.6;`)
           .replace('#include <roughnessmap_fragment>', '#include <roughnessmap_fragment>\nroughnessFactor = mix(roughnessFactor, 0.62, roadAmt);   // wet streets');
       };
       tmat.customProgramCacheKey = () => 'terrainStreets';
@@ -561,7 +567,7 @@ export function buildCity(scene, map, T, opts) {
       }
     }
   };
-  const { named, lods: buildingLods, facadeMat } = buildBuildings(scene, map, terrain, polys, T, {
+  const { named, lods: buildingLods, facadeMat, nightGlow } = buildBuildings(scene, map, terrain, polys, T, {
     geo, stone: opts.stone, copper: opts.copper, extra: buildRoads,
   });
   const onSteps = (x, z) => stepsMask.has(Math.round(x) * 100003 + Math.round(z));
@@ -675,6 +681,7 @@ export function buildCity(scene, map, T, opts) {
   }
 
   // -------------------------------------------------------------- street lamps and parked cars (instanced)
+  let lamps = null;
   {
     const R = rng(55);
     const lampSpots = [];
@@ -713,6 +720,24 @@ export function buildCity(scene, map, T, opts) {
     });
     poles.castShadow = true;
     scene.add(poles, heads);
+    lamps = { spots: lampSpots.map(([x, z]) => [x, terrain.height(x, z), z]), headMat: heads.material, glow: lampU.lampGlow };
+    {
+      // the light map: 1 m to the pixel over the street mask's area, a soft pool under each lamp
+      const rm = map.roadmask, W = Math.round(rm.w * rm.res), Hh = Math.round(rm.h * rm.res);
+      const c = document.createElement('canvas'); c.width = W; c.height = Hh;
+      const g = c.getContext('2d');
+      g.fillStyle = '#000'; g.fillRect(0, 0, W, Hh);
+      g.globalCompositeOperation = 'lighter';
+      for (const [x, z] of lampSpots) {
+        const px = x - rm.x0, pz = z - rm.z0, R = 8;
+        const gr = g.createRadialGradient(px, pz, 0, px, pz, R);
+        gr.addColorStop(0, 'rgba(255,255,255,0.85)'); gr.addColorStop(0.35, 'rgba(255,255,255,0.45)'); gr.addColorStop(1, 'rgba(255,255,255,0)');
+        g.fillStyle = gr; g.fillRect(px - R, pz - R, 2 * R, 2 * R);
+      }
+      const t = new THREE.CanvasTexture(c);
+      t.flipY = false; t.colorSpace = THREE.NoColorSpace; t.minFilter = THREE.LinearFilter; t.generateMipmaps = false;
+      lampU.lampTex.value = t;
+    }
 
     // parked cars: in OSM car parks and along residential streets in Fjellet and Marken
     const carSpots = [];
@@ -811,5 +836,5 @@ export function buildCity(scene, map, T, opts) {
 
   geo.build(scene);
 
-  return { terrain, polys, funiCurve, cars, onSteps, onRoad, named, buildingLods, water };
+  return { terrain, polys, funiCurve, cars, onSteps, onRoad, named, buildingLods, water, lamps, nightGlow };
 }
