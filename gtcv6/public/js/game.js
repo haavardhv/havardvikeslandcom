@@ -2231,6 +2231,7 @@ function mount(s) {
 function dismount(crash = false) {
   const s = player.riding;
   if (!s) return;
+  { const w = nightPassenger(); if (w) { if (w.ride.serving && !crash) endService(w, 'Leaving already, sweetie?'); else dropOff(w, crash ? 'Ow! Idiot!' : 'Fine, I\'ll walk.'); } }
   player.riding = null;
   const side = _v.set(Math.cos(s.heading), 0, -Math.sin(s.heading)).multiplyScalar(0.7);
   player.pos.copy(s.pos).add(crash ? _v.set(0, 0.3, 0) : side);
