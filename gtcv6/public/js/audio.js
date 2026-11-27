@@ -176,5 +176,36 @@ export class Audio {
     const notes = [523, 659, 784, 1047, 784, 1047];
     notes.forEach((f, i) => { this._tone('triangle', f, f, 0.25, 0.1, i * 0.11); this._tone('sine', f / 2, f / 2, 0.3, 0.08, i * 0.11); });
   }
+  // the character switch, after GTA: a whoosh and a deep thud for every step of the sky camera,
+  // an airy swell while it glides across town, and a heavier landing
+  _sweep(dur, f0, f1, gain, q = 1.2, when = 0) {
+    const c = this.ctx, t = c.currentTime + when;
+    const s = c.createBufferSource(); s.buffer = this.noise;
+    const fl = c.createBiquadFilter(); fl.type = 'bandpass'; fl.Q.value = q;
+    fl.frequency.setValueAtTime(f0, t); fl.frequency.exponentialRampToValueAtTime(f1, t + dur);
+    const g = c.createGain();
+    g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(gain, t + dur * 0.35); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    s.connect(fl).connect(g).connect(this.master);
+    s.start(t, Math.random() * 1.2, dur + 0.05);
+  }
+  switchStep(up = true) {
+    if (!this.ctx) return;
+    this._sweep(0.32, up ? 350 : 2600, up ? 2600 : 350, 0.22);
+    this._tone('sine', 82, 34, 0.45, 0.42, 0.06, 0.004);
+    this._tone('triangle', 164, 70, 0.18, 0.08, 0.06, 0.004);
+    this._noise(0.05, 'highpass', 5000, 1, 0.05, 0.06);
+  }
+  switchPan(dur = 1.2) {
+    if (!this.ctx) return;
+    this._sweep(dur + 0.3, 500, 1400, 0.09, 0.6);
+    this._tone('sine', 55, 62, dur + 0.3, 0.12, 0, dur * 0.4);
+  }
+  switchLand() {
+    if (!this.ctx) return;
+    this._sweep(0.4, 2200, 300, 0.2);
+    this._tone('sine', 70, 30, 0.6, 0.55, 0.12, 0.004);
+    this._noise(0.12, 'lowpass', 600, 1, 0.25, 0.12);
+    this._tone('triangle', 1320, 1320, 0.08, 0.04, 0.14);
+  }
   start2() { if (!this.ctx) return; [440, 554, 659].forEach((f, i) => this._tone('triangle', f, f, 0.18, 0.08, i * 0.08)); }
 }

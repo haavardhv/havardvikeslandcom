@@ -1817,11 +1817,47 @@ function switchTo(id) {
   if (id === active) return;
   const why = state.mode !== 'play' ? 'Not now' : mission ? 'Finish the mission first' : player.riding ? 'Get off the scooter first' : player.carrying ? 'Put that down first' : null;
   if (why) { toast(why, 1.6); return; }
-  const to = housemates[id];
   state.mode = 'switch';
-  audio.whoosh();
-  sw = { t: 0, id, a: camera.position.clone(), from: player.pos.clone(), b: to.pos.clone(), look: new THREE.Vector3(), swapped: false };
+  sw = planSwitch(id);
+  canvas.style.filter = 'saturate(0.45) contrast(1.12) brightness(1.02)';
 }
+// The sky camera, after GTA: three quick steps up into the sky, a glide across town, three steps
+// down. One continuous path of keyframes, each a position and an orientation, so the view never
+// jumps: the first step turns the camera to look straight down with north at the top of the
+// screen, it keeps exactly that view all the way across, and the last step turns it into the new
+// character's view.
+const _qDown = (() => { const c = new THREE.PerspectiveCamera(); c.up.set(0, 0, -1); c.lookAt(0, -1, 0); return c.quaternion.clone(); })();
+function planSwitch(id) {
+  const F = player.pos.clone(), B = housemates[id].pos.clone();
+  const HS = [40, 130, 360];                       // the steps up, metres above the ground
+  const segs = [];
+  let p = camera.position.clone(), q = camera.quaternion.clone();
+  // position and turn can ease differently: a step snaps up, but the view turns smoothly
+  const add = (dur, p1, q1, kind, ease, qease = ease) => { segs.push({ dur, p0: p.clone(), q0: q.clone(), p1: p1.clone(), q1: q1.clone(), kind, ease, qease }); p = p1.clone(); q = q1.clone(); };
+  const at = (v, h) => new THREE.Vector3(v.x, v.y + h, v.z);
+  const outCubic = k => 1 - (1 - k) ** 3, smooth = k => k * k * (3 - 2 * k), inOut = k => k < 0.5 ? 4 * k ** 3 : 1 - (-2 * k + 2) ** 3 / 2;
+  HS.forEach((h, k) => {
+    add(k === 0 ? 0.4 : 0.24, at(F, h), _qDown, 'up', outCubic, inOut);
+    add(k === 2 ? 0.34 : 0.26, at(F, h * 1.06), _qDown, 'hold', smooth);          // keeps drifting, never freezes
+  });
+  const dist = Math.hypot(B.x - F.x, B.z - F.z);
+  add(Math.min(2.0, Math.max(0.9, 0.7 + dist / 700)), at(B, HS[2] * 1.06), _qDown, 'pan', smooth);
+  for (const k of [1, 0]) {
+    add(0.24, at(B, HS[k] * 1.06), _qDown, 'down', outCubic);
+    add(0.26, at(B, HS[k]), _qDown, 'hold', smooth);
+  }
+  // the new character's own camera, as updateCamera will place it
+  const yaw = housemates[id].heading + Math.PI, pitch = 0.3;
+  const pivot = at(B, 1.55);
+  const end = pivot.clone().add(new THREE.Vector3(Math.sin(yaw) * Math.cos(pitch), Math.sin(pitch), Math.cos(yaw) * Math.cos(pitch)).multiplyScalar(4.4));
+  const tc = new THREE.PerspectiveCamera(); tc.position.copy(end); tc.lookAt(pivot.x, pivot.y + 0.1, pivot.z);
+  add(0.5, end, tc.quaternion, 'land', inOut);
+  return { id, segs, i: 0, t: 0, swapped: false, started: -1 };
+}
+const flashEl = document.createElement('div');
+flashEl.style.cssText = 'position:fixed;inset:0;pointer-events:none;background:#fff;opacity:0;transition:opacity .28s ease-out';
+document.body.appendChild(flashEl);
+function flash() { flashEl.style.transition = 'none'; flashEl.style.opacity = '0.28'; void flashEl.offsetWidth; flashEl.style.transition = 'opacity .28s ease-out'; flashEl.style.opacity = '0'; }
 // make `id` the one you play, at their position
 function swapTo(id) {
   const old = housemates[active], nw = housemates[id];
@@ -1839,30 +1875,30 @@ function swapTo(id) {
 }
 function updateSwitch(dt) {
   sw.t += dt;
-  const UP = 110, T1 = 0.8, T2 = 1.9, T3 = 2.8;
-  const ease = k => k * k * (3 - 2 * k);
-  const up = v => _v2.set(v.x, v.y + UP, v.z);
-  if (sw.t < T1) {
-    const e = ease(sw.t / T1);
-    camera.position.lerpVectors(sw.a, up(sw.from), e);
-    camera.lookAt(sw.from);
-  } else if (sw.t < T2) {
-    if (!sw.swapped) { sw.swapped = true; swapTo(sw.id); }
-    const e = ease((sw.t - T1) / (T2 - T1));
-    const pa = up(sw.from).clone(), pb = up(sw.b).clone();
-    camera.position.lerpVectors(pa, pb, e);
-    sw.look.lerpVectors(sw.from, sw.b, e);
-    camera.lookAt(sw.look.x, sw.look.y, sw.look.z + 0.01);
-  } else if (sw.t < T3) {
-    const e = ease((sw.t - T2) / (T3 - T2));
-    const behind = _v.set(player.pos.x + Math.sin(cam.yaw) * 4.4, player.pos.y + 2.0, player.pos.z + Math.cos(cam.yaw) * 4.4);
-    camera.position.lerpVectors(up(sw.b).clone(), behind, e);
-    camera.lookAt(player.pos.x, player.pos.y + 1.4, player.pos.z);
-  } else {
+  let seg = sw.segs[sw.i];
+  while (seg && sw.t >= seg.dur) { sw.t -= seg.dur; sw.i++; seg = sw.segs[sw.i]; }
+  if (!seg) {
+    camera.position.copy(sw.segs[sw.segs.length - 1].p1);
+    camera.quaternion.copy(sw.segs[sw.segs.length - 1].q1);
     state.mode = 'play'; sw = null;
+    canvas.style.filter = '';
     toast(PEOPLE[active].name, 1.4);
     if (!isTouch) requestLock();
+    return;
   }
+  if (sw.started !== sw.i) {             // a new segment: its sound, and the swap at the top
+    sw.started = sw.i;
+    if (seg.kind === 'up' || seg.kind === 'down') { audio.switchStep(seg.kind === 'up'); flash(); }
+    if (seg.kind === 'pan') { audio.switchPan(seg.dur); if (!sw.swapped) { sw.swapped = true; swapTo(sw.id); } }
+    if (seg.kind === 'land') { audio.switchLand(); flash(); }
+  }
+  const k = Math.min(1, sw.t / seg.dur);
+  camera.position.lerpVectors(seg.p0, seg.p1, seg.ease(k));
+  camera.quaternion.slerpQuaternions(seg.q0, seg.q1, seg.qease(k));
+  const alt = Math.max(0, camera.position.y - player.pos.y);
+  sw.high = alt > 25;
+  // the weather sets the fog for street level every frame; up here it would be a grey veil
+  scene.fog.near += alt; scene.fog.far += alt * 1.6;
 }
 
 // ------------------------------------------------------------------ death, water, respawn
@@ -2097,6 +2133,7 @@ function frame(now) {
   updateNpcs(dt);
   updateGulls(dt);
   updateRain(dt);
+  if (sw && sw.high) rain.visible = false;      // no rain streaks across the sky camera
 
   // funicular cars shuttle up and down, passing halfway
   funiState.t += dt / 70;
