@@ -66,7 +66,7 @@ export class Terrain {
 // ---------------------------------------------------------------------------
 // Polygon prisms (buildings) for collision and camera rays
 export class PolyWorld {
-  constructor(cell = 16) { this.items = []; this.grid = new Map(); this.cell = cell; this.stamp = 0; }
+  constructor(cell = 16) { this.items = []; this.grid = new Map(); this.cell = cell; this.stamp = 0; this.hollowAt = null; }
   add(pts, base, top, data = {}) {
     let x0 = Infinity, z0 = Infinity, x1 = -Infinity, z1 = -Infinity;
     for (let i = 0; i < pts.length; i += 2) { x0 = Math.min(x0, pts[i]); x1 = Math.max(x1, pts[i]); z0 = Math.min(z0, pts[i + 1]); z1 = Math.max(z1, pts[i + 1]); }
@@ -133,11 +133,15 @@ export class PolyWorld {
     }
     return Math.sqrt(bd);
   }
+  // A building with a room modelled inside it (Myreze's office) is marked `hollow`: from inside
+  // that room (hollowAt), its outline neither blocks you nor the camera; the room's own walls do.
   collide(pos, r, height, step) {
     let hit = null;
     const arr = this.query(pos.x - r, pos.z - r, pos.x + r, pos.z + r, this._q || (this._q = []));
     const np = this._np || (this._np = { x: 0, z: 0 });
+    const inHollow = this.hollowAt && this.hollowAt(pos.x, pos.y, pos.z);
     for (const it of arr) {
+      if (it.hollow && inHollow) continue;
       if (it.top + (it.roof || 0) <= pos.y + step || it.base >= pos.y + height) continue;
       const d = PolyWorld.nearestItem(it, pos.x, pos.z, np);
       const ins = PolyWorld.insideItem(it, pos.x, pos.z);
@@ -163,8 +167,9 @@ export class PolyWorld {
     const ex = o.x + d.x * maxDist, ez = o.z + d.z * maxDist;
     const arr = this.query(Math.min(o.x, ex), Math.min(o.z, ez), Math.max(o.x, ex), Math.max(o.z, ez), this._q3 || (this._q3 = []));
     let best = Infinity;
+    const inHollow = this.hollowAt && this.hollowAt(o.x, o.y, o.z);
     for (const it of arr) {
-      if (it.noCam) continue;
+      if (it.noCam || (it.hollow && inHollow)) continue;
       for (const p of it.rings || [it.pts]) {
         for (let i = 0, j = p.length - 2; i < p.length; j = i, i += 2) {
           const ax = p[j], az = p[j + 1], bx = p[i], bz = p[i + 1];

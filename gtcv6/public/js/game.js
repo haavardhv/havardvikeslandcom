@@ -1,8 +1,9 @@
 // Grand Theft Cappes Vei 6 — main loop, player, camera, seagulls, missions, HUD.
 import * as THREE from '../vendor/three.module.min.js';
 import { buildTextures, textTexture } from './textures.js';
-import { loadMapData, buildCity } from './city.js';
+import { loadMapData, buildCity, PolyWorld } from './city.js';
 import { buildHouse6 } from './house6.js';
+import { buildOffice, officeFrame } from './office.js';
 import { Physics } from './physics.js';
 import { Humanoid, Gull, makeScooter, makeItem, makeMarker, makeArrow, makePistol, PEOPLE, SCOOTER_LAMP } from './actors.js';
 import { Audio, lineDur } from './audio.js';
@@ -189,12 +190,96 @@ const phys = new Physics(city.terrain, city.polys);
 phys.addLocal(house.world, OX, OZ, HUX, HUZ);
 const world = phys;
 for (const d of house.doors) d.pos = L2V(d.local.x, d.local.y, d.local.z);
-for (const [x, y, z] of house.lights.slice(0, 3)) {
+const interiorLights = house.lights.slice(0, 3).map(([x, y, z]) => {
   const l = new THREE.PointLight(0xffd6a0, 5, 9, 1.6);
   l.position.copy(L2V(x, y, z));
   scene.add(l);
-}
+  return l;
+});
 const inHouse = p => { const [u, v] = W2L(p.x, p.z); return house.inside(u, p.y, v); };
+
+// Myreze's office: Halfdan Kjerulfs gate 4, on the 4th floor, built inside the OSM building
+const OF = officeFrame();
+const OL2W = (x, z) => [OF.ox + OF.ux * x - OF.uz * z, OF.oz + OF.uz * x + OF.ux * z];
+const OW2L = (x, z) => { const dx = x - OF.ox, dz = z - OF.oz; return [dx * OF.ux + dz * OF.uz, -dx * OF.uz + dz * OF.ux]; };
+const OL2V = (x, y, z) => { const [wx, wz] = OL2W(x, z); return new THREE.Vector3(wx, y, wz); };
+const officeBld = (() => { const [x, z] = OL2W(2, 0); return map.buildings.find(b => PolyWorld.inside(b.p, x, z)) || null; })();
+// the 4th storey of the facade: its windows are the second row down from the eaves (2.9 m storeys)
+const OFFICE_FLOOR = officeBld ? officeBld.t - 5.9 : 14.0;
+const officeGroup = new THREE.Group();
+officeGroup.position.set(OF.ox, 0, OF.oz);
+officeGroup.rotation.y = OF.theta;
+scene.add(officeGroup);
+const office = buildOffice(officeGroup, T, OFFICE_FLOOR);
+officeGroup.updateMatrixWorld(true);
+phys.addLocal(office.world, OF.ox, OF.oz, OF.ux, OF.uz);
+for (const d of office.doors) d.pos = OL2V(d.local.x, d.local.y, d.local.z);
+const inOffice = p => { const [x, z] = OW2L(p.x, p.z); return office.inside(x, p.y, z); };
+const isIndoors = p => inHouse(p) || inOffice(p);
+// inside the office, the building's own outline doesn't block you or the camera; the office's walls do
+city.polys.hollowAt = (x, y, z) => { const [lx, lz] = OW2L(x, z); return office.inside(lx, y, lz); };
+{
+  const [x, z] = OL2W(2, 0);
+  for (const it of city.polys.query(x - 1, z - 1, x + 1, z + 1)) if (it.kind && PolyWorld.insideItem(it, x, z)) it.hollow = true;
+}
+const OFFICE_CENTRE = OL2V(...office.centre);
+// the three interior lights hang wherever you are: in no. 6, or at the office
+let lightsAt = 'house';
+function updateInteriorLights() {
+  officeGroup.visible = camera.position.distanceTo(OFFICE_CENTRE) < 70;
+  const want = inOffice(player.pos) || inOffice(camera.position) ? 'office' : 'house';
+  if (want === lightsAt) return;
+  lightsAt = want;
+  interiorLights.forEach((l, i) => {
+    if (want === 'office') { l.position.copy(OL2V(...office.lights[i])); l.distance = 12; l.intensity = 7; }
+    else { l.position.copy(L2V(...house.lights[i])); l.distance = 9; l.intensity = 5; }
+  });
+}
+// the building's street door, and where you stand in front of it
+const OFFICE_STREET = (() => {
+  let x, z, nx, nz;
+  const b = officeBld;
+  if (b && b.d) {
+    const n = b.p.length / 2, i = b.d[0], j = (i + 1) % n;
+    const ax = b.p[i * 2], az = b.p[i * 2 + 1], bx = b.p[j * 2], bz = b.p[j * 2 + 1], L = Math.hypot(bx - ax, bz - az);
+    x = ax + (bx - ax) * b.d[1]; z = az + (bz - az) * b.d[1];
+    nx = (bz - az) / L; nz = -(bx - ax) / L;
+    if (PolyWorld.inside(b.p, x + nx * 0.5, z + nz * 0.5)) { nx = -nx; nz = -nz; }
+  } else {
+    [x, z] = OL2W(2.1, 5.85); nx = -OF.uz; nz = OF.ux;
+  }
+  const sx = x + nx * 1.3, sz = z + nz * 1.3;
+  return { doorX: x, doorZ: z, nx, nz, x: sx, z: sz, y: city.terrain.height(sx, sz), heading: Math.atan2(nx, nz) };
+})();
+const OFFICE_EXIT = OL2V(...office.exitDoor);
+const OFFICE_ENTRY = OL2V(...office.entry);
+{
+  // a plate by the street door
+  const S = OFFICE_STREET, tx = -S.nz, tz = S.nx;
+  const plate = new THREE.Mesh(new THREE.PlaneGeometry(0.55, 0.3), new THREE.MeshStandardMaterial({ roughness: 0.4, metalness: 0.3,
+    map: textTexture(['MYREZE', '4. etasje'], { w: 256, h: 140, bg: '#16181b', fg: '#f3f2ee', font: '700 40px "Archivo", sans-serif', radius: 10, border: '#c9a23a' }) }));
+  plate.position.set(S.doorX + tx * 0.95 + S.nx * 0.07, city.terrain.height(S.doorX + S.nx, S.doorZ + S.nz) + 1.5, S.doorZ + tz * 0.95 + S.nz * 0.07);
+  plate.rotation.y = S.heading;
+  scene.add(plate);
+}
+function stairsHere() {
+  if (state.mode !== 'play' || player.riding || dive.on || player.knockT > 0) return null;
+  const p = player.pos;
+  if (inOffice(p)) return Math.hypot(p.x - OFFICE_EXIT.x, p.z - OFFICE_EXIT.z) < 1.4 ? 'down' : null;
+  return Math.hypot(p.x - OFFICE_STREET.doorX, p.z - OFFICE_STREET.doorZ) < 2.2 && Math.abs(p.y - OFFICE_STREET.y) < 2 ? 'up' : null;
+}
+function takeStairs(dir) {
+  audio.door();
+  fadeThen(() => {
+    const up = dir === 'up';
+    const h = up ? Math.atan2(-OF.ux, -OF.uz) : OFFICE_STREET.heading;
+    if (up) player.pos.set(OFFICE_ENTRY.x, OFFICE_FLOOR + 0.02, OFFICE_ENTRY.z);
+    else player.pos.set(OFFICE_STREET.x, world.floorAt(OFFICE_STREET.x, OFFICE_STREET.z, OFFICE_STREET.y + 1), OFFICE_STREET.z);
+    player.vel.set(0, 0, 0); player.heading = h;
+    cam.yaw = h + Math.PI; cam.pitch = 0.3; cam.cur = cam.dist = up ? 2.5 : 4.4;
+    toast(up ? 'Myreze, 4th floor' : 'Halfdan Kjerulfs gate', 2);
+  });
+}
 const [AX0, AZ0, AX1, AZ1] = map.area;
 
 // walking graph (OSM streets, lanes, steps)
@@ -298,11 +383,11 @@ const rainGeo = new THREE.BufferGeometry();
   rainGeo.setAttribute('seed', new THREE.BufferAttribute(seed, 4));
   rainGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(RAIN_N * 2 * 3), 3));
 }
-const rainU = { time: { value: 0 }, cam: { value: new THREE.Vector3() }, house: { value: new THREE.Vector4(OX, OZ, HUX, HUZ) }, houseTop: { value: H.FU + 6 }, color: { value: new THREE.Color(0xb8c6d2) } };
+const rainU = { time: { value: 0 }, cam: { value: new THREE.Vector3() }, house: { value: new THREE.Vector4(OX, OZ, HUX, HUZ) }, houseTop: { value: H.FU + 6 }, office: { value: new THREE.Vector4(OF.ox, OF.oz, OF.ux, OF.uz) }, officeTop: { value: (officeBld ? officeBld.t : OFFICE_FLOOR + 6) + 1 }, color: { value: new THREE.Color(0xb8c6d2) } };
 const rain = new THREE.LineSegments(rainGeo, new THREE.ShaderMaterial({
   uniforms: rainU, transparent: true, depthWrite: false, fog: false,
   vertexShader: `
-    attribute vec4 seed; uniform float time; uniform vec3 cam; uniform vec4 house; uniform float houseTop;
+    attribute vec4 seed; uniform float time; uniform vec3 cam; uniform vec4 house; uniform float houseTop; uniform vec4 office; uniform float officeTop;
     varying float vA;
     void main() {
       float end = floor(seed.w * 0.5), spd = 11.0 + fract(seed.w) * 5.0, wind = 1.8;
@@ -313,6 +398,9 @@ const rain = new THREE.LineSegments(rainGeo, new THREE.ShaderMaterial({
       float dx = x - house.x, dz = z - house.y;
       float u = dx * house.z + dz * house.w, v = dx * -house.w + dz * house.z;
       if (u > -0.5 && u < 8.5 && v > -0.5 && v < 8.9 && y < houseTop) y = -1e5;
+      float ox = x - office.x, oz = z - office.y;
+      float ou = ox * office.z + oz * office.w, ov = ox * -office.w + oz * office.z;
+      if (ou > -4.6 && ou < 8.4 && ov > -11.5 && ov < 6.0 && y < officeTop) y = -1e5;
       vA = 0.42;
       gl_Position = projectionMatrix * viewMatrix * vec4(x, y, z, 1.0);
     }`,
@@ -371,7 +459,7 @@ const _v = new THREE.Vector3(), _v2 = new THREE.Vector3(), _dir = new THREE.Vect
 const camBox = new THREE.Vector3();
 function updateCamera(dt) {
   const p = player.pos;
-  const inside = inHouse(p);
+  const inside = isIndoors(p);
   const want = funiState.ride ? 13 : dive.on ? (dive.phase === 'free' ? 7 : 10) : lerp(player.riding ? 5.6 : inside ? 2.5 : 4.6, 3.1, gun.aimK);
   cam.dist = damp(cam.dist, want, 3, dt);
   const baseFov = camera.aspect < 0.8 ? 78 : 64;
@@ -839,7 +927,7 @@ function bmInfo() {
 }
 function wpRoute() {
   if (!waypoint) { wpGps = null; return; }
-  wpGps = inHouse(player.pos) && Math.hypot(waypoint.x - player.pos.x, waypoint.z - player.pos.z) < 15 ? null : route(player.pos.x, player.pos.z, waypoint.x, waypoint.z);
+  wpGps = isIndoors(player.pos) && Math.hypot(waypoint.x - player.pos.x, waypoint.z - player.pos.z) < 15 ? null : route(player.pos.x, player.pos.z, waypoint.x, waypoint.z);
   if (wpGps) wpGps.unshift([player.pos.x, player.pos.z]);
 }
 function setWaypoint(x, z, name) {
@@ -875,7 +963,7 @@ function openMap() {
   if (wheelOpen) { wheelOpen = false; $('switch').hidden = true; }
   state.mode = 'map';
   $('bigmap').hidden = false;
-  $('maptitle').textContent = inHouse(player.pos) ? 'Cappes vei 6' : (streetName(player.pos.x, player.pos.z) || 'Bergen');
+  $('maptitle').textContent = inHouse(player.pos) ? 'Cappes vei 6' : inOffice(player.pos) ? 'Myreze' : (streetName(player.pos.x, player.pos.z) || 'Bergen');
   if (!isTouch && document.pointerLockElement) document.exitPointerLock();
   bm.cx = player.pos.x; bm.cz = player.pos.z; bm.zoom = Math.max(bm.zoom, bmFit()); bm.hover = null; bm.ptrs.clear(); bm.drag = bm.pinch = null;
   bmClamp();
@@ -957,7 +1045,8 @@ if (isTouch) $('maphint').textContent = 'Tap to set a waypoint · tap it again t
 
 // ------------------------------------------------------------------ doors
 function updateDoors(dt) {
-  for (const d of house.doors) {
+  updateInteriorLights();
+  for (const d of [...house.doors, ...office.doors]) {
     if (!d.auto) continue;
     const near = d.pos.distanceTo(_v2.set(player.pos.x, player.pos.y, player.pos.z)) < 2.3;
     if (near && d.target === 0) audio.door();
@@ -1589,7 +1678,7 @@ function newCircle(a, place) {
 let gullCallT = 4;
 function updateGulls(dt) {
   const p = player.pos;
-  const indoors = inHouse(p);
+  const indoors = isIndoors(p);
   const head = _v2.set(p.x, p.y + 1.4, p.z);
   // how many attackers the alarm calls for
   const want = [0, 1, 2, 3, 4, 6][state.alarm] || 0;     // the same attack per alarm level, however big the flock
@@ -1648,7 +1737,7 @@ function updateGulls(dt) {
       case 'orbit': {
         a.ang += dt * 0.9;
         const r = 7, h = indoors ? 12 : 4.5;
-        const hc = L2W(4, 4.2), cx = indoors ? hc[0] : p.x, cz = indoors ? hc[1] : p.z;
+        const hc = inOffice(p) ? [OFFICE_CENTRE.x, OFFICE_CENTRE.z] : L2W(4, 4.2), cx = indoors ? hc[0] : p.x, cz = indoors ? hc[1] : p.z;
         desired.set(cx + Math.cos(a.ang) * r - a.pos.x, p.y + h + Math.sin(a.ang * 2) - a.pos.y, cz + Math.sin(a.ang) * r - a.pos.z).multiplyScalar(1.8);
         flap = 0.5;
         if (a.t <= 0 && !indoors && player.knockT <= 0 && player.hurtT <= 0 && divers < maxDivers && state.mode === 'play') { a.state = 'dive'; a.t = 2.4; a.lock = null; divers++; audio.squawk(); }
@@ -1748,7 +1837,7 @@ function raiseAlarm(n = 1) {
 function updateAlarm(dt) {
   if (state.alarm < state.alarmMin) state.alarm = state.alarmMin;
   if (state.alarm > state.alarmMin) {
-    state.alarmCool -= dt * (inHouse(player.pos) ? 2.5 : 1);
+    state.alarmCool -= dt * (isIndoors(player.pos) ? 2.5 : 1);
     if (state.alarmCool <= 0) { state.alarm--; state.alarmCool = 10; if (state.alarm === 0) toast('The gulls lost interest.'); }
   }
 }
@@ -1806,9 +1895,10 @@ const PLACE_STYLE = {
   shop: { bg: '#0d3a7a', fg: '#ffffff', line: 'Rema 1000 Marken: snacks for the party, and a little energy.' },
   food: { bg: '#a3121b', fg: '#f6d46b', line: 'Guangdong House. The most important place in Bergen.' },
   pizza: { bg: '#1f6a3a', fg: '#ffffff', line: 'A slice at Johnny’s. Health restored.' },
+  office: { bg: '#2c6fb5', fg: '#ffffff', line: 'Myreze, Halfdan Kjerulfs gate 4. The office is up on the 4th floor.' },
 };
 save.places = save.places || [];
-const PLACES = (map.places || []).map(pl => {
+const PLACES = [...(map.places || []), { n: 'Myreze', k: 'office', x: OFFICE_STREET.x, z: OFFICE_STREET.z }].map(pl => {
   const st = PLACE_STYLE[pl.k];
   const y = world.floorAt(pl.x, pl.z, 300);
   const sign = new THREE.Sprite(new THREE.SpriteMaterial({ map: textTexture([pl.n], { w: 640, h: 128, bg: st.bg, fg: st.fg, font: '800 64px "Archivo", sans-serif', radius: 24, border: st.fg }), fog: false }));
@@ -1953,7 +2043,7 @@ function brollyBlocks(a) {
 function updateBrolly(dt) {
   if (!brolly.up || state.mode !== 'play') { brolly.shelterT = 0; return; }
   const v = player.riding ? Math.abs(player.riding.speed) : Math.hypot(player.vel.x, player.vel.z);
-  if (state.alarm > state.alarmMin && v < 1.5 && !inHouse(player.pos)) {
+  if (state.alarm > state.alarmMin && v < 1.5 && !isIndoors(player.pos)) {
     brolly.shelterT += dt;
     if (brolly.shelterT >= SHELTER_T) {
       state.alarm = state.alarmMin; state.alarmCool = 10; brolly.shelterT = 0;
@@ -2062,7 +2152,7 @@ function updateGun(dt) {
   if (gun.reloadT > 0) { gun.reloadT -= dt; if (gun.reloadT <= 0) gun.ammo = gun.mag; }
   if (gun.drawn && (player.carrying || state.mode !== 'play')) { if (player.carrying) toggleGun(false); }
   const aiming = gun.drawn && state.mode === 'play' && player.knockT <= 0;
-  gun.aimK = damp(gun.aimK, aiming && !player.riding && !inHouse(player.pos) ? 1 : 0, 10, dt);
+  gun.aimK = damp(gun.aimK, aiming && !player.riding && !isIndoors(player.pos) ? 1 : 0, 10, dt);
   if (aiming) {
     // the arm points where the crosshair does: pitch from the camera, yaw relative to the body
     camera.getWorldDirection(_rd);
@@ -2234,6 +2324,7 @@ function surfaceAt() {
     if (p.y < H.FU - 1 && u < 5.0 && v < 5.6) return 'tile';     // the two bathrooms and the tiled hall downstairs
     return 'wood';
   }
+  if (inOffice(p)) return 'wood';
   return 'stone';
 }
 function updatePlayer(dt) {
@@ -2252,7 +2343,8 @@ function updatePlayer(dt) {
     audio.door();
     toast(funiState.u[funiState.ride.car] < 0.5 ? 'Fløibanen: up to Fløyen' : 'Fløibanen: down to town', 2.5);
   }
-  // use: get on / off scooters, or jump from Fløyen
+  // use: the stairs at Halfdan Kjerulfs gate 4, get on / off scooters, or jump from Fløyen
+  if (pressed.use && stairsHere()) { pressed.use = false; takeStairs(stairsHere()); }
   if (pressed.use && player.knockT <= 0 && !player.riding && !player.carrying && Math.hypot(player.pos.x - JUMP.x, player.pos.z - JUMP.z) < 3.5 && Math.abs(player.pos.y - JUMP.y) < 3) { pressed.use = false; startSkydive(); }
   if (pressed.use && player.knockT <= 0) {
     if (player.riding) dismount();
@@ -2878,7 +2970,7 @@ function openWheel(on) {
     for (const b of wheelEl.children) {
       const n = housemates[b.dataset.id];
       b.classList.toggle('me', n.active);
-      b.querySelector('span').textContent = n.active ? 'You' : inHouse(n.pos) ? 'Cappes vei 6' : (streetName(n.pos.x, n.pos.z) || 'Bergen');
+      b.querySelector('span').textContent = n.active ? 'You' : inHouse(n.pos) ? 'Cappes vei 6' : inOffice(n.pos) ? 'Myreze' : (streetName(n.pos.x, n.pos.z) || 'Bergen');
     }
     if (!isTouch && document.pointerLockElement) document.exitPointerLock();
   } else if (state.mode === 'play') requestLock();
@@ -3260,12 +3352,12 @@ function frame(now) {
     if (gpsT <= 0) {
       gpsT = 1.2;
       const tgt = (mission && mission.target) || startPoint();
-      gps = tgt && !inHouse(player.pos) && Math.hypot(tgt.x - player.pos.x, tgt.z - player.pos.z) > 15 ? route(player.pos.x, player.pos.z, tgt.x, tgt.z) : null;
+      gps = tgt && !isIndoors(player.pos) && Math.hypot(tgt.x - player.pos.x, tgt.z - player.pos.z) > 15 ? route(player.pos.x, player.pos.z, tgt.x, tgt.z) : null;
       if (gps) gps.unshift([player.pos.x, player.pos.z]);
       wpRoute();
       const wt = waypoint ? (wpGps ? fmtDist(routeLen(wpGps)) : fmtDist(Math.hypot(waypoint.x - player.pos.x, waypoint.z - player.pos.z))) + (waypoint.name ? ' · ' + waypoint.name : '') : '';
       $('wpinfo').hidden = !wt; if ($('wpinfo').textContent !== wt) $('wpinfo').textContent = wt;
-      const sn = inHouse(player.pos) ? 'Cappes vei 6' : streetName(player.pos.x, player.pos.z);
+      const sn = inHouse(player.pos) ? 'Cappes vei 6' : inOffice(player.pos) ? 'Myreze · Halfdan Kjerulfs gate 4' : streetName(player.pos.x, player.pos.z);
       if (sn !== hud.street.textContent) hud.street.textContent = sn || '';
     }
     drawMinimap(blips);
@@ -3278,11 +3370,12 @@ function frame(now) {
     if (state.mode === 'play' && !prompt && funiCarHere() >= 0) prompt = `<kbd>E</kbd>Ride Fløibanen ${funiState.u[funiCarHere()] < 0.5 ? 'up to Fløyen' : 'down to town'}`;
     if (state.mode === 'play' && funiState.ride) prompt = funiState.waiting && !funiState.ride.moved ? 'Fløibanen: leaving shortly…' : 'Fløibanen';
     if (state.mode === 'play' && !player.riding && !dive.on && !prompt && Math.hypot(player.pos.x - JUMP.x, player.pos.z - JUMP.z) < 3.5 && Math.abs(player.pos.y - JUMP.y) < 3) prompt = '<kbd>E</kbd>Skydive from 450 m';
+    if (!prompt && stairsHere()) prompt = stairsHere() === 'up' ? '<kbd>E</kbd>Take the stairs up to Myreze, 4th floor' : '<kbd>E</kbd>Take the stairs down to Halfdan Kjerulfs gate';
     if (dive.on && state.mode === 'play') prompt = `Altitude ${Math.max(0, Math.round(skyAlt))} m · ` + (dive.phase === 'free' ? (isTouch ? '<kbd>Jump</kbd>open the parachute' : '<kbd>Space</kbd>open the parachute') : 'A/D steer · W dive · S flare');
     if (!prompt && brolly.shelterT > 0.3) prompt = `Sheltering under the umbrella… ${Math.ceil(SHELTER_T - brolly.shelterT)}`;
     hud.prompt.hidden = !prompt;
     if (prompt && hud.prompt.innerHTML !== prompt) hud.prompt.innerHTML = prompt;
-    audio.update(weather.rain, inHouse(camera.position), player.riding ? Math.abs(player.riding.speed) : 0, player.riding && turbo.on ? 1 : 0);
+    audio.update(weather.rain, isIndoors(camera.position), player.riding ? Math.abs(player.riding.speed) : 0, player.riding && turbo.on ? 1 : 0);
     if (player.riding && turbo.on && state.mode === 'play') {
       const r = player.riding;
       emit(_v.set(r.pos.x - Math.sin(r.heading) * 0.5, r.pos.y + 0.12, r.pos.z - Math.cos(r.heading) * 0.5), 2,
