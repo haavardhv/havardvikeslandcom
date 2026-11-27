@@ -1181,7 +1181,7 @@ const VOICE_LOOK = {
 };
 const lastLine = {};                 // voice and kind -> the line said last, so it isn't said twice running
 const street = { quietT: 6, scaredT: 0 };   // until someone else on the street may start talking, or cry out at a shot
-const _camR = new THREE.Vector3();
+const _camF = new THREE.Vector3();
 // a passer-by says a line of the given kind, out loud if it has been recorded
 function talk(n, kind) {
   if (!n.voice) { say(n, LINES[Math.floor(Math.random() * LINES.length)]); return; }
@@ -1192,12 +1192,8 @@ function talk(n, kind) {
   const id = `ped_${n.voice}_${String(i).padStart(2, '0')}`;
   // a remark in passing waits until its recording has loaded, so nobody mouths it in silence
   if (K.prio === 0 && audio.ctx && audio.on && lineDur(id) && !audio.ready(id)) return;
-  // louder the closer to you, from the side of the screen they're on
-  const d = Math.hypot(n.pos.x - player.pos.x, n.pos.z - player.pos.z);
-  _camR.set(1, 0, 0).applyQuaternion(camera.quaternion);
-  const cx = n.pos.x - camera.position.x, cz = n.pos.z - camera.position.z;
-  const pan = (cx * _camR.x + cz * _camR.z) / Math.max(1, Math.hypot(cx, cz)) * 0.7;
-  audio.speak(id, clamp(1.15 - d / 26, 0, 1), pan, K.prio);
+  // heard from where they are, and following them as they walk on (audio.listen has your ears)
+  audio.speak(id, n.pos, K.prio);
   say(n, STREET_LINES[n.voice][i - 1], lineDur(id));
 }
 const npcs = [];
@@ -3503,6 +3499,7 @@ function frame(now) {
     hud.prompt.hidden = !prompt;
     if (prompt && hud.prompt.innerHTML !== prompt) hud.prompt.innerHTML = prompt;
     audio.update(weather.rain, isIndoors(camera.position), player.riding ? Math.abs(player.riding.speed) : 0, player.riding && turbo.on ? 1 : 0);
+    audio.listen(player.pos, camera.getWorldDirection(_camF));
     if (player.riding && turbo.on && state.mode === 'play') {
       const r = player.riding;
       emit(_v.set(r.pos.x - Math.sin(r.heading) * 0.5, r.pos.y + 0.12, r.pos.z - Math.cos(r.heading) * 0.5), 2,
