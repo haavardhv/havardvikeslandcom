@@ -205,3 +205,26 @@ The stairs went down the wrong way. They now start at the kitchen end of the ups
 - **Banister and entry:** the banister stops 1 m short of the top, so you step onto the stairs from the end of the hall.
 - **Downstairs:** the toilet is shallower, and a closet sits in the corner beside the stair foot.
 - **Checks:** the flood fill reaches the whole house. The scripted walk reaches every waypoint down the new stairs and through every room (46 of 46), and every waypoint back up from the terrace to the upstairs hall (12 of 12).
+
+## Streets you can walk and ride on
+
+The streets had kerbs and cliffs in them, and stray strips of road sticking out over the grass. The streets were separate strips laid over the terrain, and they could never quite follow it.
+
+Measured along every street's centre line every 50 cm, on the terrain the game uses:
+
+| | Before | After |
+| --- | --- | --- |
+| Drivable streets (19 km): sudden jumps of more than 20 cm within 50 cm | 224 | 82 |
+| Drivable streets: sharp bumps | 637 | 450 |
+| Drivable streets: sideways tilt over 12 % | 7.2 % | 6.3 % |
+| Footways and paths (28 km): jumps | 718 | 620 |
+
+What made the difference, in the order it was found:
+
+- **Steps beside a road took part of the road.** Each terrain node took the height of the street whose centre line was nearest. A flight of steps beside a road at another level could therefore claim nodes inside the road (Bispengsgaten had a 7 m cliff in it). Now a node on a road's surface belongs to the road, and where several streets of the same kind overlap (at junctions, or two lanes side by side), their heights are blended, so they meet with a ramp instead of a step.
+- **Lanes narrower than a terrain cell.** The terrain is a 2.5 m grid drawn as two triangles per cell. A 2.5 m lane against an embankment had one corner of the triangle under it up on the embankment. Every triangle a street passes over is now levelled.
+- **Profiles over the whole network.** Every street is sampled every metre. Streets share one height where they meet, and are smoothed along their length towards the measured ground (strongly for roads, lightly for steps). This removed less than expected (the measured ground was already good along the streets), but it makes junctions agree.
+- **Widths and surfaces from OpenStreetMap:** `width`, `lanes`, `surface` (on 1,333 of 1,710 ways) and `sidewalk=*`.
+- **Painted, not draped.** The streets are part of the terrain, painted on from two 50 cm textures that the map builder rasterises with soft edges and buildings cut out. Only steps keep geometry, for the direction of their treads.
+
+The remaining jumps are mostly at one junction where three steep streets meet at different levels (Bernhard Meyers vei, Øvre Korskirkeallmenningen and Bispengsgaten), and where OpenStreetMap's steps meet a road across a retaining wall.
