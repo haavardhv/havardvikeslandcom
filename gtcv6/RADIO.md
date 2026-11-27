@@ -137,4 +137,4 @@ These play over the music when something happens while you ride.
 
 ## All the clips
 
-29 files in all: 4 station IDs, 5 intros, 3 outros, 5 DJ talks, 4 ads, 3 news items and 8 reactive lines. Together they come to about 5.5 minutes of audio.
+32 files in all: 4 station IDs, 5 intros, 3 outros, 5 DJ talks, 4 ads, 3 news items and 8 reactive lines. Together they come to about 5½ minutes of audio.
