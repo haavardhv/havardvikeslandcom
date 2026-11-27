@@ -51,7 +51,15 @@ export function facadeAtlas(T) {
     noise(18, 4000);
   });
   // 2: plaster
-  cell(2, () => { g.fillStyle = '#efefef'; g.fillRect(0, 0, C, C); noise(22, 9000); for (let k = 0; k < 30; k++) { g.fillStyle = `rgba(0,0,0,${R() * 0.04})`; g.beginPath(); g.arc(R() * C, R() * C, 10 + R() * 30, 0, 7); g.fill(); } });
+  cell(2, () => {
+    g.fillStyle = '#efefef'; g.fillRect(0, 0, C, C); noise(16, 9000);
+    // soft vertical rain streaks (they tile: drawn twice, one cell apart)
+    for (let k = 0; k < 14; k++) {
+      const x = R() * C, w = 3 + R() * 10, y = R() * C, h = 40 + R() * 120, a = 0.012 + R() * 0.025;
+      const gr = g.createLinearGradient(0, y, 0, y + h); gr.addColorStop(0, `rgba(60,58,52,${a})`); gr.addColorStop(1, 'rgba(60,58,52,0)');
+      g.fillStyle = gr; for (const dy of [0, -C]) g.fillRect(x, y + dy, w, h);
+    }
+  });
   // 3: brick
   cell(3, () => {
     g.fillStyle = '#d9d4cc'; g.fillRect(0, 0, C, C);
@@ -109,7 +117,7 @@ export function facadeAtlas(T) {
 }
 
 // windows, doors and trim: 4 x 4 cells of 128 px, plain UVs (no tiling)
-const WIN = { classic: 0, sixpane: 1, modern: 2, shop: 3, door: 4, glassdoor: 5, garage: 6, white: 7, attic: 8, church: 9 };
+const WIN = { classic: 0, sixpane: 1, modern: 2, shop: 3, door: 4, glassdoor: 5, garage: 6, white: 7, attic: 8, church: 9, classicDark: 10, sixpaneDark: 11, modernDark: 12, lancet: 13 };
 function windowAtlas() {
   const C = 128, c = document.createElement('canvas');
   c.width = c.height = C * 4;
@@ -122,10 +130,10 @@ function windowAtlas() {
     // a hint of curtains
     g.fillStyle = 'rgba(235,228,210,0.35)'; g.fillRect(x, y, w * 0.18, h); g.fillRect(x + w * 0.82, y, w * 0.18, h);
   };
-  const frame = (f, panesX, panesY) => {
-    g.fillStyle = '#f5f4ef'; g.fillRect(0, 0, C, C);
+  const frame = (f, panesX, panesY, fc = '#f5f4ef') => {
+    g.fillStyle = fc; g.fillRect(0, 0, C, C);
     glass(f, f, C - 2 * f, C - 2 * f);
-    g.fillStyle = '#f5f4ef';
+    g.fillStyle = fc;
     for (let i = 1; i < panesX; i++) g.fillRect(f + (C - 2 * f) * i / panesX - 3, f, 6, C - 2 * f);
     for (let j = 1; j < panesY; j++) g.fillRect(f, f + (C - 2 * f) * j / panesY - 3, C - 2 * f, 6);
     g.strokeStyle = 'rgba(0,0,0,0.25)'; g.lineWidth = 3; g.strokeRect(f, f, C - 2 * f, C - 2 * f);
@@ -145,6 +153,19 @@ function windowAtlas() {
   cell(WIN.garage, () => { g.fillStyle = '#d8d8d4'; g.fillRect(0, 0, C, C); for (let j = 0; j < 8; j++) { g.fillStyle = 'rgba(0,0,0,0.18)'; g.fillRect(0, j * C / 8, C, 3); } });
   cell(WIN.white, () => { g.fillStyle = '#f5f4ef'; g.fillRect(0, 0, C, C); });
   cell(WIN.attic, () => { frame(14, 1, 1); });
+  // dark frames, as on many of the town's plastered blocks and newer shopfronts
+  cell(WIN.classicDark, () => { frame(11, 2, 1, '#2f3431'); g.fillStyle = '#2f3431'; g.fillRect(11, C * 0.32, C - 22, 6); });
+  cell(WIN.sixpaneDark, () => frame(10, 2, 3, '#3b2f27'));
+  cell(WIN.modernDark, () => { frame(7, 1, 1, '#33363a'); g.fillStyle = '#33363a'; g.fillRect(C / 2 - 3, 7, 6, C - 14); });
+  // a lancet window with lead lines (churches)
+  cell(WIN.lancet, () => {
+    g.fillStyle = '#cfc9b8'; g.fillRect(0, 0, C, C);
+    g.save(); g.beginPath(); g.moveTo(22, C - 6); g.lineTo(22, 52); g.quadraticCurveTo(22, 10, C / 2, 4); g.quadraticCurveTo(C - 22, 10, C - 22, 52); g.lineTo(C - 22, C - 6); g.closePath(); g.clip();
+    const gr = g.createLinearGradient(0, 0, 0, C); gr.addColorStop(0, '#5b6f88'); gr.addColorStop(0.5, '#3d4b63'); gr.addColorStop(1, '#2b3346'); g.fillStyle = gr; g.fillRect(0, 0, C, C);
+    for (let k = 0; k < 40; k++) { g.fillStyle = ['rgba(160,60,50,0.35)', 'rgba(200,170,80,0.3)', 'rgba(70,120,170,0.35)'][k % 3]; g.fillRect(22 + (k * 37) % (C - 44), 8 + (k * 53) % (C - 16), 9, 9); }
+    g.strokeStyle = 'rgba(30,30,30,0.6)'; g.lineWidth = 2; for (let y = 20; y < C; y += 14) { g.beginPath(); g.moveTo(0, y); g.lineTo(C, y); g.stroke(); } g.beginPath(); g.moveTo(C / 2, 0); g.lineTo(C / 2, C); g.stroke();
+    g.restore();
+  });
   cell(WIN.church, () => { g.fillStyle = '#d8d3c4'; g.fillRect(0, 0, C, C); g.fillStyle = '#3c4a5a'; g.beginPath(); g.moveTo(20, C); g.lineTo(20, 40); g.arc(C / 2, 44, C / 2 - 20, Math.PI, 0); g.lineTo(C - 20, C); g.fill(); g.strokeStyle = '#8a8574'; g.lineWidth = 3; for (let k = 1; k < 4; k++) { g.beginPath(); g.moveTo(20, 40 + k * 22); g.lineTo(C - 20, 40 + k * 22); g.stroke(); } });
   const t = new THREE.CanvasTexture(c);
   t.colorSpace = THREE.SRGBColorSpace;
@@ -152,6 +173,8 @@ function windowAtlas() {
   return t;
 }
 const cellUV = (i, u, v) => [((i % 4) + 0.03 + u * 0.94) / 4, 1 - (Math.floor(i / 4) + 0.03 + (1 - v) * 0.94) / 4];
+// the plain white cell of the window atlas: decals coloured by their vertex colours (road paint)
+export const WHITE_UV = (() => { const u = cellUV(7, 0.5, 0.5); return [u, u, u, u]; })();
 
 function facadeMaterial(atlas) {
   const m = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.85 });
@@ -231,10 +254,10 @@ export function insideRings(rings, x, z) {
   }
   return c;
 }
-const ringsOf = (b) => [b.p, ...(b.h || [])].map(f => { const a = []; for (let i = 0; i < f.length; i += 2) a.push([f[i], f[i + 1]]); return a; });
+export const ringsOf = (b) => [b.p, ...(b.h || [])].map(f => { const a = []; for (let i = 0; i < f.length; i += 2) a.push([f[i], f[i + 1]]); return a; });
 
 // Split a convex polygon by the line A x + B z + C = 0.
-function splitPoly(poly, L) {
+export function splitPoly(poly, L) {
   const s = poly.map(p => { const v = L[0] * p[0] + L[1] * p[1] + L[2]; return Math.abs(v) < 1e-7 ? 0 : v; });
   if (s.every(v => v >= 0) || s.every(v => v <= 0)) return [poly];
   const pos = [], neg = [];
@@ -250,7 +273,7 @@ function splitPoly(poly, L) {
   return [pos, neg].filter(p => p.length >= 3);
 }
 // triangles (convex pieces) over which the roof height field is planar
-function planarPieces(tris, lines) {
+export function planarPieces(tris, lines) {
   let cur = tris;
   for (const L of lines) { const nx = []; for (const p of cur) for (const q of splitPoly(p, L)) nx.push(q); cur = nx; }
   const out = [];
@@ -260,14 +283,14 @@ function planarPieces(tris, lines) {
   }
   return out;
 }
-function triangulate(rings) {
+export function triangulate(rings) {
   const contour = rings[0].map(([x, z]) => new THREE.Vector2(x, z));
   const holes = rings.slice(1).map(r => r.map(([x, z]) => new THREE.Vector2(x, z)));
   const all = [...rings[0], ...rings.slice(1).flat()];
   return THREE.ShapeUtils.triangulateShape(contour, holes).map(([a, b, c]) => [all[a], all[b], all[c]]);
 }
 // where along a segment (0..1) the planar pieces change
-function breaks(ax, az, bx, bz, lines) {
+export function breaks(ax, az, bx, bz, lines) {
   const ts = [0, 1];
   for (const L of lines) {
     const sa = L[0] * ax + L[1] * az + L[2], sb = L[0] * bx + L[1] * bz + L[2];
@@ -302,6 +325,25 @@ function roofField(b) {
   return { f, lines, rise, ux, uz, hl, hw, cx, cz };
 }
 
+// A church: walls of a nave's height (not counted in storeys) and a steep gable roof along its
+// longest side, where OpenStreetMap gives no roof.
+function churchify(b, outer, gHi) {
+  b.churchDone = true;
+  b.t = Math.min(b.t, gHi + 11);
+  if (b.r) return;
+  let bi = 0, bl = 0;
+  for (let i = 0; i < outer.length; i++) { const j = (i + 1) % outer.length, l = Math.hypot(outer[j][0] - outer[i][0], outer[j][1] - outer[i][1]); if (l > bl) { bl = l; bi = i; } }
+  const j = (bi + 1) % outer.length;
+  let ux = (outer[j][0] - outer[bi][0]) / bl, uz = (outer[j][1] - outer[bi][1]) / bl;
+  const ext = (ax, az) => { let lo = Infinity, hi = -Infinity; for (const [x, z] of outer) { const d = x * ax + z * az; lo = Math.min(lo, d); hi = Math.max(hi, d); } return [lo, hi]; };
+  let [u0, u1] = ext(ux, uz), [v0, v1] = ext(-uz, ux);
+  if (v1 - v0 > u1 - u0) { [ux, uz] = [-uz, ux]; [u0, u1, v0, v1] = [v0, v1, -u1, -u0]; }
+  const vx = -uz, vz = ux, cu = (u0 + u1) / 2, cv = (v0 + v1) / 2;
+  const hl = (u1 - u0) / 2, hw = (v1 - v0) / 2;
+  b.r = 'g'; b.rf = [cu * ux + cv * vx, cu * uz + cv * vz, ux, uz, hl, hw]; b.rh = Math.min(hw * 1.1, 12);
+  if (!b.rc || b.rc === '#5d5f62') b.rc = '#3d4a45';
+}
+
 // ---------------------------------------------------------------------------
 export function buildBuildings(scene, map, terrain, polys, T, opts) {
   const facadeTex = opts.atlas || facadeAtlas(T);
@@ -325,6 +367,7 @@ export function buildBuildings(scene, map, terrain, polys, T, opts) {
         #endif`);
   };
   winMat.customProgramCacheKey = () => 'nightWindows';
+  winMat.polygonOffset = true; winMat.polygonOffsetFactor = -1; winMat.polygonOffsetUnits = -2;
   const tiles = new Map();
   const tileOf = (x, z) => {
     const k = Math.floor(x / TILE) * 1000 + Math.floor(z / TILE);
@@ -344,15 +387,25 @@ export function buildBuildings(scene, map, terrain, polys, T, opts) {
   const wu = cellUV(WIN.white, 0.5, 0.5), WU4 = [wu, wu, wu, wu];
   const winUV = (kind) => [cellUV(kind, 0, 0), cellUV(kind, 1, 0), cellUV(kind, 1, 1), cellUV(kind, 0, 1)];
   const DOORCOLS = ['#2b2f33', '#7a2e28', '#2f4a35', '#3b5a78', '#f2f1ec', '#5b3a29'];
+  // the band over a shopfront, where the shop's name goes
+  const SIGN4 = ['#1f2a33', '#6b1f24', '#20402f', '#24344f', '#2b2b2b', '#efe9da', '#7a5a2a'].map(c => { const k = new THREE.Color(c); return [k, k, k, k]; });
   const named = [];
   const popcount = m => ((m & 1) + ((m >> 1) & 1) + ((m >> 2) & 1) + ((m >> 3) & 1) + ((m >> 4) & 1));
   const ROOF_LIFT = 0.15;       // roof thickness above the soffit
 
   for (const b of map.buildings) {
-    if (b.skip) continue;              // replaced by a model of its own (the Trekroneren kiosk)
+    if (b.skip) continue;              // replaced by a model of its own (the Trekroneren kiosk, the landmarks)
     const rings = ringsOf(b);
     const outer = rings[0], n = outer.length;
     if (n < 3) continue;
+    // the ground round the footprint: its lowest, highest and middle
+    let gLo = Infinity, gHi = -Infinity;
+    for (let i = 0; i < n; i++) {
+      const [ax, az] = outer[i], [bx, bz] = outer[(i + 1) % n];
+      for (let k = 0; k < 3; k++) { const h = terrain.height(ax + (bx - ax) * k / 3, az + (bz - az) * k / 3); gLo = Math.min(gLo, h); gHi = Math.max(gHi, h); }
+    }
+    const gMid = (gLo + gHi) / 2;
+    if (b.k === 'church' && !b.churchDone) churchify(b, outer, gHi);
     const T0 = tileOf(outer[0][0], outer[0][1]);
     const R = rng(Math.floor(Math.abs(outer[0][0] * 131 + outer[0][1] * 71)) + n);
     col.set(b.c);
@@ -362,17 +415,23 @@ export function buildBuildings(scene, map, terrain, polys, T, opts) {
     const sty = church ? STYLE.p : (STYLE[style] ?? 0);
     const farSty = style === 'p' || style === 'b' || church ? STYLE.pfar : STYLE.wfar;
     const wood = (style === 'w' || style === 'y') && !church;
-    const winKind = style === 'y' ? WIN.sixpane : style === 'p' || style === 'b' ? (R() < 0.5 ? WIN.modern : WIN.sixpane) : (R() < 0.75 ? WIN.classic : WIN.sixpane);
-    const winW = style === 'y' ? 0.7 : style === 'p' || style === 'b' ? 1.1 : 0.95;
-    const winH = style === 'y' ? 1.0 : style === 'p' || style === 'b' ? 1.55 : 1.3;
+    const dark = (style === 'p' || style === 'b') && R() < 0.35;
+    const winKind = style === 'y' ? WIN.sixpane : style === 'p' || style === 'b' ? (R() < 0.5 ? (dark ? WIN.modernDark : WIN.modern) : (dark ? WIN.sixpaneDark : WIN.sixpane)) : (R() < 0.75 ? WIN.classic : WIN.sixpane);
+    const winW = style === 'y' ? 0.9 : style === 'p' || style === 'b' ? 1.1 : 0.95;
+    const winH = style === 'y' ? 1.2 : style === 'p' || style === 'b' ? 1.55 : 1.3;
+    // corner boards and bargeboards: white, or the building's own trim colour (Bryggen's green)
+    const trimC = b.trim ? new THREE.Color(b.trim) : white, TR4 = [trimC, trimC, trimC, trimC];
     const doorCol = new THREE.Color(DOORCOLS[Math.floor(R() * DOORCOLS.length)]);
     const roof = roofField(b);
     const pitched = !!b.r;
     const F = roof.f;
     // the wall reaches the roof line (the top of the roof slab on pitched roofs)
     const wallTop = (x, z) => pitched ? F(x, z) + ROOF_LIFT : top;
-    const door = b.d;
+    const door = b.bareBelow ? null : b.d;
     const ringNormals = [];     // per ring: per edge outward normal [nx, nz]
+    // On a steep slope the downhill side shows one storey more, perhaps two, over a stone
+    // foundation wall: not ten rows of windows down to the street.
+    const footing = el ? -Infinity : Math.min(top - STOREY, gMid - 1.3 * STOREY);
 
     // ---------------------------------------------------------------- walls
     rings.forEach((ring, ri) => {
@@ -393,7 +452,7 @@ export function buildBuildings(scene, map, terrain, polys, T, opts) {
         // the ground along this wall
         let gMin = Infinity;
         for (let k = 0; k <= 4; k++) gMin = Math.min(gMin, terrain.height(ax + (bx - ax) * k / 4 + nx * 0.3, az + (bz - az) * k / 4 + nz * 0.3));
-        const plinth = el ? base : Math.min(top - 1, Math.max(base + 0.1, gMin + (wood ? 0.45 : 0.2)));
+        const plinth = el ? base : Math.min(top - 1, Math.max(base + 0.1, gMin + (wood ? 0.45 : 0.2), footing));
         const ts = breaks(ax, az, bx, bz, roof.lines);
         for (let s = 0; s < ts.length - 1; s++) {
           const ta = ts[s], tb = ts[s + 1];
@@ -411,17 +470,17 @@ export function buildBuildings(scene, map, terrain, polys, T, opts) {
           const y1 = wallTop(ax, az);
           const ux = dx * 0.14, uz = dz * 0.14, e = 0.02;
           const A = [ax + nx * e, g0, az + nz * e], B = [ax + ux + nx * e, g0, az + uz + nz * e];
-          T0.win.quad(A, B, [B[0], y1 - 0.05, B[2]], [A[0], y1 - 0.05, A[2]], N, W4, WU4, 0);
+          T0.win.quad(A, B, [B[0], y1 - 0.05, B[2]], [A[0], y1 - 0.05, A[2]], N, TR4, WU4, 0);
           const y2 = wallTop(bx, bz);
           const C = [bx + nx * e, g0, bz + nz * e], D = [bx - ux + nx * e, g0, bz - uz + nz * e];
-          T0.win.quad(C, D, [D[0], y2 - 0.05, D[2]], [C[0], y2 - 0.05, C[2]], N, W4, WU4, 0);
+          T0.win.quad(C, D, [D[0], y2 - 0.05, D[2]], [C[0], y2 - 0.05, C[2]], N, TR4, WU4, 0);
         }
         if (m === 0 || (b.plain && !(ri === 0 && door))) continue;
         // windows: storeys counted down from the eaves
         const doorHere = ri === 0 && door && door[0] === i;
         const doorT = doorHere ? door[1] : -1;
         const doorG = doorHere ? terrain.height(ax + (bx - ax) * doorT + nx * 0.8, az + (bz - az) * doorT + nz * 0.8) : 0;
-        const bays = L < 1.3 ? 0 : Math.max(1, Math.floor((L - 0.5) / (style === 'p' || style === 'b' ? 2.6 : 2.3)));
+        const bays = L < 1.3 ? 0 : Math.max(1, Math.floor((L - 0.5) / (church ? 3.6 : style === 'y' ? 1.75 : style === 'p' || style === 'b' ? 2.6 : 2.3)));
         const o = 0.05;
         const q = (tt, y, off = o) => { const p = P(tt, y); return [p[0] + nx * off, p[1], p[2] + nz * off]; };
         for (let k = 0; k < bays; k++) {
@@ -430,27 +489,40 @@ export function buildBuildings(scene, map, terrain, polys, T, opts) {
           if (!(m & (1 << bit))) continue;
           const gHere = terrain.height(ax + (bx - ax) * t + nx * 0.4, az + (bz - az) * t + nz * 0.4);
           const floor0 = el ? base : Math.max(gHere, plinth);
+          if (church) {
+            // one tier of tall arched windows in the nave wall
+            const y0 = floor0 + 2.2, y1 = top - 1.4, t0 = t - 0.6 / L, t1 = t + 0.6 / L;
+            if (y1 - y0 > 2.5 && t0 > 0.03 && t1 < 0.97 && !(doorHere && Math.abs(t - doorT) * L < 1.6))
+              T0.win.quad(q(t0, y0), q(t1, y0), q(t1, y1), q(t0, y1), N, RL() < 0.3 ? L4 : W4, winUV(WIN.lancet), 0);
+            continue;
+          }
+          // the ground floor of a shop is its shopfront: no window there
+          const shopTop = b.shop && !el ? floor0 + 3.0 : -Infinity;
+          const nearDoor = doorHere && Math.abs(t - doorT) * L < 1.6;
+          if (b.shop && !el && !nearDoor && !b.bareBelow && floor0 + 3.4 < top) {
+            const sy1 = floor0 + 2.65, sy0 = floor0 + 0.12, hw = Math.min(1.1, L / bays / 2 - 0.25) / L;
+            if (hw > 0.3 / L && t - hw > 0.02 && t + hw < 0.98) {
+              T0.win.quad(q(t - hw, sy0), q(t + hw, sy0), q(t + hw, sy1), q(t - hw, sy1), N, L4, winUV(WIN.shop), 0);
+              // a sign band over it
+              T0.win.quad(q(t - hw, sy1 + 0.08, 0.06), q(t + hw, sy1 + 0.08, 0.06), q(t + hw, sy1 + 0.42, 0.06), q(t - hw, sy1 + 0.42, 0.06), N, SIGN4[(b.shopCol ?? (b.shopCol = Math.floor(R() * SIGN4.length)))], WU4, 0);
+            }
+          }
           for (let f = 0; f < 12; f++) {
             const yTop = top - f * STOREY - 0.55;
-            const ww = church ? 1.2 : winW, wh = church ? 2.6 : winH;
+            const ww = winW, wh = winH;
             const y0 = yTop - wh;
             if (y0 < floor0 + 0.45) break;
+            if (y0 < shopTop) break;
+            if (b.bareBelow && y0 < floor0 + b.bareBelow) break;
             // the door takes the bay it stands in
             if (doorHere && Math.abs(t - doorT) * L < 1.1 && y0 < doorG + 2.4) continue;
-            const shop = b.shop && f > 0 && y0 - STOREY < floor0 + 0.45;
-            const kind = church ? WIN.church : winKind;
+            const kind = winKind;
             const t0 = t - ww / 2 / L, t1 = t + ww / 2 / L;
             if (t0 < 0.02 || t1 > 0.98) continue;
             T0.win.quad(q(t0, y0), q(t1, y0), q(t1, yTop), q(t0, yTop), N, RL() < 0.45 ? L4 : W4, winUV(kind), 0);
             // sill
             const s0 = q(t0 - 0.06 / L, y0 - 0.06), s1 = q(t1 + 0.06 / L, y0 - 0.06);
             T0.win.quad(s0, s1, [s1[0] + nx * 0.1, s1[1], s1[2] + nz * 0.1], [s0[0] + nx * 0.1, s0[1], s0[2] + nz * 0.1], [0, 1, 0], W4, WU4, 0);
-            if (shop) {
-              // a shopfront under this window
-              const sy1 = floor0 + 2.6, sy0 = floor0 + 0.15;
-              const st0 = t - 1.0 / L, st1 = t + 1.0 / L;
-              if (st0 > 0.02 && st1 < 0.98) T0.win.quad(q(st0, sy0), q(st1, sy0), q(st1, sy1), q(st0, sy1), N, L4, winUV(WIN.shop), 0);
-            }
           }
         }
         // a window in the gable
@@ -525,7 +597,7 @@ export function buildBuildings(scene, map, terrain, polys, T, opts) {
         for (let s = 0; s < ts.length - 1; s++) {
           const pa = [ax + (bx - ax) * ts[s], az + (bz - az) * ts[s]], pb = [ax + (bx - ax) * ts[s + 1], az + (bz - az) * ts[s + 1]];
           const fa = F(pa[0], pa[1]), fb = F(pb[0], pb[1]);
-          T0.win.quad([pa[0], fa - 0.12, pa[1]], [pb[0], fb - 0.12, pb[1]], [pb[0], fb + ROOF_LIFT + 0.03, pb[1]], [pa[0], fa + ROOF_LIFT + 0.03, pa[1]], N, W4, WU4, 0);
+          T0.win.quad([pa[0], fa - 0.12, pa[1]], [pb[0], fb - 0.12, pb[1]], [pb[0], fb + ROOF_LIFT + 0.03, pb[1]], [pa[0], fa + ROOF_LIFT + 0.03, pa[1]], N, TR4, WU4, 0);
         }
       }
       // chimney on the ridge of most wooden houses

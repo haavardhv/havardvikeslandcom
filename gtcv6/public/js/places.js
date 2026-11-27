@@ -14,9 +14,11 @@ export function stylePlaceBuildings(map) {
     if (i < 0) continue;
     const b = map.buildings[i];
     found[pl.k] = b;
-    if (pl.k === 'food') Object.assign(b, { c: '#9d3328', s: 'p', shop: 1 });                    // the red house on Marken
-    if (pl.k === 'shop') Object.assign(b, { c: '#efede6', rc: '#a5462f', s: 'p' });              // white, red tiles
-    if (pl.k === 'pizza') Object.assign(b, { c: '#e7dec8', s: 'p' });                            // cream, Jugendstil
+    // bareBelow: the generated windows and door stay off the ground floor, where the dressing
+    // below is (otherwise the two would sit a centimetre apart and flicker)
+    if (pl.k === 'food') Object.assign(b, { c: '#9d3328', s: 'p', shop: 0, bareBelow: 4.3 });     // the red house on Marken
+    if (pl.k === 'shop') Object.assign(b, { c: '#efede6', rc: '#a5462f', s: 'p', shop: 0, bareBelow: 4.6 });   // white, red tiles
+    if (pl.k === 'pizza') Object.assign(b, { c: '#e7dec8', s: 'p', shop: 0, bareBelow: 4.6 });   // cream, Jugendstil
     if (pl.k === 'hotdog') b.skip = true;                                                        // the kiosk is built below
   }
   return found;

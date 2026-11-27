@@ -8,6 +8,8 @@ import { Physics } from './physics.js';
 import { Humanoid, Gull, makeScooter, makeItem, makeMarker, makeArrow, makePistol, PEOPLE, SCOOTER_LAMP } from './actors.js';
 import { Audio, lineDur } from './audio.js';
 import { stylePlaceBuildings, buildPlaces } from './places.js';
+import { prepareLandmarks, buildLandmarks } from './landmarks.js';
+import { buildShopSigns } from './signs.js';
 import { buildTram } from './tram.js';
 
 const $ = id => document.getElementById(id);
@@ -161,6 +163,7 @@ scene.environmentIntensity = 0.75;
 const T = buildTextures();
 const map = await loadMapData();
 const placeBuildings = stylePlaceBuildings(map);
+const landmarkBuildings = prepareLandmarks(map);
 const H = map.house6;
 const [OX, OZ] = H.origin, [HUX, HUZ] = H.u, [HVX, HVZ] = H.v;
 // house-local (u along the street, v into the house) <-> world
@@ -302,6 +305,10 @@ const places = buildPlaces(scene, map, placeBuildings, {
   // which way the street is from a point: towards the nearest node of the walking graph
   streetDir: (x, z) => { const i = nearestNode(x, z, 30); if (i < 0) return null; const dx = gx(i) - x, dz = gz(i) - z, d = Math.hypot(dx, dz); return d > 0.3 ? [dx / d, dz / d] : null; },
 });
+// the churches, Bergenhus, the station, Den blå steinen and the rest, modelled after photos
+const landmarks = buildLandmarks(scene, map, landmarkBuildings, { terrain: city.terrain, polys: city.polys, onRoad: city.onRoad });
+// the names of the shops, cafés and restaurants over their doors
+const shopSigns = buildShopSigns(scene, map, { terrain: city.terrain, polys: city.polys, onRoad: city.onRoad });
 // Bybanen: the rails, the platforms at Byparken and Kaigaten, and the tram
 const tram = buildTram(scene, map.tram, { terrain: city.terrain, polys: city.polys });
 function updateTram(dt) {
@@ -1307,6 +1314,8 @@ function updateDayNight(dt) {
   lampHalos.material.color.setRGB(1, 0.85, 0.6).multiplyScalar(0.9 * lamp);
   updateLampLights(dt, lamp);
   places.update(dt, lamp);
+  landmarks.update(dt, lamp, time);
+  shopSigns.update(lamp);
 }
 // the scooter's headlight: one spot light, on the scooter you ride, at night
 const headlight = new THREE.SpotLight(0xfff0d8, 0, 34, 0.42, 0.55, 1.1);
@@ -3541,6 +3550,12 @@ function frame(now) {
   frameNo++;
   renderer.shadowMap.needsUpdate = frameNo % 2 === 0 || frameNo < 4;
   if (frameNo % 120 === 1) updateEnv();
+  // a near plane of 8 cm is only needed indoors, where the camera works close to the walls; out in
+  // town 14 cm (the camera keeps 18 cm off walls) gives the depth buffer nearly twice the precision far away
+  {
+    const near = isIndoors(camera.position) || isIndoors(player.pos) ? 0.08 : 0.14;
+    if (camera.near !== near) { camera.near = near; camera.updateProjectionMatrix(); }
+  }
   city.water.material.normalMap.offset.set(time * 0.004, time * 0.0025);
   renderer.render(scene, camera);
 

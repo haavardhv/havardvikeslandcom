@@ -3,8 +3,16 @@
 import * as THREE from '../vendor/three.module.min.js';
 import { Geo } from './engine.js';
 import { rng } from './textures.js';
-import { buildBuildings, facadeAtlas, TILE_M, STYLE } from './buildings.js';
+import { buildBuildings, facadeAtlas, TILE_M, STYLE, WHITE_UV } from './buildings.js';
 
+const insideRingFlat = (p, x, z) => {
+  let c = false;
+  for (let i = 0, n = p.length / 2, j = n - 1; i < n; j = i++) {
+    const xi = p[i * 2], zi = p[i * 2 + 1], xj = p[j * 2], zj = p[j * 2 + 1];
+    if ((zi > z) !== (zj > z) && x < (xj - xi) * (z - zi) / (zj - zi) + xi) c = !c;
+  }
+  return c;
+};
 export async function loadMapData(base = '/data/') {
   const [map, terr, coarse, ground] = await Promise.all([
     fetch(base + 'map.json').then(r => r.json()),
@@ -508,6 +516,68 @@ export function buildCity(scene, map, T, opts) {
   water.position.y = 0.15;
   water.receiveShadow = true;
   scene.add(water);
+  // Lakes (tools/build_map.py): each at its own level over a dug basin, with a granite edge in
+  // town (Lille Lungegårdsvann) and a plain shore up on the mountain (Skomakerdiket)
+  {
+    const edgeM = new THREE.MeshStandardMaterial({ color: 0x8f8c84, roughness: 0.85, map: T.stone.clone() });
+    edgeM.map.repeat.set(1 / 1.6, 1 / 1.6); edgeM.map.needsUpdate = true;
+    const eg = new Geo();
+    for (const w of map.waters || []) {
+      const ring = f => { const a = []; for (let i = 0; i < f.length; i += 2) a.push(new THREE.Vector2(f[i], -f[i + 1])); return a; };
+      const sh = new THREE.Shape(ring(w.p));
+      for (const h of w.h || []) sh.holes.push(new THREE.Path(ring(h)));
+      const y = Math.max(w.y, 0.2);
+      if (w.y > 0.2) {
+        const m = new THREE.Mesh(new THREE.ShapeGeometry(sh), water.material);
+        m.rotation.x = -Math.PI / 2; m.position.y = y; m.receiveShadow = true;
+        scene.add(m);
+      }
+      if (w.y > 25) continue;
+      // a granite edge, from under the water up to the bank
+      for (const f of [w.p, ...(w.h || [])]) {
+        let u = 0;
+        for (let i = 0; i < f.length; i += 2) {
+          const j = (i + 2) % f.length, ax = f[i], az = f[i + 1], bx = f[j], bz = f[j + 1];
+          const L = Math.hypot(bx - ax, bz - az);
+          if (L < 0.05) continue;
+          const n = Math.max(1, Math.ceil(L / 3));
+          for (let k = 0; k < n; k++) {
+            const x0 = ax + (bx - ax) * k / n, z0 = az + (bz - az) * k / n, x1 = ax + (bx - ax) * (k + 1) / n, z1 = az + (bz - az) * (k + 1) / n;
+            // the bank: the ground a little outside the outline (the edge itself was dug down)
+            let ox = -(z1 - z0), oz = x1 - x0; const ol = Math.hypot(ox, oz) || 1; ox /= ol; oz /= ol;
+            const mx = (x0 + x1) / 2, mz = (z0 + z1) / 2;
+            if (insideRingFlat(w.p, mx + ox * 0.5, mz + oz * 0.5)) { ox = -ox; oz = -oz; }
+            const top = Math.max(y + 0.35, terrain.height(mx + ox * 2.6, mz + oz * 2.6) + 0.04);
+            const len = Math.hypot(x1 - x0, z1 - z0);
+            eg.obox(edgeM, mx + ox * 0.1, (top + y - 1.2) / 2, mz + oz * 0.1, len + 0.05, top - y + 1.2, 0.6, 0, Math.atan2(x1 - x0, z1 - z0) + Math.PI / 2, 0);
+            u += len;
+          }
+        }
+      }
+    }
+    // the harbour's quay walls along OpenStreetMap's coastline (land on the left), with bollards
+    const bollardM = new THREE.MeshStandardMaterial({ color: 0x1f2224, roughness: 0.5, metalness: 0.4 });
+    const bollardG = new THREE.CylinderGeometry(0.13, 0.17, 0.65, 10); bollardG.translate(0, 0.32, 0);
+    let since = 6;
+    for (const f of map.coast || []) {
+      for (let i = 0; i < f.length - 2; i += 2) {
+        const ax = f[i], az = f[i + 1], bx = f[i + 2], bz = f[i + 3], L = Math.hypot(bx - ax, bz - az);
+        if (L < 0.05) continue;
+        const dx = (bx - ax) / L, dz = (bz - az) / L, lx = dz, lz = -dx;          // l: towards the land
+        const n = Math.max(1, Math.ceil(L / 3));
+        for (let k = 0; k < n; k++) {
+          const x0 = ax + (bx - ax) * k / n, z0 = az + (bz - az) * k / n, x1 = ax + (bx - ax) * (k + 1) / n, z1 = az + (bz - az) * (k + 1) / n;
+          const cx = (x0 + x1) / 2, cz = (z0 + z1) / 2, land = terrain.height(cx + lx * 1.4, cz + lz * 1.4);
+          if (land > 6) continue;                          // a natural shore under a slope, not a quay
+          const top = Math.max(0.7, land + 0.05), len = L / n;
+          eg.obox(edgeM, cx - lx * 0.2, (top - 2.6) / 2, cz - lz * 0.2, len + 0.06, top + 2.6, 0.6, 0, Math.atan2(dx, dz) + Math.PI / 2, 0);
+          since += len;
+          if (since > 14) { since = 0; eg.geom(bollardM, bollardG, new THREE.Matrix4().makeTranslation(cx + lx * 0.45, top, cz + lz * 0.45)); }
+        }
+      }
+    }
+    eg.build(scene);
+  }
 
   // -------------------------------------------------------------- buildings, then roads, lanes and steps
   // Street ribbons are draped on the terrain (which tools/build_map.py has levelled across every
@@ -568,6 +638,64 @@ export function buildCity(scene, map, T, opts) {
         for (let s = -wl; s <= wr + 0.01; s += 1) {
           const mx = x + dz * s, mz = z - dx * s;
           if (steps) stepsMask.set(Math.round(mx) * 100003 + Math.round(mz), 1);
+        }
+      }
+    }
+    // Road paint (tools/build_map.py): the yellow dashed centre line, white edge lines and zebra
+    // crossings, draped on the street in pieces of at most 1.5 m, in each tile's decal batch
+    const yellow = new THREE.Color(0.86, 0.66, 0.12), paint = new THREE.Color(0.9, 0.9, 0.88);
+    const Y4 = [yellow, yellow, yellow, yellow], P4 = [paint, paint, paint, paint], UP = [0, 1, 0];
+    const strip = (ax, az, bx, bz, w, C4) => {
+      const L = Math.hypot(bx - ax, bz - az);
+      if (L < 0.05) return;
+      const n = Math.ceil(L / 1.5), ox = -(bz - az) / L * w / 2, oz = (bx - ax) / L * w / 2;
+      for (let k = 0; k < n; k++) {
+        const x0 = ax + (bx - ax) * k / n, z0 = az + (bz - az) * k / n, x1 = ax + (bx - ax) * (k + 1) / n, z1 = az + (bz - az) * (k + 1) / n;
+        const P = (x, z) => [x, terrain.height(x, z) + 0.02, z];
+        tileOf(x0, z0).win.quad(P(x0 + ox, z0 + oz), P(x1 + ox, z1 + oz), P(x1 - ox, z1 - oz), P(x0 - ox, z0 - oz), UP, C4, WHITE_UV, 0);
+      }
+    };
+    // walk a polyline, painting [on] metres and leaving [off] (off = 0: a solid line)
+    const dashed = (p, w, on, off, C4) => {
+      let phase = 0;
+      for (let i = 0; i < p.length - 2; i += 2) {
+        const ax = p[i], az = p[i + 1], bx = p[i + 2], bz = p[i + 3], L = Math.hypot(bx - ax, bz - az);
+        if (!off) { strip(ax, az, bx, bz, w, C4); continue; }
+        let s = 0;
+        while (s < L - 1e-6) {
+          const inDash = phase < on, left = Math.max(0.01, (inDash ? on : on + off) - phase), e = Math.min(L, s + left);
+          if (inDash) strip(ax + (bx - ax) * s / L, az + (bz - az) * s / L, ax + (bx - ax) * e / L, az + (bz - az) * e / L, w, C4);
+          phase = (phase + (e - s)) % (on + off); s = e;
+        }
+      }
+    };
+    for (const m of map.marks || []) {
+      if (m.k === 'c') dashed(m.p, 0.12, 3, 9, Y4);        // the yellow centre line: 3 m dashes, 9 m gaps
+      else dashed(m.p, 0.12, 0, 0, P4);                    // white edge lines
+    }
+    // zebra crossings: 50 cm stripes along the road, 50 cm apart, right across it
+    const X = map.crossings || [];
+    for (let i = 0; i < X.length; i += 5) {
+      const [x, z, dx, dz, w] = X.slice(i, i + 5), nx = -dz, nz = dx;
+      for (let s = -w / 2 + 0.45; s < w / 2 - 0.3; s += 1.0) strip(x + nx * s - dx * 1.5, z + nz * s - dz * 1.5, x + nx * s + dx * 1.5, z + nz * s + dz * 1.5, 0.5, P4);
+    }
+    // granite kerbs where the asphalt meets a paved pavement: 15 cm wide, 10 cm proud
+    const granite = new THREE.Color(0.8, 0.79, 0.76), gs = new THREE.Color(0.6, 0.59, 0.57);
+    const G4 = [granite, granite, granite, granite], GS4 = [gs, gs, granite, granite];
+    for (const k of map.kerbs || []) {
+      for (let i = 0; i < k.length - 2; i += 2) {
+        const ax = k[i], az = k[i + 1], bx = k[i + 2], bz = k[i + 3], L = Math.hypot(bx - ax, bz - az);
+        if (L < 0.05) continue;
+        const n = Math.ceil(L / 2), ox = -(bz - az) / L * 0.075, oz = (bx - ax) / L * 0.075;
+        for (let j = 0; j < n; j++) {
+          const x0 = ax + (bx - ax) * j / n, z0 = az + (bz - az) * j / n, x1 = ax + (bx - ax) * (j + 1) / n, z1 = az + (bz - az) * (j + 1) / n;
+          const h0 = terrain.height(x0, z0), h1 = terrain.height(x1, z1), T0 = tileOf(x0, z0).wall;
+          const top = (x, z, h, s) => [x + ox * s, h + 0.1, z + oz * s];
+          T0.quad(top(x0, z0, h0, 1), top(x1, z1, h1, 1), top(x1, z1, h1, -1), top(x0, z0, h0, -1), UP, G4, [[0, 0], [L / n, 0], [L / n, 0.15], [0, 0.15]], STYLE.stone);
+          for (const s of [1, -1]) {
+            const N = [ox * s / 0.075, 0, oz * s / 0.075];
+            T0.quad([x0 + ox * s, h0 - 0.05, z0 + oz * s], [x1 + ox * s, h1 - 0.05, z1 + oz * s], top(x1, z1, h1, s), top(x0, z0, h0, s), N, GS4, [[0, 0], [L / n, 0], [L / n, 0.15], [0, 0.15]], STYLE.stone);
+          }
         }
       }
     }
@@ -806,16 +934,29 @@ export function buildCity(scene, map, T, opts) {
         }
       }
     }
-    const body = new THREE.BoxGeometry(1.75, 0.7, 4.2); body.translate(0, 0.55, 0);
-    const cabin = new THREE.BoxGeometry(1.55, 0.55, 2.2); cabin.translate(0, 1.15, -0.2);
+    // a small hatchback or saloon: the side profile extruded across the car, a band of glass a
+    // hair wider than the body, and four wheels; body vertices white so each instance takes its
+    // colour, glass and tyres dark whatever the colour
     const carG = new THREE.BufferGeometry();
     {
-      const parts = [body, cabin].map(g => g.toNonIndexed());
+      const prof = (pts) => { const sh = new THREE.Shape(); sh.moveTo(pts[0][0], pts[0][1]); for (const p of pts.slice(1)) sh.lineTo(p[0], p[1]); return sh; };
+      const extrude = (pts, w) => { const g = new THREE.ExtrudeGeometry(prof(pts), { depth: w, bevelEnabled: false }); g.translate(0, 0, -w / 2); g.rotateY(Math.PI / 2); return g.toNonIndexed(); };
+      const bodyG = extrude([[-2.12, 0.32], [2.1, 0.32], [2.14, 0.62], [2.0, 0.86], [1.05, 0.98], [0.5, 1.42], [-0.95, 1.45], [-1.55, 1.0], [-2.08, 0.92], [-2.14, 0.6]], 1.72);
+      const glassG = extrude([[0.95, 1.0], [0.48, 1.36], [-0.9, 1.39], [-1.42, 1.02]], 1.74);
+      const parts = [[bodyG, [1, 1, 1]], [glassG, [0.14, 0.17, 0.2]]];
+      for (const [x, z] of [[-0.78, 1.35], [0.78, 1.35], [-0.78, -1.3], [0.78, -1.3]]) {
+        const w = new THREE.CylinderGeometry(0.32, 0.32, 0.22, 12); w.rotateZ(Math.PI / 2); w.translate(x, 0.32, z);
+        parts.push([w.toNonIndexed(), [0.09, 0.09, 0.1]]);
+      }
+      // lights: white at the front, red at the back
+      const lamp = (z, c) => { const g = new THREE.BoxGeometry(1.5, 0.12, 0.04); g.translate(0, 0.74, z); return [g.toNonIndexed(), c]; };
+      parts.push(lamp(2.06, [1.6, 1.6, 1.5]), lamp(-2.13, [0.8, 0.08, 0.06]));
       const pos = [], nrm = [], col = [];
-      parts.forEach((g, pi) => {
+      for (const [g, c] of parts) {
+        g.computeVertexNormals();
         pos.push(...g.attributes.position.array); nrm.push(...g.attributes.normal.array);
-        for (let k = 0; k < g.attributes.position.count; k++) col.push(...(pi === 0 ? [1, 1, 1] : [0.25, 0.3, 0.35]));
-      });
+        for (let k = 0; k < g.attributes.position.count; k++) col.push(...c);
+      }
       carG.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
       carG.setAttribute('normal', new THREE.Float32BufferAttribute(nrm, 3));
       carG.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));

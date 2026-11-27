@@ -43,7 +43,7 @@ OUT = sys.argv[2]
 LAT0, LON0 = 60.3931275, 5.3333919          # Cappes vei 6 (OSM address node 3126074741)
 MLAT = 111230.0
 MLON = 111320.0 * math.cos(math.radians(LAT0))
-X0, X1, Z0, Z1 = -690.0, 750.0, -750.0, 950.0   # playable area: Bryggen and Bergenhus to Fløyen, Grieghallen and AdO arena
+X0, X1, Z0, Z1 = -990.0, 750.0, -1340.0, 950.0  # playable area: Bergenhus and Skuteviken to Fløyen, Grieghallen and AdO arena
 
 def P(n): return ((n['lon'] - LON0) * MLON, -(n['lat'] - LAT0) * MLAT)
 
@@ -165,7 +165,7 @@ for w in ways.values():
     bridge = t.get('bridge') not in (None, 'no')
     if bridge: r['br'] = 1
     roads.append(r)
-    road_geo.append({'ids': ids, 'c': c, 'w': wdt, 'k': k, 'surf': surf, 'bridge': bridge, 'hw': hw, 'sl': sl, 'sr': sr})
+    road_geo.append({'ids': ids, 'c': c, 'w': wdt, 'k': k, 'surf': surf, 'bridge': bridge, 'hw': hw, 'sl': sl, 'sr': sr, 'oneway': t.get('oneway') in ('yes', '-1') or t.get('junction') == 'roundabout'})
     # walking graph (everything but trunk roads without sidewalks still counts: it is a game)
     for a, b2 in zip(ids, ids[1:]):
         graph_nodes[a] = P(nodes[a]); graph_nodes[b2] = P(nodes[b2])
@@ -665,10 +665,11 @@ for w in ways.values():
 for r in rels.values():
     t = r.get('tags', {}); k = area_kind(t)
     if k and t.get('type') == 'multipolygon':
-        for m in r['members']:
-            if m['type'] == 'way' and m['role'] == 'outer' and m['ref'] in ways:
-                c = coords(ways[m['ref']])
-                if len(c) >= 4 and c[0] == c[-1] and in_area(c): area_polys.append((k, Polygon(c).buffer(0)))
+        # outer rings are often made of several open ways (Lille Lungegårdsvann is three): join them
+        lines = [coords(ways[m['ref']]) for m in r['members'] if m['type'] == 'way' and m['role'] == 'outer' and m['ref'] in ways]
+        g = ring_polys(lines)
+        for pg in (polys_of(g) if g is not None else []):
+            if in_area(list(pg.exterior.coords)): area_polys.append((k, pg.buffer(0)))
 print('areas', len(area_polys))
 
 # ------------------------------------------------------------------ the street surfaces, painted onto the terrain
@@ -710,6 +711,55 @@ def raster(geom):
 Image.merge('RGB', [raster(masks['R']), raster(masks['G']), raster(masks['B'])]).save(os.path.join(OUT, 'roads.png'), optimize=True)
 raster(masks['A']).save(os.path.join(OUT, 'paths.png'), optimize=True)
 print('street surfaces', {k: round(v.area) for k, v in masks.items()}, 'm2 ->', os.path.getsize(os.path.join(OUT, 'roads.png')) // 1024, '+', os.path.getsize(os.path.join(OUT, 'paths.png')) // 1024, 'KB')
+
+# ------------------------------------------------------------------ kerbs, road markings, zebra crossings
+# Norwegian roads: a yellow centre line (dashed) between the two directions, white edge lines on
+# the bigger roads, white zebra stripes at the marked crossings, and a granite kerb where the
+# asphalt meets a paved pavement. Exported as lines; the game drapes them on the terrain.
+def lines_of(g):
+    if g is None or g.is_empty: return []
+    if g.geom_type == 'LineString': return [g]
+    if hasattr(g, 'geoms'): return [l for sub in g.geoms for l in lines_of(sub)]
+    return []
+kerbs = []
+side_zone = masks['B'].buffer(0.8)
+for ln in lines_of(masks['R'].boundary.intersection(side_zone).difference(blocked_by.buffer(0.4))):
+    ln = ln.simplify(0.15)
+    if ln.length > 2.0: kerbs.append(flat(list(ln.coords)))
+MAJOR = {'trunk', 'primary', 'secondary', 'tertiary', 'trunk_link', 'primary_link', 'secondary_link', 'tertiary_link'}
+marks = []          # {'p': centre line, 'k': 'c' yellow centre dashes | 'e' white edge line}
+for rg in road_geo:
+    if rg['surf'] != 'R' or rg['hw'] not in CAR: continue
+    if not rg['oneway'] and ((rg['hw'] in MAJOR and rg['w'] >= 5.5) or (rg['hw'] in ('unclassified', 'residential') and rg['w'] >= 6.5)):
+        line = LineString(rg['c']).difference(blocked_by)
+        for ln in lines_of(line):
+            if ln.length > 4: marks.append({'p': flat(list(ln.coords)), 'k': 'c'})
+    if rg['hw'] in MAJOR and rg['w'] >= 7:
+        for side in (1, -1):
+            try: off = LineString(rg['c']).offset_curve(side * (rg['w'] / 2 - 0.35), quad_segs=2, join_style=2)
+            except Exception: continue
+            for ln in lines_of(off.difference(blocked_by)):
+                if ln.length > 4: marks.append({'p': flat(list(ln.coords)), 'k': 'e'})
+crossings = []
+car_lines = [(LineString(rg['c']), rg['w']) for rg in road_geo if rg['hw'] in CAR and rg['surf'] in ('R', 'G')]
+car_tree = STRtree([l for l, _ in car_lines])
+for n in nodes.values():
+    t = n.get('tags', {})
+    if t.get('highway') != 'crossing' or t.get('crossing') in ('unmarked', 'no', 'informal'): continue
+    x, z = P(n)
+    if not (X0 < x < X1 and Z0 < z < Z1): continue
+    pt = Point(x, z)
+    best = None
+    for j in car_tree.query(pt.buffer(1.0)):
+        l, w = car_lines[int(j)]
+        d = l.distance(pt)
+        if d < 1.0 and (best is None or d < best[0]): best = (d, l, w)
+    if not best: continue
+    _, l, w = best
+    s0 = l.project(pt); a = l.interpolate(max(0, s0 - 1)); b = l.interpolate(min(l.length, s0 + 1))
+    dx, dz = b.x - a.x, b.y - a.y; L = math.hypot(dx, dz) or 1
+    crossings += [r1(x), r1(z), r2(dx / L), r2(dz / L), r1(w)]
+print('kerbs', len(kerbs), round(sum(LineString(list(zip(k[0::2], k[1::2]))).length for k in kerbs)), 'm; markings', len(marks), '; crossings', len(crossings) // 5)
 
 # ------------------------------------------------------------------ trees
 trees = []
@@ -831,6 +881,81 @@ def write_grid(g, h, path, scale):
         out += struct.pack('<h', max(-32768, min(32767, int(round(v * scale)))))
     open(path, 'wb').write(out)
 # the game lowers the terrain mesh around house 6 itself when it renders it
+# Statues, sculptures and fountains (Ole Bull, Grieg, Christian Michelsen, Holberg, the
+# fountain in Lille Lungegårdsvann, Den blå steinen): the game models the ones it knows by name.
+art = []
+for n in nodes.values():
+    t = n.get('tags', {})
+    if not (t.get('tourism') == 'artwork' or t.get('amenity') == 'fountain' or t.get('historic') in ('memorial', 'monument') and t.get('memorial') in ('statue', 'obelisk', 'stone')): continue
+    x, z = P(n)
+    if not (X0 < x < X1 and Z0 < z < Z1): continue
+    art.append({'n': t.get('name', ''), 'k': t.get('artwork_type') or t.get('amenity') or t.get('memorial') or '', 'x': r1(x), 'z': r1(z)})
+print('artworks and fountains', len(art))
+
+# Shops, cafés, restaurants, pubs and the like, with their names: the game puts each name on a
+# sign over the street front of the building it is in.
+SHOPLIKE = {'restaurant', 'cafe', 'bar', 'pub', 'fast_food', 'pharmacy', 'bank', 'ice_cream', 'nightclub', 'cinema', 'theatre', 'post_office'}
+shops = []
+for n in nodes.values():
+    t = n.get('tags', {})
+    nm = t.get('name')
+    if not nm: continue
+    kind = ('shop:' + t['shop']) if t.get('shop') and t['shop'] != 'vacant' else t.get('amenity') if t.get('amenity') in SHOPLIKE else None
+    if not kind: continue
+    x, z = P(n)
+    if not (X0 < x < X1 and Z0 < z < Z1): continue
+    shops.append({'n': nm[:28], 'k': kind, 'b': t.get('brand', ''), 'x': r1(x), 'z': r1(z)})
+print('named shops', len(shops))
+
+# Quays: OpenStreetMap's coastline (land on the left of each way) is where the harbour's quay
+# walls stand. The 2.5 m terrain grid would draw the shore as a sawtooth, so the ground on the
+# water side of the line is dug out under the sea; the game stands a stone wall on the line.
+coast = []
+for w in ways.values():
+    if w.get('tags', {}).get('natural') != 'coastline': continue
+    c = coords(w)
+    if len(c) < 2 or not in_area(c): continue
+    coast.append(flat(c))
+    for (ax, az), (bx, bz) in zip(c, c[1:]):
+        L = math.hypot(bx - ax, bz - az)
+        if L < 0.01: continue
+        dx, dz = (bx - ax) / L, (bz - az) / L
+        i0, i1 = max(0, int((min(ax, bx) - 4 - FX0) / FST)), min(FNX - 1, int((max(ax, bx) + 4 - FX0) / FST) + 1)
+        j0, j1 = max(0, int((min(az, bz) - 4 - FZ0) / FST)), min(FNZ - 1, int((max(az, bz) + 4 - FZ0) / FST) + 1)
+        for j in range(j0, j1 + 1):
+            for i in range(i0, i1 + 1):
+                px, pz = FX0 + i * FST - ax, FZ0 + j * FST - az
+                t = px * dx + pz * dz
+                if t < -0.5 or t > L + 0.5: continue
+                side = dx * pz - dz * px                      # > 0: right of the line, the water
+                n = j * FNX + i
+                if 0 < side < 3.2 and FH[n] < 4.0: FH[n] = min(FH[n], -2.0)
+print('coastline', len(coast), 'ways')
+
+# Lakes: every mapped water area gets its own water level, taken from the elevation model's
+# surface over it (Lille Lungegårdsvann is 0.1-0.6 m up, Skomakerdiket on Fløyen 300 m), and a
+# basin dug under it, so the game can lay a water surface there and a stone edge round it.
+waters = []
+for k, poly in area_polys:
+    if k != 'water' or poly.area < 40: continue
+    inner_g = poly.buffer(-2.0)
+    hs = []
+    minx, minz, maxx, maxz = poly.bounds
+    pin = prep(inner_g if not inner_g.is_empty else poly)
+    for j in range(max(0, int((minz - FZ0) / FST)), min(FNZ, int((maxz - FZ0) / FST) + 2)):
+        for i in range(max(0, int((minx - FX0) / FST)), min(FNX, int((maxx - FX0) / FST) + 2)):
+            if pin.contains(Point(FX0 + i * FST, FZ0 + j * FST)) and FH0[j * FNX + i] > -4.9: hs.append(FH0[j * FNX + i])
+    if not hs: continue
+    hs.sort()
+    level = max(0.15, hs[len(hs) // 2])
+    inner, outer_p = prep(poly.buffer(-1.5)), prep(poly)
+    for j in range(max(0, int((minz - FZ0) / FST)), min(FNZ, int((maxz - FZ0) / FST) + 2)):
+        for i in range(max(0, int((minx - FX0) / FST)), min(FNX, int((maxx - FX0) / FST) + 2)):
+            pt = Point(FX0 + i * FST, FZ0 + j * FST)
+            if inner.contains(pt): FH[j * FNX + i] = min(FH[j * FNX + i], level - 1.6)
+            elif outer_p.contains(pt): FH[j * FNX + i] = min(FH[j * FNX + i], level - 0.35)
+    waters.append({'p': flat(list(poly.exterior.coords)[:-1]), 'h': [flat(list(r.coords)[:-1]) for r in poly.interiors], 'y': r2(level), 'a': round(poly.area)})
+print('lakes', len(waters), [(w['y'], w['a']) for w in waters])
 write_grid(fine, FH, os.path.join(OUT, 'terrain.bin'), 100)
 write_grid(coarse, coarse['h'], os.path.join(OUT, 'coarse.bin'), 10)
 
@@ -882,6 +1007,8 @@ out = {
     'benches': benches,
     'lamps': lamps,
     'parking': parking,
+    'waters': waters,
+    'kerbs': kerbs, 'marks': marks, 'crossings': crossings, 'coast': coast, 'art': art, 'shops': shops,
     'roadmask': {'x0': FX0, 'z0': FZ0, 'res': MRES, 'w': MW, 'h': MH},
 }
 json.dump(out, open(os.path.join(OUT, 'map.json'), 'w'), separators=(',', ':'))
