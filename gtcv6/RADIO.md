@@ -265,7 +265,7 @@ Short exchanges that play over a song, a little before the middle, with the musi
 
 Fictional brands only.
 
-**`ad_maakeskrekk`** (25 s, Announcer and Customer, sound effects)
+**`ad_maakeskrekk`** (25 s, Announcer and Customer, sound effects). Two voices, so it is recorded one part per file, like the conversations: `ad_maakeskrekk_01` (Customer, "They took my lunch… Again."), `ad_maakeskrekk_02` (Announcer, "Tired of feeding…" to "…forty seconds.") and `ad_maakeskrekk_03` (Announcer, fast, the tagline). The gull and the spray are added in the mix.
 > **Customer:** *(miserable)* They took my lunch. *(a gull squawks)* Again.
 >
 > **Announcer:** Tired of feeding the gulls against your will? Introducing **Måkeskrekk**, the spray that tells a seagull: not today. One spritz around your bolle *(spray sound)* and you're protected for up to forty seconds.

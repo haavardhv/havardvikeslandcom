@@ -24,7 +24,7 @@ from pathlib import Path
 
 OUT = Path(__file__).resolve().parent.parent / 'public' / 'audio' / 'radio'
 EXTS = {'.wav', '.mp3', '.m4a', '.flac', '.ogg', '.aac'}
-LINE = re.compile(r'^((?:chat|over)_[a-z0-9]+)_(\d+)$')
+LINE = re.compile(r'^((?:chat|over|ad)_[a-z0-9]+)_(\d+)$')
 GAP = 0.18          # seconds between two lines of a conversation (each line has its own short silence)
 
 
