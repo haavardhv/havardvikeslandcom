@@ -22,7 +22,7 @@ All 52 lines are recorded and in the game.
 | 10–11 | **Sparkesykkel**: you ride past fast without hitting them | |
 | 12–13 | **Redd**: a shot goes off within 28 m | The nearest person cries out, and everyone that close hurries off for a few seconds |
 
-Only one person speaks at a time. A line cuts off a line of the same or lower priority (forbi < sparkesykkel < påkjørt and redd) and is dropped if a higher one is playing. The voice is louder the closer they are, and comes from their side of the screen. The words are also shown in a speech bubble for as long as the line takes to say.
+Only one person speaks at a time. A line cuts off a line of the same or lower priority (forbi < sparkesykkel < påkjørt and redd) and is dropped if a higher one is playing. The voice is louder the closer they are, and comes from their side of the screen. The scooter radio is never turned down for them, as in real life. The words are also shown in a speech bubble for as long as the line takes to say.
 
 ## Adding or redoing recordings
 
