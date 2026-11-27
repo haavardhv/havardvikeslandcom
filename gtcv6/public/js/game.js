@@ -95,7 +95,7 @@ sun.shadow.normalBias = 0.04;
 scene.add(sun, sun.target);
 scene.fog = new THREE.Fog(0xa3acb2, 30, 700);
 
-const weather = { rain: 0.85, target: 0.85, t: 50, forced: null };
+const weather = { rain: 0.85, target: 0.85, t: 50, forced: null, sunny: false };
 const C = {
   topWet: new THREE.Color(0x66737e), horWet: new THREE.Color(0x9aa3a8),
   topDry: new THREE.Color(0x4f86c0), horDry: new THREE.Color(0xc4d3dc),
@@ -107,6 +107,9 @@ function updateWeather(dt) {
     const raining = weather.target > 0.4;
     weather.target = raining ? 0.05 + Math.random() * 0.2 : 0.55 + Math.random() * 0.45;
     weather.t = raining ? 25 + Math.random() * 30 : 60 + Math.random() * 70;
+    // the radio notices a sunny break, and the rain coming back
+    weather.sunny = raining;
+    radioNews = { id: raining ? 'react_sun' : 'react_rain_back', until: performance.now() + 25000 };
   }
   weather.rain = damp(weather.rain, weather.target, weather.forced !== null ? 1.2 : 0.25, dt);
   const r = weather.rain;
@@ -289,6 +292,27 @@ function updateRain(dt) {
 const audio = new Audio();
 // the scooter radio's station and song, shown at the top of the screen like a car radio
 let radioT = 0;
+// lines that cut in over the music (audio.react): a queued one from the weather, and a few
+// seconds of radio after a crash so the line about it is heard
+let radioNews = null, radioGraceT = 0, radioAlarm = 0, radioAlarmPeak = 0;
+function radioReact() {
+  // the Måkealarm on the news: when it gets serious, and when it is over
+  const al = state.alarm;
+  if (al >= 4 && radioAlarm < 4) radioNews = { id: 'react_alarm_high', until: performance.now() + 20000 };
+  if (al === 0 && radioAlarm > 0 && radioAlarmPeak >= 3) radioNews = { id: 'react_alarm_clear', until: performance.now() + 20000 };
+  radioAlarmPeak = al === 0 ? 0 : Math.max(radioAlarmPeak, al);
+  radioAlarm = al;
+  if (!audio.radioOn) return;
+  if (radioNews) {
+    if (performance.now() > radioNews.until) radioNews = null;
+    else if (audio.react(radioNews.id)) radioNews = null;
+  }
+  if (!mission) return;
+  const m = mission, said = m.said || (m.said = {});
+  if (m.def.id === 'scooter' && m.step === 1 && !said.s && audio.react('react_bakery')) said.s = true;
+  if (m.def.id === 'guangdong' && m.step === 0 && !said.g && audio.react('react_guangdong')) said.g = true;
+  if (m.def.id === 'bolle' && player.carrying && !said.b && audio.react('react_bolle')) said.b = true;
+}
 audio.onSong = (station, title) => {
   const el = $('radio');
   el.querySelector('b').textContent = station;
@@ -1210,6 +1234,8 @@ function updatePlayer(dt) {
     player.vel.set(Math.sin(s.heading) * s.speed, s.vy, Math.cos(s.heading) * s.speed);
     if (crashed) {
       const sp = s.speed;
+      audio.react('react_crash', true);
+      radioGraceT = 3.4;
       dismount(true);
       player.vel.set(Math.sin(s.heading) * sp * 0.6, 4, Math.cos(s.heading) * sp * 0.6);
       s.speed = 0;
@@ -2124,7 +2150,9 @@ function frame(now) {
       save.radio = !save.radio; persist();
       if (!save.radio) { toast('Radio off', 1.2); $('radio').hidden = true; }
     }
-    audio.setRadio(state.mode === 'play' && !!player.riding && save.radio !== false);
+    radioGraceT = Math.max(0, radioGraceT - dt);
+    audio.setRadio(state.mode === 'play' && (!!player.riding || radioGraceT > 0) && save.radio !== false);
+    radioReact();
     if (radioT > 0) { radioT -= dt; if (radioT <= 0 || !player.riding) { $('radio').hidden = true; radioT = 0; } }
   }
   pressed.jump = pressed.punch = pressed.use = pressed.radio = false;

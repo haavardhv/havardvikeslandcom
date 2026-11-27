@@ -4,12 +4,15 @@ Scripts for the talk between the songs on the scooter radio: a DJ, station IDs, 
 
 ## Recorded so far
 
-| Clips | Status |
-| --- | --- |
-| Song intros (5) | In the game, voiced by Epidemic Sound's *Damon*, levelled to −16 LUFS (the songs are about −14) |
-| Everything else | Waiting for audio |
+| Clips | Voice | Status |
+| --- | --- | --- |
+| Song intros (5), outros (3), station IDs (4) | Epidemic Sound's *Damon* as Regnar (he reads `id_04` too) | In the game |
+| News (3), reactive lines (8) | Epidemic Sound's *Alexandra* | In the game |
+| DJ talk (5), ads (4) | | Waiting for audio |
 
-The clips live in `public/audio/radio/`, named after their IDs, as 96 kbps mono MP3. `public/js/audio.js` lists the ones that exist (`TALK`, with their durations). A slot without a clip is left out of the broadcast.
+All of them are levelled to −16 LUFS (the songs are about −14). Until the talk and the ads come in, their slots are left out, so the station now plays: an ID, the intro, the song, then an outro and/or the news.
+
+The clips live in `public/audio/radio/`, named after their IDs, as 96 kbps mono MP3. `public/js/audio.js` lists the ones that exist (`TALK`, with their durations) and the reactive ones (`REACTS`). A slot without a clip is left out of the broadcast. One round of the station runs through the songs three times (about an hour), so the IDs, outros and news come round evenly.
 
 ## How it will play
 
@@ -133,11 +136,11 @@ Fictional brands only.
 
 These play over the music when something happens while you ride.
 
-| ID | Plays when | Length | Script (Regnar) |
+| ID | Plays when | Length | Script (recorded by the second voice) |
 | --- | --- | --- | --- |
 | `react_alarm_high` | The Måkealarm reaches 4 | 7 s | Breaking news: an enormous flock of gulls is chasing someone through Fjellet. If that's you: keep moving. |
-| `react_alarm_clear` | The Måkealarm drops back to 0 | 3 s | Måkealarm lifted. You can come out now. |
-| `react_bakery` | The scooter mission (the bakery on Torget) | 6 s | The bakery on Torget closes in a few minutes, so if you're on your way: ride like you mean it. |
+| `react_alarm_clear` | The Måkealarm drops back to 0 after reaching 3 or more | 3 s | Måkealarm lifted. You can come out now. |
+| `react_bakery` | The scooter mission, once you're riding to the bakery on Torget | 6 s | The bakery on Torget closes in a few minutes, so if you're on your way: ride like you mean it. |
 | `react_bolle` | The bolle mission, while you carry the bolle | 6 s | Word on the street is somebody's carrying the last skillingsbolle in Bergen. The gulls have heard it too. |
 | `react_guangdong` | The Guangdong House mission | 4 s | Guangdong House closes at seven. Seven. Not five past. |
 | `react_crash` | You crash the scooter | 2 s | Ooh. That sounded expensive. |

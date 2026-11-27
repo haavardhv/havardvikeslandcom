@@ -1,5 +1,5 @@
 // Synthesised sound: rain, footsteps, seagulls, punches, the scooter motor and
-// a few jingles. The only audio files are the songs and the DJ on the scooter radio.
+// a few jingles. The only audio files are the songs and the talk on the scooter radio.
 export const STATION = 'Radio Fjellet 6';
 const DJ = 'Regnar';
 // the songs, in broadcast order (durations in seconds, so the station clock works before a file
@@ -11,23 +11,51 @@ const SONGS = [
   { id: 'stone-and-salt', title: 'Cappes Vei Stone and Salt', dur: 203.08 },
   { id: 'cappes-vei-six-2', title: 'Cappes Vei Six (Version 2)', dur: 334.97 },
 ];
-// Regnar's clips recorded so far (gtcv6/RADIO.md has the scripts), with their durations. A slot
-// whose clip is not here yet is left out of the broadcast.
+// The station's clips recorded so far (gtcv6/RADIO.md has the scripts), with their durations. A
+// slot whose clip is not here yet is left out of the broadcast.
 const TALK = {
-  'intro_grand-theft-cappes-vei-6': 7.58,
-  'intro_cappes-vei-six': 6.71,
-  'intro_guangdong-house': 7.11,
-  'intro_stone-and-salt': 7.34,
-  'intro_cappes-vei-six-v2': 6.37,
+  'intro_grand-theft-cappes-vei-6': 7.58, 'intro_cappes-vei-six': 6.71, 'intro_guangdong-house': 7.11,
+  'intro_stone-and-salt': 7.34, 'intro_cappes-vei-six-v2': 6.37,
+  id_01: 3.81, id_02: 4.47, id_03: 3.11, id_04: 3.89,
+  outro_01: 3.42, outro_02: 3.74, outro_03: 3.66,
+  news_maakemelding: 18.78, news_traffic: 15.26, news_party: 11.99,
 };
 const INTRO = { 'grand-theft-cappes-vei-6': 'intro_grand-theft-cappes-vei-6', 'cappes-vei-six': 'intro_cappes-vei-six',
   'guangdong-house': 'intro_guangdong-house', 'stone-and-salt': 'intro_stone-and-salt', 'cappes-vei-six-2': 'intro_cappes-vei-six-v2' };
-// the broadcast: every song, introduced by Regnar
+// the rotating slots: a different clip of the kind plays in each slot, round after round
+const POOL = {
+  id: ['id_01', 'id_02', 'id_03', 'id_04'],
+  outro: ['outro_01', 'outro_02', 'outro_03'],
+  talk: ['talk_rain', 'talk_gulls', 'talk_shoutout', 'talk_scooters', 'talk_bryggen'],
+  ad: ['ad_maakeskrekk', 'ad_regnfrakk', 'ad_bratt', 'ad_sparksjo'],
+  news: ['news_maakemelding', 'news_traffic', 'news_party'],
+};
+// what follows each song (RADIO.md, "How it will play")
+const AFTER = [['outro', 'ad'], ['talk', 'news'], ['ad', 'talk'], ['outro', 'news'], ['ad', 'talk']];
+const TITLE = { news: 'Nyheter', ad: 'Reklame' };
+// Lines that cut in over the music when something happens while you ride (voiced by the
+// station's second voice); the game decides when (see radioReact in game.js)
+const REACTS = new Set(['react_crash', 'react_sun', 'react_rain_back', 'react_bolle', 'react_guangdong',
+  'react_alarm_high', 'react_alarm_clear', 'react_bakery']);
+// The broadcast: a station ID, Regnar's intro, the song, then the chatter after it. It runs for
+// enough rounds of the songs that the rotating clips come round evenly, then starts again.
 const PROGRAM = [];
-for (const song of SONGS) {
-  const intro = INTRO[song.id];
-  if (TALK[intro]) PROGRAM.push({ talk: true, title: DJ, src: `/audio/radio/${intro}.mp3`, dur: TALK[intro] });
-  PROGRAM.push({ title: song.title, src: `/audio/${song.id}.mp3`, dur: song.dur });
+{
+  const next = {}, talk = (id, kind) => TALK[id] && PROGRAM.push({ talk: true, title: TITLE[kind] || DJ, src: `/audio/radio/${id}.mp3`, dur: TALK[id] });
+  const pick = kind => {
+    const ids = POOL[kind].filter(id => TALK[id]);
+    if (!ids.length) return;
+    const n = next[kind] || 0; next[kind] = n + 1;
+    talk(ids[n % ids.length], kind);
+  };
+  for (let round = 0; round < 3; round++) {
+    SONGS.forEach((song, i) => {
+      pick('id');
+      talk(INTRO[song.id], 'intro');
+      PROGRAM.push({ title: song.title, src: `/audio/${song.id}.mp3`, dur: song.dur });
+      for (const kind of AFTER[i % AFTER.length]) pick(kind);
+    });
+  }
 }
 const START = [];
 { let t = 0; for (const seg of PROGRAM) { START.push(t); t += seg.dur; } }
@@ -77,7 +105,13 @@ export class Audio {
     // straight into the song.
     this.radioGain = c.createGain(); this.radioGain.gain.value = 0;
     this.radioTone = c.createBiquadFilter(); this.radioTone.type = 'highshelf'; this.radioTone.frequency.value = 6000; this.radioTone.gain.value = -4;
-    this.radioTone.connect(this.radioGain).connect(this.master);
+    this.musicGain = c.createGain();                 // ducks the music under a line that cuts in
+    this.radioTone.connect(this.musicGain).connect(this.radioGain).connect(this.master);
+    this.reactEl = document.createElement('audio');
+    this.reactEl.preload = 'auto';
+    c.createMediaElementSource(this.reactEl).connect(this.radioGain);
+    this.reactEl.addEventListener('ended', () => this.musicGain.gain.setTargetAtTime(1, this.ctx.currentTime, 0.3));
+    this.lastReact = -1e9;
     this.radioEls = [0, 1].map(() => {
       const el = document.createElement('audio');
       el.preload = 'none';
@@ -137,7 +171,19 @@ export class Audio {
     if (el.readyState >= 1) go(); else el.addEventListener('loadedmetadata', go, { once: true });
     this.radioT0 = performance.now() - START[i] * 1000;         // keep the clock with the broadcast
     this._preloadAfter(i);
-    if (!seg.talk && this.onSong) this.onSong(STATION, seg.title);
+    if ((!seg.talk || seg.title !== DJ) && this.onSong) this.onSong(STATION, seg.title);   // songs, the news and ads
+  }
+  // a line over the music: only while the radio is on, not over Regnar, at most one every 45 s
+  // (unless forced); returns whether it plays
+  react(id, force = false) {
+    if (!this.ctx || !this.radioOn || !REACTS.has(id) || !this.reactEl.paused) return false;
+    const now = performance.now();
+    if (!force && (now - this.lastReact < 45000 || (PROGRAM[this.segIdx] && PROGRAM[this.segIdx].talk))) return false;
+    this.lastReact = now;
+    this.reactEl.src = `/audio/radio/${id}.mp3`;
+    this.reactEl.play().catch(() => {});
+    this.musicGain.gain.setTargetAtTime(0.28, this.ctx.currentTime, 0.08);
+    return true;
   }
   // turn the radio on or off; call as often as you like
   setRadio(on) {
@@ -152,7 +198,11 @@ export class Audio {
     } else {
       this.radioGain.gain.cancelScheduledValues(t);
       this.radioGain.gain.setTargetAtTime(0, t, 0.15);
-      this._radioStop = setTimeout(() => { if (!this.radioOn) for (const e of this.radioEls) e.pause(); }, 700);
+      this._radioStop = setTimeout(() => {
+        if (this.radioOn) return;
+        for (const e of this.radioEls) e.pause();
+        this.reactEl.pause(); this.musicGain.gain.setTargetAtTime(1, this.ctx.currentTime, 0.05);
+      }, 700);
     }
   }
   pauseRadio(paused) {
