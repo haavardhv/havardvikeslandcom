@@ -311,7 +311,15 @@ export function buildCity(scene, map, T, opts) {
       const P = [], N = [], Cc = [], U = [], ix = [];
       for (const j of rows) for (const i of cols) {
         const src = j * nx + i;
-        P.push(pos[src * 3], pos[src * 3 + 1], pos[src * 3 + 2]); N.push(nrm[src * 3], nrm[src * 3 + 1], nrm[src * 3 + 2]);
+        // a coarse vertex that would drop under the sea while there is land in its cell (a quay,
+        // a narrow shore) takes the land's height, so buildings by the water never stand in it
+        let y = pos[src * 3 + 1];
+        if (stride > 1 && y < 1) {
+          const h = stride >> 1;
+          for (let jj = Math.max(0, j - h); jj <= Math.min(nz - 1, j + h); jj++)
+            for (let ii = Math.max(0, i - h); ii <= Math.min(nx - 1, i + h); ii++) y = Math.max(y, pos[(jj * nx + ii) * 3 + 1]);
+        }
+        P.push(pos[src * 3], y, pos[src * 3 + 2]); N.push(nrm[src * 3], nrm[src * 3 + 1], nrm[src * 3 + 2]);
         Cc.push(colr[src * 3], colr[src * 3 + 1], colr[src * 3 + 2]); U.push(uv[src * 2], uv[src * 2 + 1]);
       }
       for (let j = 0; j < h - 1; j++) for (let i = 0; i < w - 1; i++) { const a = j * w + i, b = a + 1, c = a + w, d = c + 1; ix.push(a, c, b, b, c, d); }

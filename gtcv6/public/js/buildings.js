@@ -630,7 +630,8 @@ export function buildBuildings(scene, map, terrain, polys, T, opts) {
     if (far) lod.addLevel(far, 230);
     lod.autoUpdate = true;
     // LOD distance is measured to the object's position: put it at the tile centre
-    for (const ch of [near, far]) if (ch) ch.position.set(-t.cx, 0, -t.cz);
+    // (the meshes do not update their own matrices: do it here, or the far level is drawn displaced)
+    for (const ch of [near, far]) if (ch) { ch.position.set(-t.cx, 0, -t.cz); ch.updateMatrix(); }
     lod.position.set(t.cx, 0, t.cz);
     scene.add(lod);
     lods.push(lod);

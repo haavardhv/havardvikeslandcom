@@ -102,6 +102,7 @@ A second pass, after reports of buildings floating in the street and buildings d
 
 | Problem | Cause | Before | After |
 | --- | --- | --- | --- |
+| Copies of buildings in the water, in streets and on top of other buildings, anywhere more than 230 m away | The far level of each 100 m building tile was moved to the tile's frame with `position.set`, but the mesh does not update its own matrix (`matrixAutoUpdate = false`). So every far tile was drawn shifted by its tile's centre, for example a block by Korskirken appeared on the water off Bryggen. | Every tile beyond 230 m | Fixed: the matrix is updated after the move |
 | Roofs and gables hanging in the air over the street | Gable roofs were built on the footprint's minimum bounding rectangle, not on the footprint. `roof:shape=gabled` forced a gable on any shape. | 873 roofs stuck out past their walls, about 12,700 m² of roof with nothing under it | 0: the roof is a height field over the footprint itself |
 | Floating fascia boards and gable triangles seen from the street | Roofs were single-sided, so from below only the trim was drawn | | The roof has thickness, a soffit under the eaves and a fascia along the edge |
 | Doubled buildings | Multipolygon relations were drawn on top of the ways they are made of (Scandic Torget, Torgegaarden and Saltødegaarden three times, Thon Hotel Bristol, the university buildings). Sloppy outlines overlapped. | 20 overlapping pairs, 6 complete duplicates | 2 slivers under 2 m² (coordinate rounding) |
@@ -127,6 +128,7 @@ A second pass, after reports of buildings floating in the street and buildings d
 - **Streets:**
   - **Terrain:** each street gets a height profile along its centre line, smoothed a little. Terrain nodes within half the width plus 2.5 m take that height, and the next 2.5 m blend back into the hillside. A node is left alone when that would mean a cut steeper than about 60 %. That happens where it belongs to another street at another level, such as the legs of Fjellveien's hairpins. House 6 and the sea are not touched, and Cappes vei in front of the door moved by less than 10 cm.
   - **Ribbons:** the game pulls each side of a ribbon in to the nearest wall, and street lamps keep 60 cm off walls.
+- **Shorelines:** a coarse terrain vertex that would drop below the sea while there is land in its cell takes the land's height, so quays don't sink at a distance.
 - **Collision** understands courtyards, so you can walk into one.
 - **Under buildings,** terrain nodes just inside a wall are capped at the highest ground outside it. Otherwise the 2.5 m triangulation shows the step between a raised plot and the street as a row of grassy teeth along the wall.
 - **Street ribbons** get a vertex every 1.5 m along and about every 1.8 m across, so they follow the terrain mesh instead of spanning it with two edges.
@@ -137,8 +139,8 @@ Measured the same way as above (headless Chromium, one frame, the same camera po
 
 | View | Draw calls before | Draw calls after | Triangles before | Triangles after |
 | --- | --- | --- | --- | --- |
-| Cappes vei | 164 | 164 | 318 k | 348 k |
-| Bryggen | 399 | 405 | 376 k | 457 k |
-| Torget | 110 | 109 | 327 k | 387 k |
+| Cappes vei | 164 | 161 | 318 k | 341 k |
+| Bryggen | 399 | 439 | 376 k | 558 k |
+| Torget | 110 | 102 | 327 k | 369 k |
 
-Draw calls are unchanged: roofs, soffits, canopies and streets still go into each tile's shared meshes. The extra triangles come mostly from the finer street ribbons, plus the roof pieces and eaves. The map builder takes about 6 s, and `map.json` shrank from 809 KB to 783 KB.
+Roofs, soffits, canopies and streets still go into each tile's shared meshes, so the count of draw calls is about the same. The extra triangles come from the finer street ribbons, the roof pieces and eaves, and, in the Bryggen view, from distant tiles that are now drawn where they belong. Before, they were shifted off to one side, often out of view. The map builder takes about 6 s, and `map.json` shrank from 809 KB to 783 KB.
