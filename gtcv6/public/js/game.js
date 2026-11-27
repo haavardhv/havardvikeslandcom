@@ -553,8 +553,11 @@ mapBase.width = (MAP.x1 - MAP.x0) * MAP.ppm; mapBase.height = (MAP.z1 - MAP.z0) 
   for (const b of map.buildings) {
     g.fillStyle = b.rc; g.strokeStyle = 'rgba(0,0,0,.45)'; g.lineWidth = 1;
     g.beginPath();
-    for (let i = 0; i < b.p.length; i += 2) (i ? g.lineTo : g.moveTo).call(g, tx(b.p[i]), tz(b.p[i + 1]));
-    g.closePath(); g.fill(); g.stroke();
+    for (const ring of [b.p, ...(b.h || [])]) {
+      for (let i = 0; i < ring.length; i += 2) (i ? g.lineTo : g.moveTo).call(g, tx(ring[i]), tz(ring[i + 1]));
+      g.closePath();
+    }
+    g.fill('evenodd'); g.stroke();
   }
   // home in raincoat yellow
   g.fillStyle = '#f2c12e'; g.strokeStyle = '#101418'; g.lineWidth = 2;

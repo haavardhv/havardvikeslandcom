@@ -93,3 +93,52 @@ Nanite, Unreal Engine 5's geometry system, splits meshes into small clusters arr
 - **Dormers and bay windows**, plus the outdoor stairs and stoops so typical of Fjellet. OpenStreetMap does map some of these as `highway=steps` against buildings, which could be used to place them.
 - **Time of day.** A dusk setting with lit windows, street lamps on and wet reflections would show off the image-based lighting best.
 - **Post-processing.** Screen-space ambient occlusion and a light bloom on lamps. Both cost GPU time on phones, so they should be optional.
+
+## World-building overhaul
+
+A second pass, after reports of buildings floating in the street and buildings doubled on top of each other. Each cause was found in the data or in a screenshot, then fixed at its source.
+
+### What was wrong
+
+| Problem | Cause | Before | After |
+| --- | --- | --- | --- |
+| Roofs and gables hanging in the air over the street | Gable roofs were built on the footprint's minimum bounding rectangle, not on the footprint. `roof:shape=gabled` forced a gable on any shape. | 873 roofs stuck out past their walls, about 12,700 m² of roof with nothing under it | 0: the roof is a height field over the footprint itself |
+| Floating fascia boards and gable triangles seen from the street | Roofs were single-sided, so from below only the trim was drawn | | The roof has thickness, a soffit under the eaves and a fascia along the edge |
+| Doubled buildings | Multipolygon relations were drawn on top of the ways they are made of (Scandic Torget, Torgegaarden and Saltødegaarden three times, Thon Hotel Bristol, the university buildings). Sloppy outlines overlapped. | 20 overlapping pairs, 6 complete duplicates | 2 slivers under 2 m² (coordinate rounding) |
+| Blocks standing in the street | Buildings that bridge a street (`building:min_level`, `min_height`) were drawn from the ground up | 2 | Lifted to their real height, with an underside |
+| A church tower alone in a field | The tower was placed at the west-most corner plus 4.5 m, which is often outside the church | Partly outside for 4 of 6 churches | Placed at one end of the nave, only where it fits inside |
+| Buildings standing in the water at the edge of the map | Buildings up to 40 m outside the detailed terrain sat on the 60 m mountain grid | 168 | 0: footprints are clipped to the detailed terrain |
+| Streets running under houses | OpenStreetMap gives a centre line and a typical width. A 5 m residential street is often 3.5 m between real walls. | 146 buildings overlapped a street ribbon by more than 4 m² | Each side of a street stops 15 cm short of the nearest wall, checked every 2 m along it |
+| Grass and slopes poking through streets | Ribbons were draped on the 2.5 m terrain grid across a side slope | | The terrain is levelled across every street, and blended back into the hillside over the next 2.5 m |
+| Buildings floating at a distance | The far terrain levels (5 m and 10 m grids) can sit a metre or two below a building's base | | Building walls start 4 m below the lowest ground under them |
+
+### How the world is built now
+
+- **Footprints** (`tools/build_map.py`):
+  - **Relations:** multipolygon relations are assembled from their member ways into proper rings, courtyards included.
+  - **Overlaps:** every footprint is resolved against the others, smallest first. A footprint keeps only what no earlier one covers. If that is less than half of it, it was a duplicate, and it hands any tags the survivor lacks (levels, height, name, roof shape) to the survivor.
+  - **What else is kept:** roofs on posts (`building=roof`) become canopies, and nothing is kept outside the detailed terrain.
+- **Heights:** the ground is sampled every metre along every wall and on a 2.5 m grid inside the footprint. The eave is always at least one storey above the highest ground, so uphill sides are never buried.
+- **Roofs** are chosen in the map builder and stored as a shape plus a frame (centre, ridge direction, half length and half width):
+  - **Shape:** from `roof:shape` when OpenStreetMap has it, otherwise from the style, kind and how rectangular the footprint is.
+  - **Terraced rows:** the party walls become the gable ends, so the ridge runs along the row.
+  - **Geometry** (`public/js/buildings.js`): the footprint is triangulated and split into pieces along the lines where two roof planes meet. Every wall is split at the same lines and rises to exactly the roof line above it, so gables are always closed and nothing overhangs except the eaves.
+  - **Eaves:** free edges get a 35 cm eave with a soffit and a fascia board. Edges against a neighbour stay flush.
+- **Streets:**
+  - **Terrain:** each street gets a height profile along its centre line, smoothed a little. Terrain nodes within half the width plus 2.5 m take that height, and the next 2.5 m blend back into the hillside. A node is left alone when that would mean a cut steeper than about 60 %. That happens where it belongs to another street at another level, such as the legs of Fjellveien's hairpins. House 6 and the sea are not touched, and Cappes vei in front of the door moved by less than 10 cm.
+  - **Ribbons:** the game pulls each side of a ribbon in to the nearest wall, and street lamps keep 60 cm off walls.
+- **Collision** understands courtyards, so you can walk into one.
+- **Under buildings,** terrain nodes just inside a wall are capped at the highest ground outside it. Otherwise the 2.5 m triangulation shows the step between a raised plot and the street as a row of grassy teeth along the wall.
+- **Street ribbons** get a vertex every 1.5 m along and about every 1.8 m across, so they follow the terrain mesh instead of spanning it with two edges.
+
+### Cost
+
+Measured the same way as above (headless Chromium, one frame, the same camera positions):
+
+| View | Draw calls before | Draw calls after | Triangles before | Triangles after |
+| --- | --- | --- | --- | --- |
+| Cappes vei | 164 | 164 | 318 k | 348 k |
+| Bryggen | 399 | 405 | 376 k | 457 k |
+| Torget | 110 | 109 | 327 k | 387 k |
+
+Draw calls are unchanged: roofs, soffits, canopies and streets still go into each tile's shared meshes. The extra triangles come mostly from the finer street ribbons, plus the roof pieces and eaves. The map builder takes about 6 s, and `map.json` shrank from 809 KB to 783 KB.

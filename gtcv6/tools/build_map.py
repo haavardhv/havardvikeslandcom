@@ -1,23 +1,41 @@
 #!/usr/bin/env python3
 """Build the game map from OpenStreetMap and Kartverket elevation data.
 
-Inputs (in a work directory, see fetch_data.sh):
+Inputs (in a work directory, see fetch_data.py):
   t_*.json      OSM API /map.json tiles covering the area
   fine.json     terrain heights on a 2.5 m grid around the house (Kartverket DTM1)
   coarse.json   terrain heights on a 60 m grid for the surrounding mountains
 
 Outputs (gtcv6/public/data):
   map.json      buildings, roads, areas, trees, the funicular, a walking graph
-  terrain.bin   Int16 heights in centimetres, fine grid
+  terrain.bin   Int16 heights in centimetres, fine grid (streets levelled, see below)
   coarse.bin    Int16 heights in decimetres, coarse grid
+  ground.bin    ground class per fine grid node
+
+The world is cleaned up here, so the game can trust it:
+  - Buildings: multipolygon relations are assembled into proper rings (courtyards included),
+    then every footprint is resolved against the others, smallest first, so no two buildings
+    ever overlap: duplicates (a relation and the ways it is made of, a block outline drawn over
+    its houses) disappear and sloppy overlaps become clean party walls. Bridge buildings
+    (building:min_level) are lifted off the ground, roofs on posts (building=roof) become
+    canopies, and nothing is kept outside the detailed terrain.
+  - Roofs: the shape is chosen here (from roof:shape, or from the kind, style and footprint),
+    together with the ridge direction: across the party walls for terraced rows, along the
+    long side otherwise. The game builds the roof as a height field over the footprint, so a
+    roof can never stick out past its walls.
+  - Streets: the terrain is levelled across every street and lane (and blended back into the
+    hillside beside it), so the street surface never has the slope poking through it.
 
 Coordinates: metres, origin at Cappes vei 6, +x east, +z south.
 Map data © OpenStreetMap contributors (ODbL). Elevation © Kartverket (CC BY 4.0).
 """
-import json, math, glob, sys, os, struct, hashlib
-from shapely.geometry import Polygon, Point, LineString, box
-from shapely.affinity import rotate
+import json, math, glob, sys, os, struct, hashlib, random
+from shapely.geometry import Polygon, MultiPolygon, Point, LineString, box
+from shapely.geometry.polygon import orient
+from shapely.ops import linemerge, polygonize, unary_union
 from shapely.prepared import prep
+from shapely.strtree import STRtree
+from shapely.validation import make_valid
 
 WORK = sys.argv[1]
 OUT = sys.argv[2]
@@ -38,17 +56,22 @@ def coords(w): return [P(nodes[i]) for i in w['nodes'] if i in nodes]
 # ------------------------------------------------------------------ terrain
 fine = json.load(open(os.path.join(WORK, 'fine.json')))
 coarse = json.load(open(os.path.join(WORK, 'coarse.json')))
-def grid_sampler(g):
-    nx, nz, x0, z0, st, h = g['nx'], g['nz'], g['x0'], g['z0'], g['step'], g['h']
-    def f(x, z):
-        fx = min(max((x - x0) / st, 0), nx - 1.001); fz = min(max((z - z0) / st, 0), nz - 1.001)
-        i, j = int(fx), int(fz); tx, tz = fx - i, fz - j
-        def H(a, b):
-            v = h[b * nx + a]
-            return v if v is not None else 0.0
-        return (H(i, j) * (1 - tx) + H(i + 1, j) * tx) * (1 - tz) + (H(i, j + 1) * (1 - tx) + H(i + 1, j + 1) * tx) * tz
-    return f
-ground = grid_sampler(fine)
+FNX, FNZ, FX0, FZ0, FST = fine['nx'], fine['nz'], fine['x0'], fine['z0'], fine['step']
+FH0 = [v if v is not None else -5.0 for v in fine['h']]     # the terrain as measured
+FH = list(FH0)                                               # the terrain the game gets (streets levelled)
+FX1, FZ1 = FX0 + (FNX - 1) * FST, FZ0 + (FNZ - 1) * FST
+
+def sample(h, x, z):
+    """Same interpolation as the game's terrain mesh (two triangles per cell)."""
+    fx, fz = (x - FX0) / FST, (z - FZ0) / FST
+    i0 = max(0, min(FNX - 2, int(math.floor(fx)))); j0 = max(0, min(FNZ - 2, int(math.floor(fz))))
+    tx, tz = max(0.0, min(1.0, fx - i0)), max(0.0, min(1.0, fz - j0))
+    a, b = h[j0 * FNX + i0], h[j0 * FNX + i0 + 1]
+    c, d = h[(j0 + 1) * FNX + i0], h[(j0 + 1) * FNX + i0 + 1]
+    if tx + tz <= 1: return a + (b - a) * tx + (c - a) * tz
+    return d + (c - d) * (1 - tx) + (b - d) * (1 - tz)
+def ground0(x, z): return sample(FH0, x, z)
+def ground(x, z): return sample(FH, x, z)
 
 # ------------------------------------------------------------------ house 6 frame
 H6_ID = 579309500
@@ -75,124 +98,325 @@ print('house6 frame', house6, 'osm width', round(l, 2))
 # ------------------------------------------------------------------ helpers
 in_area = lambda c: any(X0 - 40 < x < X1 + 40 and Z0 - 40 < z < Z1 + 40 for x, z in c)
 def r1(v): return round(v, 1)
+def r2(v): return round(v, 2)
 def flat(c): return [r1(a) for p in c for a in p]
 def h01(s): return int(hashlib.md5(str(s).encode()).hexdigest()[:8], 16) / 0xffffffff
+def polys_of(g):
+    """The polygons in any geometry, as a list."""
+    if g is None or g.is_empty: return []
+    if g.geom_type == 'Polygon': return [g]
+    if hasattr(g, 'geoms'): return [p for sub in g.geoms for p in polys_of(sub)]
+    return []
+def num(v, default=None):
+    try: return float(str(v).split(';')[0].split()[0].replace(',', '.'))
+    except (ValueError, IndexError): return default
 
-# ------------------------------------------------------------------ buildings
+# ------------------------------------------------------------------ roads (parsed first: the terrain is levelled under them)
 WIDTH_KEYS = {'trunk', 'primary', 'secondary', 'tertiary', 'unclassified', 'residential', 'living_street', 'service', 'pedestrian', 'footway', 'steps', 'path'}
-def building_polys():
-    for w in ways.values():
-        t = w.get('tags', {})
-        if 'building' in t and t.get('building') not in ('roof',) and t.get('location') != 'underground':
-            c = coords(w)
-            if len(c) >= 4 and in_area(c): yield w['id'], t, Polygon(c)
-    for r in rels.values():
-        t = r.get('tags', {})
-        if 'building' in t and t.get('type') == 'multipolygon':
-            for m in r['members']:
-                if m['type'] == 'way' and m['role'] == 'outer' and m['ref'] in ways:
-                    c = coords(ways[m['ref']])
-                    if len(c) >= 4 and c[0] == c[-1] and in_area(c): yield r['id'] * 10 + 1, t, Polygon(c)
+WIDTH = {'trunk': 9, 'primary': 8.5, 'secondary': 7.5, 'tertiary': 7, 'unclassified': 5, 'residential': 5, 'living_street': 4.5,
+         'service': 3.5, 'pedestrian': 5, 'footway': 2.2, 'path': 1.6, 'steps': 2, 'cycleway': 2.5, 'track': 3, 'corridor': 2,
+         'trunk_link': 6, 'primary_link': 6, 'secondary_link': 6, 'tertiary_link': 5}
+roads, road_geo = [], []
+graph_nodes, graph_edges = {}, set()
+for w in ways.values():
+    t = w.get('tags', {})
+    hw = t.get('highway')
+    if hw not in WIDTH or t.get('tunnel') in ('yes', 'building_passage') or t.get('area') == 'yes' or t.get('indoor') == 'yes': continue
+    if hw == 'corridor': continue
+    ids = [i for i in w['nodes'] if i in nodes]
+    c = [P(nodes[i]) for i in ids]
+    if len(c) < 2 or not in_area(c): continue
+    surf = t.get('surface', '')
+    k = 'steps' if hw == 'steps' else ('foot' if hw in ('footway', 'path', 'cycleway', 'track') else
+         ('ped' if hw == 'pedestrian' else ('sett' if surf in ('sett', 'cobblestone', 'paving_stones', 'unhewn_cobblestone') else 'road')))
+    if hw == 'footway' and t.get('footway') == 'sidewalk': k = 'side'
+    wdt = num(t.get('width'), WIDTH[hw])
+    wdt = max(1.0, min(wdt, 14.0))
+    r = {'p': flat(c), 'w': round(wdt, 1), 'k': k}
+    if t.get('name'): r['n'] = t['name']
+    bridge = t.get('bridge') not in (None, 'no')
+    if bridge: r['br'] = 1
+    roads.append(r)
+    road_geo.append((c, wdt, k, bridge, hw))
+    # walking graph (everything but trunk roads without sidewalks still counts: it is a game)
+    for a, b2 in zip(ids, ids[1:]):
+        graph_nodes[a] = P(nodes[a]); graph_nodes[b2] = P(nodes[b2])
+        graph_edges.add((min(a, b2), max(a, b2)))
+print('roads', len(roads))
+gids = {nid: i for i, nid in enumerate(graph_nodes)}
+graph = {'n': flat(graph_nodes.values()), 'e': [x for a, b2 in graph_edges for x in (gids[a], gids[b2])]}
 
+# ------------------------------------------------------------------ level the terrain across the streets
+# Each street gets a height profile along its centre line (the measured ground, smoothed a little
+# along the street). Grid nodes within half the width plus 2.5 m take that height (so every
+# triangle under the street surface is level across it), and the next 2.5 m blend back into the
+# hillside. Where streets meet, the nearest one wins. The sea and house 6 are left alone.
+SMOOTH = {'road': 4, 'sett': 4, 'ped': 3, 'side': 3, 'foot': 2, 'steps': 1}
+FULL, BLEND = 2.5, 2.5
+score = [math.inf] * (FNX * FNZ)
+target = [0.0] * (FNX * FNZ)
+dist = [0.0] * (FNX * FNZ)
+keep_p = prep(reserved.buffer(1.0))
+for c, wdt, k, bridge, hwy in road_geo:
+    if bridge: continue
+    hw = wdt / 2
+    pts = []
+    for (ax, az), (bx, bz) in zip(c, c[1:]):
+        L = math.hypot(bx - ax, bz - az); n = max(1, int(math.ceil(L)))
+        for s in range(n): pts.append((ax + (bx - ax) * s / n, az + (bz - az) * s / n))
+    pts.append(c[-1])
+    hs = [ground0(x, z) for x, z in pts]
+    win = SMOOTH[k]
+    sm = [sum(hs[max(0, i - win):i + win + 1]) / len(hs[max(0, i - win):i + win + 1]) for i in range(len(hs))]
+    R = hw + FULL + BLEND
+    for (x, z), h in zip(pts, sm):
+        i0, i1 = max(0, int((x - R - FX0) / FST)), min(FNX - 1, int((x + R - FX0) / FST) + 1)
+        j0, j1 = max(0, int((z - R - FZ0) / FST)), min(FNZ - 1, int((z + R - FZ0) / FST) + 1)
+        for j in range(j0, j1 + 1):
+            gz = FZ0 + j * FST
+            for i in range(i0, i1 + 1):
+                d = math.hypot(FX0 + i * FST - x, gz - z)
+                if d > R: continue
+                s = d - hw
+                n = j * FNX + i
+                if s < score[n]: score[n] = s; target[n] = h; dist[n] = d
+levelled = 0
+for n in range(FNX * FNZ):
+    s = score[n]
+    if s == math.inf or FH0[n] < 0.5: continue
+    x, z = FX0 + (n % FNX) * FST, FZ0 + (n // FNX) * FST
+    if keep_p.contains(Point(x, z)): continue
+    diff = target[n] - FH0[n]
+    if s > 1.0:
+        # beside the street: a cut into a 60 % slope at most. Far more than that is another
+        # street at another level (the legs of a hairpin, a lane above a retaining wall), so
+        # the node keeps its height; a little more is clamped.
+        allowed = 0.6 + 0.6 * dist[n]
+        if abs(diff) > 2 * allowed: continue
+        diff = max(-allowed, min(allowed, diff))
+    if s <= FULL: wgt = 1.0
+    else:
+        t = 1 - (s - FULL) / BLEND
+        wgt = t * t * (3 - 2 * t)
+    FH[n] = FH0[n] + diff * wgt
+    if abs(FH[n] - FH0[n]) > 0.05: levelled += 1
+print('terrain nodes levelled under streets', levelled)
+
+# ------------------------------------------------------------------ building footprints
+# Everything is clipped to the detailed terrain: outside it the ground is a 60 m grid and
+# buildings would float or sink.
+FINE_BOX = box(FX0 + 3, FZ0 + 3, FX1 - 3, FZ1 - 3)
+
+def ring_polys(lines):
+    ls = [LineString(c) for c in lines if len(c) >= 2]
+    if not ls: return None
+    return unary_union(list(polygonize(linemerge(ls))))
+
+cands = []      # {id, t, g (Polygon, holes allowed)}
+canopy_src = []
+def add_cand(cid, t, g):
+    if not g.is_valid: g = make_valid(g)
+    for p in polys_of(g):
+        p = p.simplify(0.15, preserve_topology=True)
+        if not p.is_valid: p = make_valid(p)
+        for q in polys_of(p):
+            if q.area < 5: continue
+            if not FINE_BOX.contains(q.centroid): continue
+            q = q.intersection(FINE_BOX)
+            if q.intersects(reserved): q = q.difference(reserved)
+            for r in polys_of(q):
+                if r.area >= 5: cands.append({'id': cid, 't': dict(t), 'g': r})
+
+SKIP_KINDS = {'no', 'construction', 'demolished', 'ruins', 'collapsed', 'proposed'}
+for w in ways.values():
+    t = w.get('tags', {})
+    if 'building' not in t or t.get('building') in SKIP_KINDS or t.get('location') == 'underground': continue
+    c = coords(w)
+    if len(c) < 4 or c[0] != c[-1] or not in_area(c): continue
+    if w['id'] == H6_ID: continue
+    if t.get('building') == 'roof': canopy_src.append((w['id'], t, Polygon(c))); continue
+    add_cand(w['id'], t, Polygon(c))
+for r in rels.values():
+    t = r.get('tags', {})
+    if 'building' not in t or t.get('type') != 'multipolygon' or t.get('building') in SKIP_KINDS: continue
+    outer = [coords(ways[m['ref']]) for m in r['members'] if m['type'] == 'way' and m['role'] in ('outer', '') and m['ref'] in ways]
+    inner = [coords(ways[m['ref']]) for m in r['members'] if m['type'] == 'way' and m['role'] == 'inner' and m['ref'] in ways]
+    if not outer or not any(in_area(c) for c in outer): continue
+    og = ring_polys(outer)
+    if og is None or og.is_empty: continue
+    ig = ring_polys(inner)
+    g = og.difference(ig) if ig is not None and not ig.is_empty else og
+    if t.get('building') == 'roof':
+        for p in polys_of(g): canopy_src.append((r['id'], t, p))
+        continue
+    add_cand(-r['id'], t, g)
+print('building footprints from OSM', len(cands))
+
+def info(t):
+    return sum(k in t for k in ('building:levels', 'height', 'name', 'roof:shape', 'building:material')) + (t.get('building') != 'yes')
+# Smallest first: detailed houses win over a block outline drawn around them, and an exact
+# duplicate loses to the copy with the better tags. Each footprint keeps only what no
+# earlier one already covers; if that is less than half of it, it was a duplicate.
+order = sorted(range(len(cands)), key=lambda i: (round(cands[i]['g'].area), -info(cands[i]['t'])))
+ctree = STRtree([c['g'] for c in cands])
+kept = {}
+dropped = 0
+DONATE = ('building:levels', 'height', 'name', 'roof:shape', 'building:material', 'roof:levels', 'building:min_level', 'min_height', 'heritage')
+for i in order:
+    c = cands[i]
+    g0 = g = c['g']
+    over = []
+    for j in ctree.query(g0):
+        j = int(j)
+        if j in kept and kept[j].intersects(g):
+            a = kept[j].intersection(g0).area
+            if a > 0.02:
+                g = g.difference(kept[j]); over.append((a, j))
+    if over:
+        # remove the slivers a difference leaves behind
+        g = g.buffer(-0.15, join_style=2).buffer(0.15, join_style=2).intersection(g)
+        g = unary_union([p for p in polys_of(g) if p.area > 6])
+    if g.is_empty or g.area < 0.5 * g0.area:
+        dropped += 1
+        if over:
+            a, j = max(over)
+            kt = cands[j]['t']
+            for k in DONATE:
+                if k in c['t'] and k not in kt: kt[k] = c['t'][k]
+            if kt.get('building') == 'yes' and c['t'].get('building') not in (None, 'yes'): kt['building'] = c['t']['building']
+        continue
+    kept[i] = g
+print('duplicates and overlaps removed', dropped)
+
+# The ground under a building is hidden, but the terrain triangles between a node just inside a
+# wall and the street in front of it are not: a node under the building that is higher than
+# all the ground around it shows as a row of grassy teeth along the wall. Such nodes are capped
+# at the highest outside ground next to them.
+inside_p = prep(unary_union(list(kept.values())).buffer(-0.3))
+inside = bytearray(FNX * FNZ)
+for j in range(FNZ):
+    for i in range(FNX):
+        if inside_p.contains(Point(FX0 + i * FST, FZ0 + j * FST)): inside[j * FNX + i] = 1
+capped = 0
+src = list(FH)
+for j in range(1, FNZ - 1):
+    for i in range(1, FNX - 1):
+        n = j * FNX + i
+        if not inside[n]: continue
+        out = [src[(j + dj) * FNX + i + di] for dj in (-1, 0, 1) for di in (-1, 0, 1) if not inside[(j + dj) * FNX + i + di]]
+        if out and src[n] > max(out) + 0.05:
+            FH[n] = max(out); capped += 1
+print('terrain nodes under buildings capped', capped)
+
+# ------------------------------------------------------------------ building attributes
 WOOD = ['#efede6', '#efede6', '#f2efe6', '#e7e3d6', '#dcdcd4', '#e9ddb1', '#c8d6dd', '#d9cfc0', '#b9c6c9', '#e8e2cf']
 PLASTER = ['#e8e1d2', '#d9cdb5', '#cdbf9f', '#e2d6bd', '#bfb7a8', '#d8c3a5', '#a9a49b', '#e9e4d8']
 BRICK = ['#8a4a37', '#7b3f30', '#94533c']
 BRYGGEN = ['#96321f', '#c98f2e', '#e8e2d2', '#d9b75a', '#6e4a30', '#b0452a', '#a33a24', '#e3cf9a']
 ROOF_DARK, ROOF_RED, ROOF_BLACK, ROOF_FLAT, ROOF_COPPER = '#41444a', '#8d3f2d', '#2d2f33', '#5d5f62', '#5f8a76'
-default_levels = {'house': 2, 'detached': 2, 'semidetached_house': 2, 'apartments': 3, 'garage': 1, 'garages': 1, 'shed': 1, 'carport': 1,
-                  'retail': 4, 'commercial': 4, 'office': 5, 'hotel': 5, 'civic': 3, 'public': 3, 'school': 3, 'university': 3,
-                  'church': 4, 'cathedral': 6, 'religious': 3, 'warehouse': 2, 'service': 1, 'train_station': 2, 'kiosk': 1}
+default_levels = {'house': 2, 'detached': 2, 'semidetached_house': 2, 'terrace': 3, 'apartments': 3, 'residential': 3, 'garage': 1, 'garages': 1,
+                  'shed': 1, 'carport': 1, 'cabin': 1, 'barn': 2, 'retail': 4, 'commercial': 4, 'office': 5, 'hotel': 5, 'civic': 3, 'public': 3,
+                  'government': 4, 'school': 3, 'university': 3, 'kindergarten': 1, 'church': 4, 'cathedral': 6, 'religious': 3,
+                  'warehouse': 2, 'service': 1, 'train_station': 2, 'transportation': 1, 'kiosk': 1, 'parking': 4, 'fire_station': 2}
+LOW_KINDS = {'garage', 'garages', 'carport', 'shed', 'service', 'kiosk'}
+BIG_KINDS = {'retail', 'commercial', 'office', 'hotel', 'warehouse', 'parking', 'industrial', 'sports_centre', 'train_station', 'transportation', 'fire_station'}
+
+def ground_stats(poly):
+    per = []
+    for ring in [poly.exterior] + list(poly.interiors):
+        cs = list(ring.coords)
+        for (ax, az), (bx, bz) in zip(cs, cs[1:]):
+            L = math.hypot(bx - ax, bz - az); n = max(1, int(L))
+            for k in range(n): per.append(ground(ax + (bx - ax) * k / n, az + (bz - az) * k / n))
+    inner = []
+    minx, minz, maxx, maxz = poly.bounds
+    pp = prep(poly)
+    x = minx + 1.25
+    while x < maxx:
+        z = minz + 1.25
+        while z < maxz:
+            if pp.contains(Point(x, z)): inner.append(ground(x, z))
+            z += 2.5
+        x += 2.5
+    return min(per), max(per), min(per + inner)
+
 buildings = []
-for bid, t, poly in building_polys():
-    if bid == H6_ID: continue
-    if not poly.is_valid: poly = poly.buffer(0)
-    if poly.geom_type != 'Polygon': poly = max(poly.geoms, key=lambda g: g.area) if hasattr(poly, 'geoms') else poly
-    if poly.intersects(reserved):
-        poly = poly.difference(reserved)
-        if poly.is_empty: continue
-        if poly.geom_type != 'Polygon': poly = max(poly.geoms, key=lambda g: g.area)
-    poly = poly.simplify(0.15)
-    if poly.area < 5: continue
-    c = list(poly.exterior.coords)[:-1]
-    if Polygon(c).exterior.is_ccw: c = c[::-1]           # clockwise in (x,z) so walls face outwards consistently
-    kind = t.get('building', 'yes')
-    gs = [ground(x, z) for x, z in c] + [ground(*poly.centroid.coords[0])]
-    gmin, gmax = min(gs), max(gs)
-    try: levels = float(t.get('building:levels', '').split(';')[0])
-    except ValueError: levels = default_levels.get(kind, 3 if poly.area > 90 else 2)
-    if t.get('roof:levels'):
-        try: levels += 0.5 * float(t['roof:levels'])
-        except ValueError: pass
-    eave = (gmin + gmax) / 2 + levels * 2.9 + 0.4
-    if 'height' in t:
-        try: eave = gmin + float(t['height'].split()[0]) * 0.8
-        except ValueError: pass
-    rect = poly.minimum_rotated_rectangle
-    rc = list(rect.exterior.coords)[:-1]
-    s1, s2 = math.dist(rc[0], rc[1]), math.dist(rc[1], rc[2])
-    short = min(s1, s2)
-    gabled = poly.area / rect.area > 0.8 and short < 15 and levels <= 5 and kind not in ('garage', 'garages', 'carport', 'retail', 'commercial', 'warehouse')
-    if t.get('roof:shape') == 'flat': gabled = False
-    if t.get('roof:shape') in ('gabled', 'hipped', 'half-hipped', 'gambrel'): gabled = short < 20
-    cx, cz = poly.centroid.coords[0]
-    hv = h01(bid)
-    centre = cx < -230 or kind in ('retail', 'commercial', 'office', 'hotel', 'civic', 'public', 'school', 'university')
-    mat = t.get('building:material', '')
-    if mat == 'brick' or (centre and hv < 0.12): col = BRICK[int(hv * 97) % 3]
-    elif centre: col = PLASTER[int(hv * 97) % len(PLASTER)]
-    else: col = WOOD[int(hv * 97) % len(WOOD)]
-    roof = ROOF_RED if hv > 0.8 else (ROOF_BLACK if hv > 0.55 else ROOF_DARK)
-    name = t.get('name', '')
-    # the old wooden wharf houses of Bryggen (listed buildings between Torget and Mariakirken)
-    bryggen = t.get('heritage') and -620 < cx < -420 and -620 < cz < -280 and kind not in ('church', 'civic')
-    if bryggen:
-        col = BRYGGEN[int(hv * 97) % len(BRYGGEN)]
-        roof = ROOF_RED if hv > 0.35 else '#6b3a2a'
-        if short < 16 and poly.area / rect.area > 0.7: gabled = True
-    if kind in ('cathedral', 'church') or 'kirke' in name.lower():
-        col, roof = '#b9b4a6', ROOF_COPPER
-    if not gabled: roof = ROOF_FLAT if centre or kind in ('garage', 'garages') else roof
-    style = 'y' if bryggen else ('b' if col in BRICK else ('p' if col in PLASTER or kind in ('cathedral', 'church') else 'w'))
-    b = {'p': flat(c), 'b': r1(gmin - 1.5), 't': r1(eave), 'c': col, 'rc': roof, 's': style}
-    if kind in ('retail', 'commercial', 'hotel') or (centre and t.get('shop')): b['shop'] = 1
-    if kind in ('garage', 'garages', 'shed', 'carport', 'warehouse', 'service'): b['plain'] = 1
-    if gabled: b['g'] = flat(rc)
-    if name: b['n'] = name
-    if kind in ('cathedral', 'church'): b['k'] = 'church'
-    if bryggen: b['k'] = 'bryggen'
-    b['_poly'] = Polygon(c)
-    b['_kind'] = kind
-    buildings.append((bid, b))
+for i, g in sorted(kept.items()):
+    c = cands[i]
+    for part_no, poly in enumerate(polys_of(g)):
+        if poly.area < 6: continue
+        poly = orient(poly, sign=-1.0)      # outer ring clockwise in (x,z), holes the other way
+        t = c['t']; bid = c['id'] * 10 + part_no
+        kind = t.get('building', 'yes')
+        gmin, gmax, gall = ground_stats(poly)
+        levels = num(t.get('building:levels'))
+        if levels is None: levels = default_levels.get(kind, 3 if poly.area > 90 else 2)
+        levels = max(1.0, min(levels, 20.0))
+        roof_levels = num(t.get('roof:levels'), 0) or 0
+        eave = (gmin + gmax) / 2 + levels * 2.9 + 0.4 + 0.5 * roof_levels
+        if 'height' in t and num(t['height']):
+            eave = gmin + num(t['height']) * 0.8
+        eave = max(eave, gmax + 2.7)             # the uphill side always keeps a storey
+        min_level = num(t.get('building:min_level'), 0) or 0
+        min_height = num(t.get('min_height'), 0) or 0
+        elevated = min_level > 0 or min_height > 0
+        base = gall - 4.0                        # deep enough to cover the coarse terrain levels far away
+        if elevated:
+            base = (gmin + gmax) / 2 + (min_height if min_height > 0 else min_level * 2.9)
+            nlev = levels - min_level if levels > min_level else max(1.0, levels)
+            eave = max(base + nlev * 2.9, base + 2.6)
+        cx, cz = poly.centroid.coords[0]
+        hv = h01(bid)
+        centre = cx < -230 or kind in ('retail', 'commercial', 'office', 'hotel', 'civic', 'public', 'school', 'university', 'government')
+        mat = t.get('building:material', '')
+        if mat == 'brick' or (centre and hv < 0.12): col = BRICK[int(hv * 97) % 3]
+        elif mat in ('wood', 'timber_framing') : col = WOOD[int(hv * 97) % len(WOOD)]
+        elif centre or mat in ('plaster', 'concrete', 'stone'): col = PLASTER[int(hv * 97) % len(PLASTER)]
+        else: col = WOOD[int(hv * 97) % len(WOOD)]
+        roof = ROOF_RED if hv > 0.8 else (ROOF_BLACK if hv > 0.55 else ROOF_DARK)
+        name = t.get('name', '')
+        # the old wooden wharf houses of Bryggen (listed buildings between Torget and Mariakirken)
+        bryggen = bool(t.get('heritage')) and -620 < cx < -420 and -620 < cz < -280 and kind not in ('church', 'civic')
+        if bryggen:
+            col = BRYGGEN[int(hv * 97) % len(BRYGGEN)]
+            roof = ROOF_RED if hv > 0.35 else '#6b3a2a'
+        church = kind in ('cathedral', 'church') or 'kirke' in name.lower()
+        if church: col, roof = '#b9b4a6', ROOF_COPPER
+        style = 'y' if bryggen else ('b' if col in BRICK else ('p' if col in PLASTER or church else 'w'))
+        b = {'p': flat(list(poly.exterior.coords)[:-1]), 'b': r1(base), 't': r1(eave), 'c': col, 'rc': roof, 's': style}
+        holes = [flat(list(h.coords)[:-1]) for h in poly.interiors if Polygon(h).area > 4]
+        if holes: b['h'] = holes
+        if kind in ('retail', 'commercial', 'hotel') or (centre and t.get('shop')): b['shop'] = 1
+        if kind in LOW_KINDS or kind == 'warehouse': b['plain'] = 1
+        if name: b['n'] = name
+        if church: b['k'] = 'church'
+        if bryggen: b['k'] = 'bryggen'
+        if elevated: b['el'] = 1
+        b['_poly'] = poly; b['_kind'] = kind; b['_t'] = t; b['_hv'] = hv; b['_levels'] = levels; b['_centre'] = centre
+        buildings.append((bid, b))
 
 # neighbours of no. 6 coloured as in the video: the green house on the passage side
 for bid, b in buildings:
-    if bid == 579309502: b['c'] = '#8e979d'; b['rc'] = ROOF_BLACK
-    if bid == 579309499: b['c'] = '#e8e3d3'
-print('buildings', len(buildings))
+    if bid // 10 == 579309502: b['c'] = '#8e979d'; b['rc'] = ROOF_BLACK
+    if bid // 10 == 579309499: b['c'] = '#e8e3d3'
+print('buildings', len(buildings), 'with courtyards', sum(1 for _, b in buildings if 'h' in b), 'elevated', sum(1 for _, b in buildings if 'el' in b))
 
 # ------------------------------------------------------------------ facades: party walls and front doors
 # An edge that another building touches (the terraced rows of Fjellet, the blocks in the centre) gets
 # no windows. Five samples along each edge, 0.45 m outside it; a bit is set where the outside is free.
-from shapely.strtree import STRtree
 others = [b['_poly'] for _, b in buildings] + [reserved]
 tree = STRtree(others)
 def blocked(pt, self_i):
     for j in tree.query(pt):
-        if j != self_i and others[j].contains(pt): return True
+        j = int(j)
+        if j != self_i and others[j].contains(pt) and not (j < len(buildings) and 'el' in buildings[j][1]): return True
     return False
-road_lines = []
-for w in ways.values():
-    t = w.get('tags', {})
-    if t.get('highway') in WIDTH_KEYS and t.get('tunnel') != 'yes':
-        c = coords(w)
-        if len(c) > 1 and in_area(c): road_lines.append(LineString(c))
+road_lines = [LineString(c) for c, wdt, k, br, hwy in road_geo if hwy in WIDTH_KEYS]
 road_tree = STRtree(road_lines)
-for bi, (bid, b) in enumerate(buildings):
-    poly = b['_poly']
-    pts = list(poly.exterior.coords)[:-1]
+def edge_masks(ring_pts, poly, bi, b, want_door):
     masks, best = [], None
-    for i in range(len(pts)):
-        ax, az = pts[i]; bx, bz = pts[(i + 1) % len(pts)]
+    for i in range(len(ring_pts)):
+        ax, az = ring_pts[i]; bx, bz = ring_pts[(i + 1) % len(ring_pts)]
         L = math.hypot(bx - ax, bz - az)
         if L < 0.05: masks.append(0); continue
         nx, nz = (bz - az) / L, -(bx - ax) / L
@@ -205,7 +429,7 @@ for bi, (bid, b) in enumerate(buildings):
             if not blocked(q, bi): m |= 1 << k
         masks.append(m)
         # front door: the free edge closest to a street
-        if L >= 2.4 and (m & 0b01110) == 0b01110 and b['_kind'] not in ('shed', 'roof', 'carport', 'kiosk'):
+        if want_door and L >= 2.4 and (m & 0b01110) == 0b01110:
             probe = Point(mx + nx * 1.5, mz + nz * 1.5)
             near = road_tree.query_nearest(probe)
             if len(near):
@@ -215,10 +439,90 @@ for bi, (bid, b) in enumerate(buildings):
                     rp = line.interpolate(line.project(probe))
                     tt = ((rp.x - ax) * (bx - ax) + (rp.y - az) * (bz - az)) / (L * L)
                     best = (d, i, min(0.75, max(0.25, tt)))
+    return masks, best
+for bi, (bid, b) in enumerate(buildings):
+    poly = b['_poly']
+    want_door = b['_kind'] not in ('shed', 'roof', 'carport', 'kiosk') and 'el' not in b
+    masks, best = edge_masks(list(poly.exterior.coords)[:-1], poly, bi, b, want_door)
     b['e'] = masks
     if best: b['d'] = [best[1], round(best[2], 3)]
+    if 'h' in b:
+        b['he'] = [edge_masks(list(h.coords)[:-1], poly, bi, b, False)[0] for h in poly.interiors if Polygon(h).area > 4]
+
+# ------------------------------------------------------------------ roofs
+# The game draws a roof as a height field over the footprint, in a frame (centre, ridge
+# direction u, half length along u, half width across it). Gable: the height falls off across
+# the ridge. Hip: it also falls off towards the ends. Pyramid: towards the centre from all sides.
+ROOF_TAG = {'flat': 'f', 'many': 'f', 'skillion': 'f', 'gabled': 'g', 'gambrel': 'g', 'half-hipped': 'g', 'saltbox': 'g',
+            'hipped': 'h', 'mansard': 'h', 'dome': 'h', 'round': 'h', 'onion': 'p', 'pyramidal': 'p', 'cone': 'p'}
+nroof = {}
+for bi, (bid, b) in enumerate(buildings):
+    poly, kind, t, hv = b['_poly'], b['_kind'], b['_t'], b['_hv']
+    rect = poly.minimum_rotated_rectangle
+    rc = list(rect.exterior.coords)[:-1]
+    if len(rc) < 4 or rect.area < 1: continue
+    s1, s2 = math.dist(rc[0], rc[1]), math.dist(rc[1], rc[2])
+    if s1 >= s2: ax_, az_ = rc[1][0] - rc[0][0], rc[1][1] - rc[0][1]
+    else: ax_, az_ = rc[2][0] - rc[1][0], rc[2][1] - rc[1][1]
+    la = math.hypot(ax_, az_); ux_, uz_ = ax_ / la, az_ / la
+    hl, hw = max(s1, s2) / 2, min(s1, s2) / 2
+    cx, cz = rect.centroid.coords[0]
+    fill = poly.area / rect.area
+    tag = ROOF_TAG.get(t.get('roof:shape', ''), None)
+    style = b['s']
+    if 'h' in b or 'el' in b: shape = 'f'
+    elif tag:
+        shape = tag
+        if shape != 'f' and fill < 0.8: shape = 'h' if fill >= 0.6 else 'f'
+    elif b.get('k') in ('bryggen', 'church'): shape = 'g' if fill >= 0.7 else 'f'
+    elif kind in ('garage', 'garages', 'carport') or b['_levels'] > 6: shape = 'f'
+    elif style == 'w': shape = 'g' if fill >= 0.8 and hw <= 8 and kind not in BIG_KINDS else ('h' if fill >= 0.8 and hw <= 11 else 'f')
+    else: shape = ('h' if hv < 0.55 else 'g') if fill >= 0.82 and hw <= 9 and b['_levels'] <= 6 and kind not in BIG_KINDS else 'f'
+    if shape == 'f': nroof['f'] = nroof.get('f', 0) + 1; continue
+    # terraced rows: the party walls are the gable ends, so the ridge runs across them
+    party_u = party_v = 0.0
+    pts = list(poly.exterior.coords)[:-1]
+    for i, m in enumerate(b['e']):
+        if bin(m).count('1') > 1: continue
+        (ax, az), (bx, bz) = pts[i], pts[(i + 1) % len(pts)]
+        L = math.hypot(bx - ax, bz - az)
+        if L < 0.5: continue
+        cu = abs(((bx - ax) * ux_ + (bz - az) * uz_) / L)
+        if cu > 0.8: party_u += L
+        elif cu < 0.6: party_v += L
+    if party_u > max(2.0, party_v) and shape == 'g':
+        ux_, uz_ = -uz_, ux_
+        hl, hw = hw, hl
+    pitch = {'y': 0.95, 'w': 0.66}.get(style, 0.5)
+    if b.get('k') == 'church': pitch = 0.8
+    if shape != 'g': pitch = min(pitch, 0.5)
+    if tag and fill < 0.8: pitch = 0.35
+    cap = 8.0 if b.get('k') in ('bryggen', 'church') else (5.5 if shape == 'g' else 4.0)
+    rise = min(cap, hw * math.tan(pitch))
+    if rise < 0.8: continue
+    b['r'] = shape
+    b['rf'] = [r2(cx), r2(cz), round(ux_, 4), round(uz_, 4), r2(hl), r2(hw)]
+    b['rh'] = r2(rise)
+    nroof[shape] = nroof.get(shape, 0) + 1
+print('roofs', nroof)
+
+# ------------------------------------------------------------------ canopies (building=roof: a roof on posts)
+canopies = []
+kept_union = unary_union([b['_poly'] for _, b in buildings])
+for cid, t, g in canopy_src:
+    if not g.is_valid: g = make_valid(g)
+    for p in polys_of(g):
+        if not FINE_BOX.contains(p.centroid) or p.intersects(reserved): continue
+        p = p.intersection(FINE_BOX).difference(kept_union)
+        for q in polys_of(p):
+            q = q.simplify(0.2)
+            if q.area < 6 or not q.is_valid or q.geom_type != 'Polygon': continue
+            q = Polygon(q.exterior)
+            gmin, gmax, _ = ground_stats(q)
+            canopies.append({'p': flat(list(orient(q, -1.0).exterior.coords)[:-1]), 'y': r1(gmax + 3.2), 'g': r1(gmin)})
+print('canopies', len(canopies))
 for _, b in buildings:
-    del b['_poly']; del b['_kind']
+    for k in [k for k in b if k.startswith('_')]: del b[k]
 
 # ------------------------------------------------------------------ walls, fences, hedges; benches; lamps; parking
 barriers = []
@@ -244,39 +548,6 @@ for w in ways.values():
         c = coords(w)
         if len(c) >= 4 and c[0] == c[-1] and in_area(c) and Polygon(c).area > 60: parking.append(flat(c[:-1]))
 print('barriers', len(barriers), 'benches', len(benches) // 2, 'lamps', len(lamps) // 2, 'parking', len(parking))
-
-# ------------------------------------------------------------------ roads
-WIDTH = {'trunk': 9, 'primary': 8.5, 'secondary': 7.5, 'tertiary': 7, 'unclassified': 5, 'residential': 5, 'living_street': 4.5,
-         'service': 3.5, 'pedestrian': 5, 'footway': 2.2, 'path': 1.6, 'steps': 2, 'cycleway': 2.5, 'track': 3, 'corridor': 2,
-         'trunk_link': 6, 'primary_link': 6, 'secondary_link': 6, 'tertiary_link': 5}
-roads = []
-graph_nodes, graph_edges = {}, set()
-for w in ways.values():
-    t = w.get('tags', {})
-    hw = t.get('highway')
-    if hw not in WIDTH or t.get('tunnel') in ('yes', 'building_passage') or t.get('area') == 'yes' or t.get('indoor') == 'yes': continue
-    if hw == 'corridor': continue
-    ids = [i for i in w['nodes'] if i in nodes]
-    c = [P(nodes[i]) for i in ids]
-    if len(c) < 2 or not in_area(c): continue
-    surf = t.get('surface', '')
-    k = 'steps' if hw == 'steps' else ('foot' if hw in ('footway', 'path', 'cycleway', 'track') else
-         ('ped' if hw == 'pedestrian' else ('sett' if surf in ('sett', 'cobblestone', 'paving_stones', 'unhewn_cobblestone') else 'road')))
-    if hw == 'footway' and t.get('footway') == 'sidewalk': k = 'side'
-    wdt = WIDTH[hw]
-    try: wdt = float(t.get('width', wdt))
-    except ValueError: pass
-    r = {'p': flat(c), 'w': round(wdt, 1), 'k': k}
-    if t.get('name'): r['n'] = t['name']
-    if t.get('bridge') == 'yes': r['br'] = 1
-    roads.append(r)
-    # walking graph (everything but trunk roads without sidewalks still counts: it is a game)
-    for a, b2 in zip(ids, ids[1:]):
-        graph_nodes[a] = P(nodes[a]); graph_nodes[b2] = P(nodes[b2])
-        graph_edges.add((min(a, b2), max(a, b2)))
-print('roads', len(roads))
-gids = {nid: i for i, nid in enumerate(graph_nodes)}
-graph = {'n': flat(graph_nodes.values()), 'e': [x for a, b2 in graph_edges for x in (gids[a], gids[b2])]}
 
 # ------------------------------------------------------------------ areas (ground colour)
 areas = []
@@ -307,11 +578,11 @@ print('areas', len(area_polys))
 
 # ------------------------------------------------------------------ trees
 trees = []
+bprep = prep(kept_union.buffer(1.0))
 for n in nodes.values():
     if n.get('tags', {}).get('natural') == 'tree':
         x, z = P(n)
-        if X0 < x < X1 and Z0 < z < Z1 and not reserved_p.contains(Point(x, z)): trees += [r1(x), r1(z)]
-import random
+        if X0 < x < X1 and Z0 < z < Z1 and not reserved_p.contains(Point(x, z)) and not bprep.contains(Point(x, z)): trees += [r1(x), r1(z)]
 random.seed(7)
 for k, poly in area_polys:
     if k != 'wood': continue
@@ -319,7 +590,7 @@ for k, poly in area_polys:
     pp = prep(poly)
     for _ in range(int(poly.area / 45)):
         x, z = random.uniform(minx, maxx), random.uniform(minz, maxz)
-        if X0 < x < X1 and Z0 < z < Z1 and pp.contains(Point(x, z)): trees += [r1(x), r1(z)]
+        if X0 < x < X1 and Z0 < z < Z1 and pp.contains(Point(x, z)) and not bprep.contains(Point(x, z)): trees += [r1(x), r1(z)]
 print('trees', len(trees) // 2)
 
 # ------------------------------------------------------------------ funicular
@@ -348,32 +619,25 @@ funicular = flat(fl)
 print('funicular points', len(fl), 'from', [r1(v) for v in fl[0]], 'to', [r1(v) for v in fl[-1]])
 
 # ------------------------------------------------------------------ terrain arrays
-def write_grid(g, path, scale, carve=None, classes=None):
-    nx, nz, x0, z0, st = g['nx'], g['nz'], g['x0'], g['z0'], g['step']
+def write_grid(g, h, path, scale):
     out = bytearray()
-    for j in range(nz):
-        for i in range(nx):
-            v = g['h'][j * nx + i]
-            if v is None: v = -5.0
-            if carve:
-                x, z = x0 + i * st, z0 + j * st
-                if carve(x, z): v = min(v, FL - 6)
-            out += struct.pack('<h', max(-32768, min(32767, int(round(v * scale)))))
+    for v in h:
+        if v is None: v = -5.0
+        out += struct.pack('<h', max(-32768, min(32767, int(round(v * scale)))))
     open(path, 'wb').write(out)
-# real heights; the game lowers the terrain mesh around house 6 itself when it renders it
-write_grid(fine, os.path.join(OUT, 'terrain.bin'), 100)
-write_grid(coarse, os.path.join(OUT, 'coarse.bin'), 10)
+# the game lowers the terrain mesh around house 6 itself when it renders it
+write_grid(fine, FH, os.path.join(OUT, 'terrain.bin'), 100)
+write_grid(coarse, coarse['h'], os.path.join(OUT, 'coarse.bin'), 10)
 
 # ground classes on the fine grid: 0 urban default, 1 green, 2 wood, 3 paved, 4 water
-nx, nz, gx0, gz0, st = fine['nx'], fine['nz'], fine['x0'], fine['z0'], fine['step']
-cls = bytearray(nx * nz)
-order = {'green': 1, 'wood': 2, 'paved': 3, 'water': 4}
+cls = bytearray(FNX * FNZ)
+order_k = {'green': 1, 'wood': 2, 'paved': 3, 'water': 4}
 for k, poly in sorted(area_polys, key=lambda a: -a[1].area):
     minx, minz, maxx, maxz = poly.bounds
     pp = prep(poly)
-    for j in range(max(0, int((minz - gz0) / st)), min(nz, int((maxz - gz0) / st) + 2)):
-        for i in range(max(0, int((minx - gx0) / st)), min(nx, int((maxx - gx0) / st) + 2)):
-            if pp.contains(Point(gx0 + i * st, gz0 + j * st)): cls[j * nx + i] = order[k]
+    for j in range(max(0, int((minz - FZ0) / FST)), min(FNZ, int((maxz - FZ0) / FST) + 2)):
+        for i in range(max(0, int((minx - FX0) / FST)), min(FNX, int((maxx - FX0) / FST) + 2)):
+            if pp.contains(Point(FX0 + i * FST, FZ0 + j * FST)): cls[j * FNX + i] = order_k[k]
 open(os.path.join(OUT, 'ground.bin'), 'wb').write(bytes(cls))
 
 # ------------------------------------------------------------------ places that matter to the people who live at no. 6
@@ -396,10 +660,11 @@ out = {
     'attribution': 'Map data © OpenStreetMap contributors (ODbL). Elevation © Kartverket (CC BY 4.0).',
     'origin': {'lat': LAT0, 'lon': LON0},
     'area': [X0, Z0, X1, Z1],
-    'terrain': {'x0': fine['x0'], 'z0': fine['z0'], 'step': fine['step'], 'nx': fine['nx'], 'nz': fine['nz'], 'scale': 0.01},
+    'terrain': {'x0': FX0, 'z0': FZ0, 'step': FST, 'nx': FNX, 'nz': FNZ, 'scale': 0.01},
     'coarse': {'x0': coarse['x0'], 'z0': coarse['z0'], 'step': coarse['step'], 'nx': coarse['nx'], 'nz': coarse['nz'], 'scale': 0.1},
     'house6': house6,
     'buildings': [b for _, b in buildings],
+    'canopies': canopies,
     'roads': roads,
     'trees': trees,
     'funicular': funicular,

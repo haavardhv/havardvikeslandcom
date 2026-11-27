@@ -68,6 +68,8 @@ export class PolyWorld {
     let x0 = Infinity, z0 = Infinity, x1 = -Infinity, z1 = -Infinity;
     for (let i = 0; i < pts.length; i += 2) { x0 = Math.min(x0, pts[i]); x1 = Math.max(x1, pts[i]); z0 = Math.min(z0, pts[i + 1]); z1 = Math.max(z1, pts[i + 1]); }
     const it = { pts, base, top, x0, z0, x1, z1, _s: 0, ...data };
+    // courtyards: every ring (outline first, then holes) as flat [x, z, ...] arrays
+    it.rings = data.holes && data.holes.length ? [pts, ...data.holes.map(h => Float32Array.from(h))] : null;
     this.items.push(it);
     const c = this.cell;
     for (let i = Math.floor(x0 / c); i <= Math.floor(x1 / c); i++)
@@ -102,6 +104,20 @@ export class PolyWorld {
     }
     return c;
   }
+  // inside the footprint, courtyards excluded
+  static insideItem(it, x, z) {
+    if (!it.rings) return PolyWorld.inside(it.pts, x, z);
+    let c = false;
+    for (const r of it.rings) if (PolyWorld.inside(r, x, z)) c = !c;
+    return c;
+  }
+  static nearestItem(it, x, z, out) {
+    if (!it.rings) return PolyWorld.nearest(it.pts, x, z, out);
+    let bd = Infinity;
+    const tmp = { x: 0, z: 0 };
+    for (const r of it.rings) { const d = PolyWorld.nearest(r, x, z, tmp); if (d < bd) { bd = d; out.x = tmp.x; out.z = tmp.z; } }
+    return bd;
+  }
   // nearest point on the outline
   static nearest(pts, x, z, out) {
     let bd = Infinity;
@@ -120,8 +136,8 @@ export class PolyWorld {
     const np = this._np || (this._np = { x: 0, z: 0 });
     for (const it of arr) {
       if (it.top + (it.roof || 0) <= pos.y + step || it.base >= pos.y + height) continue;
-      const d = PolyWorld.nearest(it.pts, pos.x, pos.z, np);
-      const ins = PolyWorld.inside(it.pts, pos.x, pos.z);
+      const d = PolyWorld.nearestItem(it, pos.x, pos.z, np);
+      const ins = PolyWorld.insideItem(it, pos.x, pos.z);
       if (!ins && d >= r) continue;
       let nx = pos.x - np.x, nz = pos.z - np.z;
       const l = Math.hypot(nx, nz) || 1e-6;
@@ -136,7 +152,7 @@ export class PolyWorld {
   roofAt(x, z, y, step) {
     let best = -Infinity;
     for (const it of this.query(x, z, x, z, this._q1 || (this._q1 = []))) {
-      if (it.walk && it.top <= y + step && it.top > best && PolyWorld.inside(it.pts, x, z)) best = it.top;
+      if (it.walk && it.top <= y + step && it.top > best && PolyWorld.insideItem(it, x, z)) best = it.top;
     }
     return best;
   }
@@ -146,20 +162,50 @@ export class PolyWorld {
     let best = Infinity;
     for (const it of arr) {
       if (it.noCam) continue;
-      const p = it.pts;
-      for (let i = 0, j = p.length - 2; i < p.length; j = i, i += 2) {
-        const ax = p[j], az = p[j + 1], bx = p[i], bz = p[i + 1];
-        const sx = bx - ax, sz = bz - az;
-        const den = d.x * sz - d.z * sx;
-        if (Math.abs(den) < 1e-9) continue;
-        const t = ((ax - o.x) * sz - (az - o.z) * sx) / den;
-        const u = ((ax - o.x) * d.z - (az - o.z) * d.x) / den;
-        if (t < 0 || t > maxDist || u < 0 || u > 1 || t >= best) continue;
-        const y = o.y + d.y * t;
-        if (y >= it.base && y <= it.top + (it.roof || 0)) best = t;
+      for (const p of it.rings || [it.pts]) {
+        for (let i = 0, j = p.length - 2; i < p.length; j = i, i += 2) {
+          const ax = p[j], az = p[j + 1], bx = p[i], bz = p[i + 1];
+          const sx = bx - ax, sz = bz - az;
+          const den = d.x * sz - d.z * sx;
+          if (Math.abs(den) < 1e-9) continue;
+          const t = ((ax - o.x) * sz - (az - o.z) * sx) / den;
+          const u = ((ax - o.x) * d.z - (az - o.z) * d.x) / den;
+          if (t < 0 || t > maxDist || u < 0 || u > 1 || t >= best) continue;
+          const y = o.y + d.y * t;
+          if (y >= it.base && y <= it.top + (it.roof || 0)) best = t;
+        }
       }
     }
     return best;
+  }
+  // 2D distance from (x, z) along (dx, dz) to the first building wall (0 inside a building)
+  clearance(x, z, dx, dz, maxd) {
+    const ex = x + dx * maxd, ez = z + dz * maxd;
+    let best = maxd;
+    for (const it of this.query(Math.min(x, ex), Math.min(z, ez), Math.max(x, ex), Math.max(z, ez), this._q4 || (this._q4 = []))) {
+      if (it.tree || it.noCam || it.el) continue;
+      if (PolyWorld.insideItem(it, x, z)) return 0;
+      for (const p of it.rings || [it.pts]) {
+        for (let i = 0, j = p.length - 2; i < p.length; j = i, i += 2) {
+          const ax = p[j], az = p[j + 1], sx = p[i] - ax, sz = p[i + 1] - az;
+          const den = dx * sz - dz * sx;
+          if (Math.abs(den) < 1e-9) continue;
+          const t = ((ax - x) * sz - (az - z) * sx) / den;
+          const u = ((ax - x) * dz - (az - z) * dx) / den;
+          if (t >= 0 && t < best && u >= 0 && u <= 1) best = t;
+        }
+      }
+    }
+    return best;
+  }
+  // is any building wall within r of (x, z)?
+  nearBuilding(x, z, r) {
+    const np = { x: 0, z: 0 };
+    for (const it of this.query(x - r, z - r, x + r, z + r, this._q5 || (this._q5 = []))) {
+      if (it.tree || it.noCam || it.el) continue;
+      if (PolyWorld.insideItem(it, x, z) || PolyWorld.nearestItem(it, x, z, np) < r) return true;
+    }
+    return false;
   }
 }
 
@@ -237,6 +283,7 @@ export function buildCity(scene, map, T, opts) {
     {
       const cover = new Uint8Array(nx * nz);
       for (const b of map.buildings) {
+        if (b.el) continue;
         const p = b.p;
         let x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity;
         for (let k = 0; k < p.length; k += 2) { x0 = Math.min(x0, p[k]); x1 = Math.max(x1, p[k]); z0 = Math.min(z0, p[k + 1]); z1 = Math.max(z1, p[k + 1]); }
@@ -386,64 +433,72 @@ export function buildCity(scene, map, T, opts) {
   water.receiveShadow = true;
   scene.add(water);
 
-  // -------------------------------------------------------------- roads, lanes, steps
-  // Street ribbons are draped on the terrain and drawn with the same atlas material as the
-  // buildings, merged into the same 100 m tiles (see buildings.js). The kinds are stacked a few
-  // centimetres apart instead of using polygon offsets, so one material covers them all.
-  const LIFT = { road: 0.06, sett: 0.065, ped: 0.07, side: 0.08, foot: 0.09, steps: 0.1 };
+  // -------------------------------------------------------------- buildings, then roads, lanes and steps
+  // Street ribbons are draped on the terrain (which tools/build_map.py has levelled across every
+  // street) and drawn with the same atlas material as the buildings, merged into the same 100 m
+  // tiles (see buildings.js). The kinds are stacked a few centimetres apart instead of using
+  // polygon offsets, so one material covers them all. OpenStreetMap only gives a centre line and
+  // a typical width, so each side of a street is pulled in where a building wall is closer:
+  // a street never runs under a house.
+  const LIFT = { road: 0.08, sett: 0.085, ped: 0.09, side: 0.1, foot: 0.11, steps: 0.12 };
   const RSTY = { road: 'asphalt', sett: 'cobble', ped: 'paving', side: 'side', foot: 'foot', steps: 'steps' };
   const stepsMask = new Map();          // 1 m cells on steps
   const roadMask = new Map();           // 2 m cells on any road
-  const roadQuads = [];
-  for (const r of map.roads) {
-    const p = r.p, w = r.w / 2, lift = LIFT[r.k];
-    const pts = [];
-    for (let i = 0; i < p.length - 2; i += 2) {
-      const ax = p[i], az = p[i + 1], bx = p[i + 2], bz = p[i + 3];
-      const l = Math.hypot(bx - ax, bz - az), n = Math.max(1, Math.ceil(l / 2));
-      for (let s = 0; s < n; s++) pts.push([ax + (bx - ax) * s / n, az + (bz - az) * s / n]);
-    }
-    pts.push([p[p.length - 2], p[p.length - 1]]);
-    let dist = 0, prevL = null, prevR = null, prevD = 0;
-    for (let i = 0; i < pts.length; i++) {
-      const a = pts[Math.max(0, i - 1)], b = pts[Math.min(pts.length - 1, i + 1)];
-      let dx = b[0] - a[0], dz = b[1] - a[1];
-      const l = Math.hypot(dx, dz) || 1; dx /= l; dz /= l;
-      const [x, z] = pts[i];
-      if (i > 0) dist += Math.hypot(x - pts[i - 1][0], z - pts[i - 1][1]);
-      const lx = x - dz * w, lz = z + dx * w, rx = x + dz * w, rz = z - dx * w;
-      const L = [lx, terrain.height(lx, lz) + lift, lz], Rr = [rx, terrain.height(rx, rz) + lift, rz];
-      // keep the cross-section level-ish so narrow lanes do not tilt into the hillside
-      const mid = terrain.height(x, z) + lift;
-      L[1] = Math.max(L[1] * 0.3 + mid * 0.7, mid - 0.4); Rr[1] = Math.max(Rr[1] * 0.3 + mid * 0.7, mid - 0.4);
-      if (prevL) {
-        const uv = r.k === 'steps'
-          ? [[0, prevD], [2 * w, prevD], [2 * w, dist], [0, dist]]
-          : [[prevL[0], prevL[2]], [prevR[0], prevR[2]], [Rr[0], Rr[2]], [L[0], L[2]]];
-        const P = [prevL, prevR, Rr, L];
-        const e1 = [P[1][0] - P[0][0], P[1][1] - P[0][1], P[1][2] - P[0][2]], e2 = [P[2][0] - P[0][0], P[2][1] - P[0][1], P[2][2] - P[0][2]];
-        const n = [e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0]];
-        const nl = Math.hypot(...n) || 1;
-        let N = n.map(v => v / nl), Q = P, UV = uv;
-        if (N[1] < 0) { Q = [P[0], P[3], P[2], P[1]]; UV = [uv[0], uv[3], uv[2], uv[1]]; N = N.map(v => -v); }
-        roadQuads.push([Q, N, UV, RSTY[r.k]]);
+  const white = new THREE.Color(1, 1, 1), W4 = [white, white, white, white];
+  const buildRoads = (tileOf, STYLE) => {
+    for (const r of map.roads) {
+      const p = r.p, w = r.w / 2, lift = LIFT[r.k];
+      const pts = [];
+      for (let i = 0; i < p.length - 2; i += 2) {
+        const ax = p[i], az = p[i + 1], bx = p[i + 2], bz = p[i + 3];
+        const l = Math.hypot(bx - ax, bz - az), n = Math.max(1, Math.ceil(l / 1.5));
+        for (let s = 0; s < n; s++) pts.push([ax + (bx - ax) * s / n, az + (bz - az) * s / n]);
       }
-      prevL = L; prevR = Rr; prevD = dist;
-      const steps = r.k === 'steps';
-      for (let s = -w; s <= w + 0.01; s += 1) {
-        const mx = x - dz * s, mz = z + dx * s;
-        if (steps) stepsMask.set(Math.round(mx) * 100003 + Math.round(mz), 1);
-        roadMask.set(Math.round(mx / 2) * 100003 + Math.round(mz / 2), r.k);
+      pts.push([p[p.length - 2], p[p.length - 1]]);
+      // rows every 1.5 m and a vertex about every 1.8 m across, so the surface follows the terrain mesh
+      let dist = 0, prev = null, prevD = 0;
+      for (let i = 0; i < pts.length; i++) {
+        const a = pts[Math.max(0, i - 1)], b = pts[Math.min(pts.length - 1, i + 1)];
+        let dx = b[0] - a[0], dz = b[1] - a[1];
+        const l = Math.hypot(dx, dz) || 1; dx /= l; dz /= l;
+        const [x, z] = pts[i];
+        if (i > 0) dist += Math.hypot(x - pts[i - 1][0], z - pts[i - 1][1]);
+        // pull each side in to 15 cm short of the nearest wall
+        const wl = Math.max(0, Math.min(w, polys.clearance(x, z, -dz, dx, w + 0.2) - 0.15));
+        const wr = Math.max(0, Math.min(w, polys.clearance(x, z, dz, -dx, w + 0.2) - 0.15));
+        if (wl + wr < 0.5) { prev = null; continue; }        // through a building: no street here
+        const NC = Math.max(2, Math.ceil(r.w / 1.8));      // the same for every row of a street, so rows pair up
+        const row = [];
+        for (let k = 0; k <= NC; k++) {
+          const o = -wl + (wl + wr) * k / NC, px = x + dz * o, pz = z - dx * o;
+          row.push([px, terrain.height(px, pz) + lift, pz, (wl + wr) * k / NC]);
+        }
+        if (prev) {
+          for (let k = 0; k < NC; k++) {
+            const P = [prev[k], prev[k + 1], row[k + 1], row[k]];
+            const uv = r.k === 'steps'
+              ? [[P[0][3], prevD], [P[1][3], prevD], [P[2][3], dist], [P[3][3], dist]]
+              : P.map(q => [q[0], q[2]]);
+            const e1 = [P[1][0] - P[0][0], P[1][1] - P[0][1], P[1][2] - P[0][2]], e2 = [P[2][0] - P[0][0], P[2][1] - P[0][1], P[2][2] - P[0][2]];
+            const n = [e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0]];
+            const nl = Math.hypot(...n) || 1;
+            let N = n.map(v => v / nl);
+            if (N[1] < 0) N = N.map(v => -v);
+            tileOf(P[0][0], P[0][2]).roof.quad(P[0], P[1], P[2], P[3], N, W4, uv, STYLE[RSTY[r.k]]);
+          }
+        }
+        prev = row; prevD = dist;
+        const steps = r.k === 'steps';
+        for (let s = -wl; s <= wr + 0.01; s += 1) {
+          const mx = x + dz * s, mz = z - dx * s;
+          if (steps) stepsMask.set(Math.round(mx) * 100003 + Math.round(mz), 1);
+          roadMask.set(Math.round(mx / 2) * 100003 + Math.round(mz / 2), r.k);
+        }
       }
     }
-  }
-  // -------------------------------------------------------------- buildings and streets (see buildings.js)
-  const white = new THREE.Color(1, 1, 1);
+  };
   const { named, lods: buildingLods, facadeMat } = buildBuildings(scene, map, terrain, polys, T, {
-    geo, stone: opts.stone, copper: opts.copper,
-    extra: (tileOf, STYLE) => {
-      for (const [Q, N, UV, sty] of roadQuads) tileOf(Q[0][0], Q[0][2]).roof.quad(Q[0], Q[1], Q[2], Q[3], N, [white, white, white, white], UV, STYLE[sty]);
-    },
+    geo, stone: opts.stone, copper: opts.copper, extra: buildRoads,
   });
   const onSteps = (x, z) => stepsMask.has(Math.round(x) * 100003 + Math.round(z));
   const onRoad = (x, z) => roadMask.get(Math.round(x / 2) * 100003 + Math.round(z / 2));
@@ -556,7 +611,7 @@ export function buildCity(scene, map, T, opts) {
           const off = r.w / 2 + 0.5;
           const x = ax + dx * t - dz * off * side, z = az + dz * t + dx * off * side;
           side = -side;
-          if (polys.query(x - 0.5, z - 0.5, x + 0.5, z + 0.5).some(it => !it.tree && PolyWorld.inside(it.pts, x, z))) continue;
+          if (polys.nearBuilding(x, z, 0.6)) continue;
           if (!near(x, z)) lampSpots.push([x, z]);
           acc = t + 28 - L;
         }

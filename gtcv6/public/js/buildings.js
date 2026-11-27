@@ -1,12 +1,17 @@
-// Buildings from OpenStreetMap outlines, with facades that make sense:
-//  - no windows on party walls (edges another building touches, found by tools/build_map.py),
+// Buildings from the cleaned-up OpenStreetMap outlines (see tools/build_map.py), with
+// facades and roofs that make sense:
+//  - no windows on party walls (edges another building touches),
 //  - storeys counted down from the eaves, windows only where the bay is above the ground,
 //  - a stone plinth that follows the slope, a front door on the edge facing the street,
 //  - shopfronts on commercial ground floors, corner boards on wooden houses,
-//  - gable roofs with an attic window and a chimney, parapets on flat roofs.
-// Everything for a 100 m tile is merged into three meshes (walls, windows+doors+trims,
-// roofs) that share texture atlases, so a tile costs three draw calls. Each tile also has a
-// cheap far version (walls with painted windows, no separate window geometry).
+//  - roofs built as a height field over the footprint itself (gable, hip, pyramid or flat),
+//    split into planar pieces where the slopes meet. The walls rise to exactly that roof line,
+//    so a roof can never hang past its walls, and every gable is closed. Free edges get an
+//    overhang with a soffit and a fascia board; edges against a neighbour stay flush.
+//  - courtyards (holes), buildings bridging a street, and roofs on posts (canopies).
+// Everything for a 100 m tile is merged into a few meshes (walls, windows+doors+trims) that
+// share texture atlases. Each tile also has a cheap far version (walls with painted windows,
+// no separate window geometry).
 import * as THREE from '../vendor/three.module.min.js';
 import { rng } from './textures.js';
 
@@ -182,19 +187,22 @@ function facadeMaterial(atlas) {
 
 class Batch {
   constructor(facade) { this.p = []; this.n = []; this.c = []; this.u = []; this.s = []; this.facade = facade; }
-  quad(a, b, c, d, nrm, col, uv, sty) {
-    // a,b,c,d counter-clockwise seen from the normal side
-    for (const [P, U, C] of [[a, uv[0], col[0]], [b, uv[1], col[1]], [c, uv[2], col[2]], [a, uv[0], col[0]], [c, uv[2], col[2]], [d, uv[3], col[3]]]) {
+  // one triangle, wound so it faces along nrm
+  tri3(a, b, c, nrm, ca, cb, cc, ua, ub, uc, sty) {
+    const e1x = b[0] - a[0], e1y = b[1] - a[1], e1z = b[2] - a[2], e2x = c[0] - a[0], e2y = c[1] - a[1], e2z = c[2] - a[2];
+    const d = (e1y * e2z - e1z * e2y) * nrm[0] + (e1z * e2x - e1x * e2z) * nrm[1] + (e1x * e2y - e1y * e2x) * nrm[2];
+    const V = d >= 0 ? [[a, ca, ua], [b, cb, ub], [c, cc, uc]] : [[a, ca, ua], [c, cc, uc], [b, cb, ub]];
+    for (const [P, C, U] of V) {
       this.p.push(P[0], P[1], P[2]); this.n.push(nrm[0], nrm[1], nrm[2]); this.c.push(C.r, C.g, C.b); this.u.push(U[0], U[1]);
       if (this.facade) this.s.push(sty);
     }
   }
-  tri(a, b, c, nrm, col, uv, sty) {
-    for (const [P, U] of [[a, uv[0]], [b, uv[1]], [c, uv[2]]]) {
-      this.p.push(P[0], P[1], P[2]); this.n.push(nrm[0], nrm[1], nrm[2]); this.c.push(col.r, col.g, col.b); this.u.push(U[0], U[1]);
-      if (this.facade) this.s.push(sty);
-    }
+  // a planar quad a-b-c-d (either winding), facing along nrm
+  quad(a, b, c, d, nrm, col, uv, sty) {
+    this.tri3(a, b, c, nrm, col[0], col[1], col[2], uv[0], uv[1], uv[2], sty);
+    this.tri3(a, c, d, nrm, col[0], col[2], col[3], uv[0], uv[2], uv[3], sty);
   }
+  tri(a, b, c, nrm, col, uv, sty) { this.tri3(a, b, c, nrm, col, col, col, uv[0], uv[1], uv[2], sty); }
   mesh(mat, shadow = true) {
     if (!this.p.length) return null;
     const g = new THREE.BufferGeometry();
@@ -211,6 +219,90 @@ class Batch {
   }
 }
 
+// ---------------------------------------------------------------------------
+// 2D helpers: rings are arrays of [x, z]
+export function insideRings(rings, x, z) {
+  let c = false;
+  for (const r of rings) {
+    for (let i = 0, j = r.length - 1; i < r.length; j = i++) {
+      const xi = r[i][0], zi = r[i][1], xj = r[j][0], zj = r[j][1];
+      if ((zi > z) !== (zj > z) && x < (xj - xi) * (z - zi) / (zj - zi) + xi) c = !c;
+    }
+  }
+  return c;
+}
+const ringsOf = (b) => [b.p, ...(b.h || [])].map(f => { const a = []; for (let i = 0; i < f.length; i += 2) a.push([f[i], f[i + 1]]); return a; });
+
+// Split a convex polygon by the line A x + B z + C = 0.
+function splitPoly(poly, L) {
+  const s = poly.map(p => { const v = L[0] * p[0] + L[1] * p[1] + L[2]; return Math.abs(v) < 1e-7 ? 0 : v; });
+  if (s.every(v => v >= 0) || s.every(v => v <= 0)) return [poly];
+  const pos = [], neg = [];
+  for (let i = 0; i < poly.length; i++) {
+    const j = (i + 1) % poly.length, P = poly[i], Q = poly[j], si = s[i], sj = s[j];
+    if (si >= 0) pos.push(P);
+    if (si <= 0) neg.push(P);
+    if ((si > 0 && sj < 0) || (si < 0 && sj > 0)) {
+      const t = si / (si - sj), X = [P[0] + (Q[0] - P[0]) * t, P[1] + (Q[1] - P[1]) * t];
+      pos.push(X); neg.push(X);
+    }
+  }
+  return [pos, neg].filter(p => p.length >= 3);
+}
+// triangles (convex pieces) over which the roof height field is planar
+function planarPieces(tris, lines) {
+  let cur = tris;
+  for (const L of lines) { const nx = []; for (const p of cur) for (const q of splitPoly(p, L)) nx.push(q); cur = nx; }
+  const out = [];
+  for (const p of cur) for (let k = 1; k < p.length - 1; k++) {
+    const a = p[0], b = p[k], c = p[k + 1];
+    if (Math.abs((b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])) > 1e-6) out.push([a, b, c]);
+  }
+  return out;
+}
+function triangulate(rings) {
+  const contour = rings[0].map(([x, z]) => new THREE.Vector2(x, z));
+  const holes = rings.slice(1).map(r => r.map(([x, z]) => new THREE.Vector2(x, z)));
+  const all = [...rings[0], ...rings.slice(1).flat()];
+  return THREE.ShapeUtils.triangulateShape(contour, holes).map(([a, b, c]) => [all[a], all[b], all[c]]);
+}
+// where along a segment (0..1) the planar pieces change
+function breaks(ax, az, bx, bz, lines) {
+  const ts = [0, 1];
+  for (const L of lines) {
+    const sa = L[0] * ax + L[1] * az + L[2], sb = L[0] * bx + L[1] * bz + L[2];
+    if ((sa > 1e-6 && sb < -1e-6) || (sa < -1e-6 && sb > 1e-6)) ts.push(sa / (sa - sb));
+  }
+  return ts.sort((a, b) => a - b).filter((t, i, a) => i === 0 || t - a[i - 1] > 1e-4);
+}
+
+// The roof as a height field over the footprint, in the frame from tools/build_map.py:
+// centre (cx, cz), ridge direction u, half length hl along it and half width hw across.
+// Returns the height function and the lines where it changes from one plane to another.
+function roofField(b) {
+  const top = b.t;
+  if (!b.r) return { f: () => top, lines: [], rise: 0 };
+  const [cx, cz, ux, uz, hl, hw] = b.rf, rise = b.rh;
+  const vx = -uz, vz = ux;
+  const U = (x, z) => (x - cx) * ux + (z - cz) * uz, V = (x, z) => (x - cx) * vx + (z - cz) * vz;
+  let f, fl;
+  if (b.r === 'g') {
+    f = (x, z) => top + rise * (1 - Math.abs(V(x, z)) / hw);
+    fl = [[0, 1, 0]];
+  } else if (b.r === 'p') {
+    f = (x, z) => top + rise * Math.min(1 - Math.abs(V(x, z)) / hw, 1 - Math.abs(U(x, z)) / hl);
+    fl = [[0, 1, 0], [1, 0, 0], [-hw, hl, 0], [hw, hl, 0]];
+  } else {
+    const k = rise / hw, d = hw - hl;
+    f = (x, z) => top + k * Math.min(hw - Math.abs(V(x, z)), hl - Math.abs(U(x, z)));
+    fl = [[0, 1, 0], [1, 0, 0], [1, -1, d], [-1, -1, d], [1, 1, d], [-1, 1, d]];
+  }
+  // frame lines a u + b v + c = 0 -> world A x + B z + C = 0
+  const lines = fl.map(([a, bb, c]) => { const A = a * ux + bb * vx, B = a * uz + bb * vz; return [A, B, c - A * cx - B * cz]; });
+  return { f, lines, rise, ux, uz, hl, hw, cx, cz };
+}
+
+// ---------------------------------------------------------------------------
 export function buildBuildings(scene, map, terrain, polys, T, opts) {
   const facadeTex = facadeAtlas(T);
   const winTex = windowAtlas();
@@ -222,290 +314,305 @@ export function buildBuildings(scene, map, terrain, polys, T, opts) {
     if (!tiles.has(k)) {
       const wall = new Batch(true), far = new Batch(true);
       // roof (and street) geometry goes into both levels of detail
-      const both = { quad: (...a) => { wall.quad(...a); far.quad(...a); }, tri: (...a) => { wall.tri(...a); far.tri(...a); } };
+      const both = { quad: (...a) => { wall.quad(...a); far.quad(...a); }, tri: (...a) => { wall.tri(...a); far.tri(...a); }, tri3: (...a) => { wall.tri3(...a); far.tri3(...a); } };
       tiles.set(k, { cx: (Math.floor(x / TILE) + 0.5) * TILE, cz: (Math.floor(z / TILE) + 0.5) * TILE, wall, far, win: new Batch(false), roof: both });
     }
     return tiles.get(k);
   };
   const col = new THREE.Color(), white = new THREE.Color(1, 1, 1);
   const shade = (c, k) => new THREE.Color(c.r * k, c.g * k, c.b * k);
+  const W4 = [white, white, white, white];
+  const wu = cellUV(WIN.white, 0.5, 0.5), WU4 = [wu, wu, wu, wu];
+  const winUV = (kind) => [cellUV(kind, 0, 0), cellUV(kind, 1, 0), cellUV(kind, 1, 1), cellUV(kind, 0, 1)];
   const DOORCOLS = ['#2b2f33', '#7a2e28', '#2f4a35', '#3b5a78', '#f2f1ec', '#5b3a29'];
   const named = [];
+  const popcount = m => ((m & 1) + ((m >> 1) & 1) + ((m >> 2) & 1) + ((m >> 3) & 1) + ((m >> 4) & 1));
+  const ROOF_LIFT = 0.15;       // roof thickness above the soffit
 
   for (const b of map.buildings) {
-    const pts = b.p, n = pts.length / 2;
+    const rings = ringsOf(b);
+    const outer = rings[0], n = outer.length;
     if (n < 3) continue;
-    const T0 = tileOf(pts[0], pts[1]);
-    const R = rng(Math.floor(Math.abs(pts[0] * 131 + pts[1] * 71)) + n);
-    let area2 = 0;
-    for (let i = 0; i < n; i++) { const j = (i + 1) % n; area2 += pts[i * 2] * pts[j * 2 + 1] - pts[j * 2] * pts[i * 2 + 1]; }
-    const sgn = area2 > 0 ? 1 : -1;
+    const T0 = tileOf(outer[0][0], outer[0][1]);
+    const R = rng(Math.floor(Math.abs(outer[0][0] * 131 + outer[0][1] * 71)) + n);
     col.set(b.c);
-    const top = b.t, base = b.b;
+    const top = b.t, base = b.b, el = !!b.el;
     const style = b.s || 'w';
-    const sty = STYLE[style] ?? 0;
-    const farSty = style === 'p' || style === 'b' ? STYLE.pfar : STYLE.wfar;
-    const wood = style === 'w' || style === 'y';
+    const church = b.k === 'church';
+    const sty = church ? STYLE.p : (STYLE[style] ?? 0);
+    const farSty = style === 'p' || style === 'b' || church ? STYLE.pfar : STYLE.wfar;
+    const wood = (style === 'w' || style === 'y') && !church;
     const winKind = style === 'y' ? WIN.sixpane : style === 'p' || style === 'b' ? (R() < 0.5 ? WIN.modern : WIN.sixpane) : (R() < 0.75 ? WIN.classic : WIN.sixpane);
     const winW = style === 'y' ? 0.7 : style === 'p' || style === 'b' ? 1.1 : 0.95;
     const winH = style === 'y' ? 1.0 : style === 'p' || style === 'b' ? 1.55 : 1.3;
     const doorCol = new THREE.Color(DOORCOLS[Math.floor(R() * DOORCOLS.length)]);
-    const church = b.k === 'church';
-    const masks = b.e || [];
+    const roof = roofField(b);
+    const pitched = !!b.r;
+    const F = roof.f;
+    // the wall reaches the roof line (the top of the roof slab on pitched roofs)
+    const wallTop = (x, z) => pitched ? F(x, z) + ROOF_LIFT : top;
     const door = b.d;
-    const corners = [];
-    for (let i = 0; i < n; i++) {
-      const j = (i + 1) % n;
-      const ax = pts[i * 2], az = pts[i * 2 + 1], bx = pts[j * 2], bz = pts[j * 2 + 1];
-      const L = Math.hypot(bx - ax, bz - az);
-      if (L < 0.05) continue;
-      const dx = (bx - ax) / L, dz = (bz - az) / L;
-      const nx = dz * sgn, nz = -dx * sgn;            // outward
-      const N = [nx, 0, nz];
-      const m = masks[i] ?? 31;
-      // the ground along this wall
-      const gs = [];
-      for (let k = 0; k <= 4; k++) gs.push(terrain.height(ax + (bx - ax) * k / 4 + nx * 0.3, az + (bz - az) * k / 4 + nz * 0.3));
-      const gMin = Math.min(...gs);
-      const plinth = Math.min(top - 1, Math.max(base + 0.1, gMin + (wood ? 0.45 : 0.2)));
-      const P = (t, y) => [ax + (bx - ax) * t, y, az + (bz - az) * t];
-      const ccw = (a2, b2, c2, d2) => {        // order so the quad faces N
-        const e1 = [b2[0] - a2[0], b2[1] - a2[1], b2[2] - a2[2]], e2 = [c2[0] - a2[0], c2[1] - a2[1], c2[2] - a2[2]];
-        const cx = e1[1] * e2[2] - e1[2] * e2[1], cz = e1[0] * e2[1] - e1[1] * e2[0];
-        return cx * nx + cz * nz >= 0 ? [a2, b2, c2, d2] : [a2, d2, c2, b2];
-      };
-      const wallQuad = (batch, y0, y1, styl, c0, c1) => {
-        const A = P(0, y0), B = P(1, y0), C2 = P(1, y1), D = P(0, y1);
-        const uA = [0, y0], uB = [L, y0], uC = [L, y1], uD = [0, y1];
-        // (B - A) x (D - A) = L h (-dz, 0, dx): pick the winding that faces outwards
-        if (-dz * nx + dx * nz >= 0) batch.quad(A, B, C2, D, N, [c0, c0, c1, c1], [uA, uB, uC, uD], styl);
-        else batch.quad(A, D, C2, B, N, [c0, c1, c1, c0], [uA, uD, uC, uB], styl);
-      };
-      // walls: stone plinth below, cladding above; darker towards the ground (ambient occlusion)
-      wallQuad(T0.wall, base, plinth, STYLE.stone, shade(white, 0.5), shade(white, 0.85));
-      wallQuad(T0.wall, plinth, top, church ? STYLE.p : sty, shade(col, 0.78), col);
-      wallQuad(T0.far, base, top, church ? STYLE.p : farSty, shade(col, 0.7), col);
-      if (wood && !church && m !== 0) corners.push(i);
-      if (m === 0 || b.plain && !door) continue;
-      // windows: storeys counted down from the eaves
-      const bays = L < 1.3 ? 0 : Math.max(1, Math.floor((L - 0.5) / (style === 'p' || style === 'b' ? 2.6 : 2.3)));
-      const doorHere = door && door[0] === i;
-      const doorT = doorHere ? door[1] : -1;
-      const doorG = doorHere ? terrain.height(ax + (bx - ax) * doorT + nx * 0.8, az + (bz - az) * doorT + nz * 0.8) : 0;
-      for (let k = 0; k < bays; k++) {
-        const t = (k + 0.5) / bays;
-        const bit = Math.min(4, Math.floor(t * 5));
-        if (!(m & (1 << bit))) continue;
-        const gHere = terrain.height(ax + (bx - ax) * t + nx * 0.4, az + (bz - az) * t + nz * 0.4);
-        const half = winW / 2 / L;
-        for (let f = 0; f < 8; f++) {
-          const yTop = top - f * STOREY - 0.55;
-          const y0 = yTop - winH;
-          if (y0 < Math.max(gHere, plinth) + 0.45) break;
-          // the door takes the bay it stands in
-          if (doorHere && Math.abs(t - doorT) * L < 1.1 && y0 < doorG + 2.4) continue;
-          const shop = b.shop && f > 0 && y0 - STOREY < Math.max(gHere, plinth) + 0.45;
-          const kind = church ? WIN.church : winKind;
-          const ww = church ? 1.2 : winW, wh = church ? 2.6 : winH;
-          const t0 = t - ww / 2 / L, t1 = t + ww / 2 / L;
-          if (t0 < 0.02 || t1 > 0.98) continue;
-          const o = 0.05;
-          const q = (tt, y) => { const p = P(tt, y); return [p[0] + nx * o, p[1], p[2] + nz * o]; };
-          const [A, B, C2, D] = [q(t0, yTop - wh), q(t1, yTop - wh), q(t1, yTop), q(t0, yTop)];
-          const uv = [cellUV(kind, 0, 0), cellUV(kind, 1, 0), cellUV(kind, 1, 1), cellUV(kind, 0, 1)];
-          const ord = ccw(A, B, C2, D);
-          const uvo = ord[1] === B ? uv : [uv[0], uv[3], uv[2], uv[1]];
-          T0.win.quad(ord[0], ord[1], ord[2], ord[3], N, [white, white, white, white], uvo, 0);
-          // sill
-          const s0 = q(t0 - 0.06 / L, yTop - wh - 0.06), s1 = q(t1 + 0.06 / L, yTop - wh - 0.06);
-          const s2 = [s1[0] + nx * 0.1, s1[1], s1[2] + nz * 0.1], s3 = [s0[0] + nx * 0.1, s0[1], s0[2] + nz * 0.1];
-          const wu = cellUV(WIN.white, 0.5, 0.5);
-          T0.win.quad(s0, s3, s2, s1, [0, 1, 0], [white, white, white, white], [wu, wu, wu, wu], 0);
-          if (shop) {
-            // a shopfront under this window
-            const sy1 = Math.max(gHere, plinth) + 2.6, sy0 = Math.max(gHere, plinth) + 0.15;
-            const st0 = t - 1.0 / L, st1 = t + 1.0 / L;
-            if (st0 > 0.02 && st1 < 0.98) {
-              const [a3, b3, c3, d3] = [q(st0, sy0), q(st1, sy0), q(st1, sy1), q(st0, sy1)];
-              const u3 = [cellUV(WIN.shop, 0, 0), cellUV(WIN.shop, 1, 0), cellUV(WIN.shop, 1, 1), cellUV(WIN.shop, 0, 1)];
-              const o3 = ccw(a3, b3, c3, d3);
-              T0.win.quad(o3[0], o3[1], o3[2], o3[3], N, [white, white, white, white], o3[1] === b3 ? u3 : [u3[0], u3[3], u3[2], u3[1]], 0);
+    const ringNormals = [];     // per ring: per edge outward normal [nx, nz]
+
+    // ---------------------------------------------------------------- walls
+    rings.forEach((ring, ri) => {
+      const masks = ri === 0 ? (b.e || []) : ((b.he || [])[ri - 1] || []);
+      const nrms = [];
+      ringNormals.push(nrms);
+      for (let i = 0; i < ring.length; i++) {
+        const [ax, az] = ring[i], [bx, bz] = ring[(i + 1) % ring.length];
+        const L = Math.hypot(bx - ax, bz - az);
+        if (L < 0.05) { nrms.push(null); continue; }
+        const dx = (bx - ax) / L, dz = (bz - az) / L;
+        let nx = dz, nz = -dx;
+        if (insideRings(rings, (ax + bx) / 2 + nx * 0.05, (az + bz) / 2 + nz * 0.05)) { nx = -nx; nz = -nz; }
+        nrms.push([nx, nz]);
+        const N = [nx, 0, nz];
+        const m = masks[i] ?? 31;
+        const P = (t, y) => [ax + (bx - ax) * t, y, az + (bz - az) * t];
+        // the ground along this wall
+        let gMin = Infinity;
+        for (let k = 0; k <= 4; k++) gMin = Math.min(gMin, terrain.height(ax + (bx - ax) * k / 4 + nx * 0.3, az + (bz - az) * k / 4 + nz * 0.3));
+        const plinth = el ? base : Math.min(top - 1, Math.max(base + 0.1, gMin + (wood ? 0.45 : 0.2)));
+        const ts = breaks(ax, az, bx, bz, roof.lines);
+        for (let s = 0; s < ts.length - 1; s++) {
+          const ta = ts[s], tb = ts[s + 1];
+          const ya = wallTop(ax + (bx - ax) * ta, az + (bz - az) * ta), yb = wallTop(ax + (bx - ax) * tb, az + (bz - az) * tb);
+          const uvq = (y0a, y0b, y1a, y1b) => [[L * ta, y0a], [L * tb, y0b], [L * tb, y1b], [L * ta, y1a]];
+          // stone plinth below, cladding above, darker towards the ground (ambient occlusion)
+          if (!el) T0.wall.quad(P(ta, base), P(tb, base), P(tb, plinth), P(ta, plinth), N, [shade(white, 0.5), shade(white, 0.5), shade(white, 0.85), shade(white, 0.85)], uvq(base, base, plinth, plinth), STYLE.stone);
+          const c0 = shade(col, el ? 0.6 : 0.78);
+          T0.wall.quad(P(ta, plinth), P(tb, plinth), P(tb, yb), P(ta, ya), N, [c0, c0, col, col], uvq(plinth, plinth, ya, yb), sty);
+          T0.far.quad(P(ta, base), P(tb, base), P(tb, yb), P(ta, ya), N, [shade(col, 0.7), shade(col, 0.7), col, col], uvq(base, base, ya, yb), farSty);
+        }
+        if (ri === 0 && wood && m !== 0) {
+          // corner board at the start of this edge (both faces of the corner are done from each side)
+          const g0 = Math.max(plinth - 0.25, base);
+          const y1 = wallTop(ax, az);
+          const ux = dx * 0.14, uz = dz * 0.14, e = 0.02;
+          const A = [ax + nx * e, g0, az + nz * e], B = [ax + ux + nx * e, g0, az + uz + nz * e];
+          T0.win.quad(A, B, [B[0], y1 - 0.05, B[2]], [A[0], y1 - 0.05, A[2]], N, W4, WU4, 0);
+          const y2 = wallTop(bx, bz);
+          const C = [bx + nx * e, g0, bz + nz * e], D = [bx - ux + nx * e, g0, bz - uz + nz * e];
+          T0.win.quad(C, D, [D[0], y2 - 0.05, D[2]], [C[0], y2 - 0.05, C[2]], N, W4, WU4, 0);
+        }
+        if (m === 0 || (b.plain && !(ri === 0 && door))) continue;
+        // windows: storeys counted down from the eaves
+        const doorHere = ri === 0 && door && door[0] === i;
+        const doorT = doorHere ? door[1] : -1;
+        const doorG = doorHere ? terrain.height(ax + (bx - ax) * doorT + nx * 0.8, az + (bz - az) * doorT + nz * 0.8) : 0;
+        const bays = L < 1.3 ? 0 : Math.max(1, Math.floor((L - 0.5) / (style === 'p' || style === 'b' ? 2.6 : 2.3)));
+        const o = 0.05;
+        const q = (tt, y, off = o) => { const p = P(tt, y); return [p[0] + nx * off, p[1], p[2] + nz * off]; };
+        for (let k = 0; k < bays; k++) {
+          const t = (k + 0.5) / bays;
+          const bit = Math.min(4, Math.floor(t * 5));
+          if (!(m & (1 << bit))) continue;
+          const gHere = terrain.height(ax + (bx - ax) * t + nx * 0.4, az + (bz - az) * t + nz * 0.4);
+          const floor0 = el ? base : Math.max(gHere, plinth);
+          for (let f = 0; f < 12; f++) {
+            const yTop = top - f * STOREY - 0.55;
+            const ww = church ? 1.2 : winW, wh = church ? 2.6 : winH;
+            const y0 = yTop - wh;
+            if (y0 < floor0 + 0.45) break;
+            // the door takes the bay it stands in
+            if (doorHere && Math.abs(t - doorT) * L < 1.1 && y0 < doorG + 2.4) continue;
+            const shop = b.shop && f > 0 && y0 - STOREY < floor0 + 0.45;
+            const kind = church ? WIN.church : winKind;
+            const t0 = t - ww / 2 / L, t1 = t + ww / 2 / L;
+            if (t0 < 0.02 || t1 > 0.98) continue;
+            T0.win.quad(q(t0, y0), q(t1, y0), q(t1, yTop), q(t0, yTop), N, W4, winUV(kind), 0);
+            // sill
+            const s0 = q(t0 - 0.06 / L, y0 - 0.06), s1 = q(t1 + 0.06 / L, y0 - 0.06);
+            T0.win.quad(s0, s1, [s1[0] + nx * 0.1, s1[1], s1[2] + nz * 0.1], [s0[0] + nx * 0.1, s0[1], s0[2] + nz * 0.1], [0, 1, 0], W4, WU4, 0);
+            if (shop) {
+              // a shopfront under this window
+              const sy1 = floor0 + 2.6, sy0 = floor0 + 0.15;
+              const st0 = t - 1.0 / L, st1 = t + 1.0 / L;
+              if (st0 > 0.02 && st1 < 0.98) T0.win.quad(q(st0, sy0), q(st1, sy0), q(st1, sy1), q(st0, sy1), N, W4, winUV(WIN.shop), 0);
             }
           }
         }
-      }
-      if (doorHere) {
-        const dw = (b.plain ? 2.4 : 1.0) / L, kind = b.plain ? WIN.garage : (b.shop ? WIN.glassdoor : WIN.door);
-        const t0 = doorT - dw / 2, t1 = doorT + dw / 2;
-        const o = 0.06;
-        const q = (tt, y) => { const p = P(tt, y); return [p[0] + nx * o, p[1], p[2] + nz * o]; };
-        const y0 = doorG - 0.05, y1 = doorG + (b.plain ? 2.3 : 2.2);
-        const [A, B, C2, D] = [q(t0, y0), q(t1, y0), q(t1, y1), q(t0, y1)];
-        const uv = [cellUV(kind, 0, 0), cellUV(kind, 1, 0), cellUV(kind, 1, 1), cellUV(kind, 0, 1)];
-        const ord = ccw(A, B, C2, D);
-        const dc = kind === WIN.door ? doorCol : white;
-        T0.win.quad(ord[0], ord[1], ord[2], ord[3], N, [dc, dc, dc, dc], ord[1] === B ? uv : [uv[0], uv[3], uv[2], uv[1]], 0);
-        // white casing around the door
-        const wu = cellUV(WIN.white, 0.5, 0.5);
-        for (const [ta, tb, ya, yb] of [[t0 - 0.1 / L, t0, y0, y1 + 0.1], [t1, t1 + 0.1 / L, y0, y1 + 0.1], [t0 - 0.1 / L, t1 + 0.1 / L, y1, y1 + 0.12]]) {
-          const [a3, b3, c3, d3] = [q(ta, ya), q(tb, ya), q(tb, yb), q(ta, yb)].map(p => [p[0] + nx * 0.01, p[1], p[2] + nz * 0.01]);
-          const o3 = ccw(a3, b3, c3, d3);
-          T0.win.quad(o3[0], o3[1], o3[2], o3[3], N, [white, white, white, white], [wu, wu, wu, wu], 0);
+        // a window in the gable
+        if (pitched && !church && popcount(m) >= 4 && L > 3.5) {
+          let tm = -1, fm = -Infinity;
+          for (const t of ts) { const v = F(ax + (bx - ax) * t, az + (bz - az) * t); if (v > fm) { fm = v; tm = t; } }
+          const hwin = 0.38 / L;
+          if (fm - top > 2.2 && tm - hwin > 0.1 && tm + hwin < 0.9) {
+            const wy0 = top + 0.45;
+            const wy1 = Math.min(top + 1.5, Math.min(F(...P(tm - hwin, 0).filter((_, k) => k !== 1)), F(...P(tm + hwin, 0).filter((_, k) => k !== 1))) - 0.4);
+            if (wy1 - wy0 > 0.6) T0.win.quad(q(tm - hwin, wy0), q(tm + hwin, wy0), q(tm + hwin, wy1), q(tm - hwin, wy1), N, W4, winUV(WIN.attic), 0);
+          }
+        }
+        if (doorHere) {
+          const dw = (b.plain ? 2.4 : 1.0) / L, kind = b.plain ? WIN.garage : (b.shop ? WIN.glassdoor : WIN.door);
+          const t0 = doorT - dw / 2, t1 = doorT + dw / 2;
+          const y0 = doorG - 0.05, y1 = doorG + (b.plain ? 2.3 : 2.2);
+          const dc = kind === WIN.door ? doorCol : white;
+          T0.win.quad(q(t0, y0, 0.06), q(t1, y0, 0.06), q(t1, y1, 0.06), q(t0, y1, 0.06), N, [dc, dc, dc, dc], winUV(kind), 0);
+          // white casing around the door
+          for (const [ta, tb, ya, yb] of [[t0 - 0.1 / L, t0, y0, y1 + 0.1], [t1, t1 + 0.1 / L, y0, y1 + 0.1], [t0 - 0.1 / L, t1 + 0.1 / L, y1, y1 + 0.12]])
+            T0.win.quad(q(ta, ya, 0.07), q(tb, ya, 0.07), q(tb, yb, 0.07), q(ta, yb, 0.07), N, W4, WU4, 0);
         }
       }
-    }
-    // corner boards on wooden houses
-    if (wood) {
-      const wu = cellUV(WIN.white, 0.5, 0.5);
-      for (const i of corners) {
-        const x = pts[i * 2], z = pts[i * 2 + 1];
-        const g0 = terrain.height(x, z) + 0.2;
-        const pv = (i - 1 + n) % n, nx2 = (i + 1) % n;
-        for (const o of [pv, nx2]) {
-          const ox = pts[o * 2] - x, oz = pts[o * 2 + 1] - z, l = Math.hypot(ox, oz) || 1;
-          if (l < 0.5) continue;
-          const ux = ox / l * 0.14, uz = oz / l * 0.14;
-          // outward normal of that wall
-          let nx = uz / 0.14 * sgn, nz = -ux / 0.14 * sgn;
-          if (o === pv) { nx = -nx; nz = -nz; }
-          const e = 0.02;
-          const A = [x + nx * e, Math.max(base, g0 - 0.3), z + nz * e], B = [x + ux + nx * e, A[1], z + uz + nz * e];
-          const C2 = [B[0], top, B[2]], D = [A[0], top, A[2]];
-          const e1 = [B[0] - A[0], B[1] - A[1], B[2] - A[2]], e2 = [D[0] - A[0], D[1] - A[1], D[2] - A[2]];
-          const crx = e1[1] * e2[2] - e1[2] * e2[1], crz = e1[0] * e2[1] - e1[1] * e2[0];
-          if (crx * nx + crz * nz >= 0) T0.win.quad(A, B, C2, D, [nx, 0, nz], [white, white, white, white], [wu, wu, wu, wu], 0);
-          else T0.win.quad(A, D, C2, B, [nx, 0, nz], [white, white, white, white], [wu, wu, wu, wu], 0);
-        }
-      }
-    }
-    // roof
+    });
+
+    // ---------------------------------------------------------------- roof
     const rc = new THREE.Color(b.rc);
-    if (b.g) {
-      const g = b.g;
-      const c = [[g[0], g[1]], [g[2], g[3]], [g[4], g[5]], [g[6], g[7]]];
-      const l01 = Math.hypot(c[1][0] - c[0][0], c[1][1] - c[0][1]), l12 = Math.hypot(c[2][0] - c[1][0], c[2][1] - c[1][1]);
-      const [p0, p1, p2, p3] = l01 >= l12 ? c : [c[1], c[2], c[3], c[0]];
-      const short = Math.min(l01, l12), lenR = Math.max(l01, l12);
-      const rise = b.k === 'bryggen' ? Math.min(7.5, short / 2 * Math.tan(0.95)) : Math.min(5.5, short / 2 * Math.tan(0.66));
-      const m03 = [(p0[0] + p3[0]) / 2, (p0[1] + p3[1]) / 2], m12 = [(p1[0] + p2[0]) / 2, (p1[1] + p2[1]) / 2];
-      const ov = 0.4;
-      const ex = (p, q) => { const dx = p[0] - q[0], dz = p[1] - q[1], l = Math.hypot(dx, dz) || 1; return [p[0] + dx / l * ov, p[1] + dz / l * ov]; };
-      // eaves overhang along the slope and a little past the gables
-      const along = [(p1[0] - p0[0]) / lenR * 0.3, (p1[1] - p0[1]) / lenR * 0.3];
-      const e0 = ex(p0, p3), e1 = ex(p1, p2), e2 = ex(p2, p1), e3 = ex(p3, p0);
-      const E0 = [e0[0] - along[0], top - 0.3, e0[1] - along[1]], E1 = [e1[0] + along[0], top - 0.3, e1[1] + along[1]];
-      const E2 = [e2[0] + along[0], top - 0.3, e2[1] + along[1]], E3 = [e3[0] - along[0], top - 0.3, e3[1] - along[1]];
-      const R0 = [m03[0] - along[0], top + rise, m03[1] - along[1]], R1 = [m12[0] + along[0], top + rise, m12[1] + along[1]];
-      const nrm = (a, b2, c2) => {
-        const v1 = new THREE.Vector3(b2[0] - a[0], b2[1] - a[1], b2[2] - a[2]), v2 = new THREE.Vector3(c2[0] - a[0], c2[1] - a[1], c2[2] - a[2]);
-        const v = v1.cross(v2).normalize(); if (v.y < 0) v.negate(); return [v.x, v.y, v.z];
-      };
-      const slope = Math.hypot(short / 2 + ov, rise);
-      for (const [A, B, C2, D] of [[E0, E1, R1, R0], [E3, E2, R1, R0]]) {
-        const N = nrm(A, B, C2);
-        const e1v = [B[0] - A[0], B[1] - A[1], B[2] - A[2]], e2v = [C2[0] - A[0], C2[1] - A[1], C2[2] - A[2]];
-        const cy = e1v[2] * e2v[0] - e1v[0] * e2v[2];
-        const uv = [[0, 0], [lenR, 0], [lenR, slope], [0, slope]];
-        const cA = shade(rc, 0.8);
-        if (cy >= 0) T0.roof.quad(A, B, C2, D, N, [cA, cA, rc, rc], uv, STYLE.roof);
-        else T0.roof.quad(A, D, C2, B, N, [cA, rc, rc, cA], [uv[0], uv[3], uv[2], uv[1]], STYLE.roof);
-        // white fascia board along the eave
-        const wu = cellUV(WIN.white, 0.5, 0.5);
-        const F0 = [A[0], A[1] - 0.22, A[2]], F1 = [B[0], B[1] - 0.22, B[2]];
-        const outN = [N[0], 0, N[2]];
-        T0.win.quad(F0, F1, B, A, outN, [white, white, white, white], [wu, wu, wu, wu], 0);
-        T0.win.quad(F0, A, B, F1, outN, [white, white, white, white], [wu, wu, wu, wu], 0);
+    if (pitched) {
+      // eaves overhang on the free edges; none against a neighbour
+      const nrms = ringNormals[0], masks = b.e || [];
+      const off = outer.map((_, i) => (nrms[i] && popcount(masks[i] ?? 31) >= 4 ? 0.35 : 0));
+      const exp = outer.map((p, i) => {
+        const ip = (i - 1 + n) % n;
+        const n0 = nrms[ip] || nrms[i] || [0, 0], n1 = nrms[i] || n0, o0 = off[ip], o1 = off[i];
+        if (!o0 && !o1) return [p[0], p[1]];
+        // intersect the two offset edge lines
+        const d0 = [outer[i][0] - outer[ip][0], outer[i][1] - outer[ip][1]], d1 = [outer[(i + 1) % n][0] - p[0], outer[(i + 1) % n][1] - p[1]];
+        const P0 = [p[0] + n0[0] * o0, p[1] + n0[1] * o0], P1 = [p[0] + n1[0] * o1, p[1] + n1[1] * o1];
+        const den = d0[0] * d1[1] - d0[1] * d1[0];
+        let x, z;
+        if (!(Math.abs(den) > 0.05 * Math.hypot(...d0) * Math.hypot(...d1))) { x = (P0[0] + P1[0]) / 2; z = (P0[1] + P1[1]) / 2; }
+        else { const s = ((P1[0] - P0[0]) * d1[1] - (P1[1] - P0[1]) * d1[0]) / den; x = P0[0] + d0[0] * s; z = P0[1] + d0[1] * s; }
+        if (!isFinite(x + z)) return [p[0], p[1]];
+        const dd = Math.hypot(x - p[0], z - p[1]);
+        if (dd > 1.0) { x = p[0] + (x - p[0]) / dd; z = p[1] + (z - p[1]) / dd; }
+        return [x, z];
+      });
+      const colAt = (y) => shade(rc, 0.78 + 0.22 * Math.max(0, Math.min(1, (y - top) / (roof.rise || 1))));
+      // roof surface over the expanded outline
+      for (const [a, c1, c2] of planarPieces(triangulate([exp]), roof.lines)) {
+        const A = [a[0], F(a[0], a[1]) + ROOF_LIFT, a[1]], B = [c1[0], F(c1[0], c1[1]) + ROOF_LIFT, c1[1]], C = [c2[0], F(c2[0], c2[1]) + ROOF_LIFT, c2[1]];
+        const nv = new THREE.Vector3(B[0] - A[0], B[1] - A[1], B[2] - A[2]).cross(new THREE.Vector3(C[0] - A[0], C[1] - A[1], C[2] - A[2])).normalize();
+        if (nv.y < 0) nv.negate();
+        // tiles run along the eaves: v goes down the slope
+        let ex = 1, ez = 0, sx = 0, sz = 1;
+        const hl = Math.hypot(nv.x, nv.z);
+        if (hl > 1e-3) { sx = nv.x / hl; sz = nv.z / hl; ex = -sz; ez = sx; }
+        const uvp = (P) => [P[0] * ex + P[2] * ez, (P[0] * sx + P[2] * sz) / Math.max(0.3, nv.y)];
+        T0.roof.tri3(A, B, C, [nv.x, nv.y, nv.z], colAt(A[1]), colAt(B[1]), colAt(C[1]), uvp(A), uvp(B), uvp(C), STYLE.roof);
       }
-      // gable triangles in the wall material, with an attic window
-      const cxm = (p0[0] + p1[0] + p2[0] + p3[0]) / 4, czm = (p0[1] + p1[1] + p2[1] + p3[1]) / 4;
-      for (const [a, b2, mm] of [[p0, p3, m03], [p1, p2, m12]]) {
-        const A = [a[0], top, a[1]], B = [b2[0], top, b2[1]], M = [mm[0], top + rise, mm[1]];
-        const dx = b2[0] - a[0], dz = b2[1] - a[1], l = Math.hypot(dx, dz) || 1;
-        let nx = dz / l, nz = -dx / l;
-        if ((mm[0] - cxm) * nx + (mm[1] - czm) * nz < 0) { nx = -nx; nz = -nz; }
-        const ua = [0, top], ub = [l, top], um = [l / 2, top + rise];
-        const e1v = [B[0] - A[0], 0, B[2] - A[2]], e2v = [M[0] - A[0], M[1] - A[1], M[2] - A[2]];
-        const cr = (e1v[1] * e2v[2] - e1v[2] * e2v[1]) * nx + (e1v[0] * e2v[1] - e1v[1] * e2v[0]) * nz;
-        if (cr >= 0) T0.wall.tri(A, B, M, [nx, 0, nz], col, [ua, ub, um], sty); else T0.wall.tri(A, M, B, [nx, 0, nz], col, [ua, um, ub], sty);
-        if (cr >= 0) T0.far.tri(A, B, M, [nx, 0, nz], col, [ua, ub, um], sty); else T0.far.tri(A, M, B, [nx, 0, nz], col, [ua, um, ub], sty);
-        if (l > 4.5 && rise > 1.8 && !church) {
-          const wy0 = top + 0.35, wy1 = top + Math.min(1.25, rise * 0.55), hw = 0.38;
-          const o = 0.05, cxw = mm[0] + nx * o, czw = mm[1] + nz * o;
-          const ux = dx / l, uz = dz / l;
-          const A2 = [cxw - ux * hw, wy0, czw - uz * hw], B2 = [cxw + ux * hw, wy0, czw + uz * hw], C3 = [B2[0], wy1, B2[2]], D3 = [A2[0], wy1, A2[2]];
-          const uv = [cellUV(WIN.attic, 0, 0), cellUV(WIN.attic, 1, 0), cellUV(WIN.attic, 1, 1), cellUV(WIN.attic, 0, 1)];
-          const e3 = [B2[0] - A2[0], 0, B2[2] - A2[2]];
-          const crz = -e3[2] * (wy1 - wy0) * nx + e3[0] * (wy1 - wy0) * nz;
-          if (crz >= 0) T0.win.quad(A2, B2, C3, D3, [nx, 0, nz], [white, white, white, white], uv, 0);
-          else T0.win.quad(A2, D3, C3, B2, [nx, 0, nz], [white, white, white, white], [uv[0], uv[3], uv[2], uv[1]], 0);
-        }
-      }
-      // chimney on most wooden houses
-      if (wood && R() < 0.65 && lenR > 5) {
-        const t = 0.25 + R() * 0.5, cx = m03[0] + (m12[0] - m03[0]) * t, cz = m03[1] + (m12[1] - m03[1]) * t;
-        const s = 0.32, y0 = top + rise - 1.2, y1 = top + rise + 0.9;
-        const stone = shade(white, 0.75);
-        for (const [ox, oz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
-          const px = cx + ox * s, pz = cz + oz * s, tx = -oz * s, tz = ox * s;
-          const A = [px - tx, y0, pz - tz], B = [px + tx, y0, pz + tz], C2 = [px + tx, y1, pz + tz], D = [px - tx, y1, pz - tz];
-          const crz = -(B[2] - A[2]) * (y1 - y0) * ox + (B[0] - A[0]) * (y1 - y0) * oz;
-          const uv = [[0, y0], [2 * s, y0], [2 * s, y1], [0, y1]];
-          if (crz >= 0) T0.wall.quad(A, B, C2, D, [ox, 0, oz], [stone, stone, stone, stone], uv, STYLE.b);
-          else T0.wall.quad(A, D, C2, B, [ox, 0, oz], [stone, stone, stone, stone], [uv[0], uv[3], uv[2], uv[1]], STYLE.b);
-        }
-        const k = shade(white, 0.3);
-        T0.roof.quad([cx - s - 0.05, y1, cz - s - 0.05], [cx - s - 0.05, y1, cz + s + 0.05], [cx + s + 0.05, y1, cz + s + 0.05], [cx + s + 0.05, y1, cz - s - 0.05], [0, 1, 0], [k, k, k, k], [[0, 0], [0, 1], [1, 1], [1, 0]], STYLE.stone);
-      }
-      polys.add(Float32Array.from(pts), base, top, { roof: rise, kind: 'house' });
-    } else {
-      // flat roof with a parapet
-      const contour = [];
-      for (let i = 0; i < n; i++) contour.push(new THREE.Vector2(pts[i * 2], pts[i * 2 + 1]));
-      const tris = THREE.ShapeUtils.triangulateShape(contour, []);
-      const g = shade(rc, 1.0);
-      for (const [a, b2, c2] of tris) {
-        const A = [pts[a * 2], top + 0.02, pts[a * 2 + 1]], B = [pts[b2 * 2], top + 0.02, pts[b2 * 2 + 1]], Cc = [pts[c2 * 2], top + 0.02, pts[c2 * 2 + 1]];
-        const up = (B[2] - A[2]) * (Cc[0] - A[0]) - (B[0] - A[0]) * (Cc[2] - A[2]);
-        const tri = up > 0 ? [A, B, Cc] : [A, Cc, B];
-        T0.wall.tri(tri[0], tri[1], tri[2], [0, 1, 0], g, tri.map(p => [p[0], p[2]]), STYLE.gravel);
-        T0.far.tri(tri[0], tri[1], tri[2], [0, 1, 0], g, tri.map(p => [p[0], p[2]]), STYLE.gravel);
-      }
-      // parapet: the wall rises 0.6 m above the roof, with a cap
+      // soffits under the overhang and a white fascia board along its edge
+      const soffit = shade(white, 0.78);
       for (let i = 0; i < n; i++) {
+        if (!off[i]) continue;
         const j = (i + 1) % n;
-        const ax = pts[i * 2], az = pts[i * 2 + 1], bx = pts[j * 2], bz = pts[j * 2 + 1];
-        const L = Math.hypot(bx - ax, bz - az);
-        if (L < 0.05) continue;
-        const nx = (bz - az) / L * sgn, nz = -(bx - ax) / L * sgn;
-        const y0 = top, y1 = top + 0.6;
-        const A = [ax, y0, az], B = [bx, y0, bz], C2 = [bx, y1, bz], D = [ax, y1, az];
-        const crz = -(B[2] - A[2]) * (y1 - y0) * nx + (B[0] - A[0]) * (y1 - y0) * nz;
-        const uv = [[0, y0], [L, y0], [L, y1], [0, y1]];
-        for (const bt of [T0.wall, T0.far]) {
-          if (crz >= 0) bt.quad(A, B, C2, D, [nx, 0, nz], [col, col, col, col], uv, church ? STYLE.p : sty);
-          else bt.quad(A, D, C2, B, [nx, 0, nz], [col, col, col, col], [uv[0], uv[3], uv[2], uv[1]], church ? STYLE.p : sty);
+        for (const [a, c1, c2] of planarPieces([[outer[i], outer[j], exp[j]], [outer[i], exp[j], exp[i]]], roof.lines)) {
+          T0.roof.tri3([a[0], F(a[0], a[1]), a[1]], [c1[0], F(c1[0], c1[1]), c1[1]], [c2[0], F(c2[0], c2[1]), c2[1]], [0, -1, 0], soffit, soffit, soffit, [a[0], a[1]], [c1[0], c1[1]], [c2[0], c2[1]], STYLE.p);
         }
-        // inner face, a little darker
-        const k = shade(col, 0.7);
-        const Ai = [ax - nx * 0.25, y0, az - nz * 0.25], Bi = [bx - nx * 0.25, y0, bz - nz * 0.25];
-        const Ci = [Bi[0], y1, Bi[2]], Di = [Ai[0], y1, Ai[2]];
-        if (crz >= 0) T0.wall.quad(Ai, Di, Ci, Bi, [-nx, 0, -nz], [k, k, k, k], [uv[0], uv[3], uv[2], uv[1]], STYLE.p);
-        else T0.wall.quad(Ai, Bi, Ci, Di, [-nx, 0, -nz], [k, k, k, k], uv, STYLE.p);
-        const capc = shade(white, 0.72);
-        T0.wall.quad(D, C2, Ci, Di, [0, 1, 0], [capc, capc, capc, capc], [[0, 0], [L, 0], [L, 0.25], [0, 0.25]], STYLE.stone);
+        const [ax, az] = exp[i], [bx, bz] = exp[j], N = [nrms[i][0], 0, nrms[i][1]];
+        const ts = breaks(ax, az, bx, bz, roof.lines);
+        for (let s = 0; s < ts.length - 1; s++) {
+          const pa = [ax + (bx - ax) * ts[s], az + (bz - az) * ts[s]], pb = [ax + (bx - ax) * ts[s + 1], az + (bz - az) * ts[s + 1]];
+          const fa = F(pa[0], pa[1]), fb = F(pb[0], pb[1]);
+          T0.win.quad([pa[0], fa - 0.12, pa[1]], [pb[0], fb - 0.12, pb[1]], [pb[0], fb + ROOF_LIFT + 0.03, pb[1]], [pa[0], fa + ROOF_LIFT + 0.03, pa[1]], N, W4, WU4, 0);
+        }
       }
-      polys.add(Float32Array.from(pts), base, top, { roof: 0, kind: 'flat', walk: true });
+      // chimney on the ridge of most wooden houses
+      if (wood && R() < 0.65 && roof.hl > 2.5) {
+        const t = (R() - 0.5) * 1.2 * Math.max(0, roof.hl - 1.5);
+        const cx = roof.cx + roof.ux * t, cz = roof.cz + roof.uz * t;
+        if (insideRings(rings, cx, cz) && insideRings(rings, cx + 0.5, cz + 0.5) && insideRings(rings, cx - 0.5, cz - 0.5)) {
+          const s = 0.32, y0 = F(cx, cz) - 1.2, y1 = F(cx, cz) + ROOF_LIFT + 0.9;
+          const stone = shade(white, 0.75), S4 = [stone, stone, stone, stone];
+          for (const [ox, oz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+            const px = cx + ox * s, pz = cz + oz * s, tx = -oz * s, tz = ox * s;
+            T0.wall.quad([px - tx, y0, pz - tz], [px + tx, y0, pz + tz], [px + tx, y1, pz + tz], [px - tx, y1, pz - tz], [ox, 0, oz], S4, [[0, y0], [2 * s, y0], [2 * s, y1], [0, y1]], STYLE.b);
+          }
+          const k = shade(white, 0.3), K4 = [k, k, k, k];
+          T0.roof.quad([cx - s - 0.05, y1, cz - s - 0.05], [cx - s - 0.05, y1, cz + s + 0.05], [cx + s + 0.05, y1, cz + s + 0.05], [cx + s + 0.05, y1, cz - s - 0.05], [0, 1, 0], K4, [[0, 0], [0, 1], [1, 1], [1, 0]], STYLE.stone);
+        }
+      }
+      polys.add(Float32Array.from(b.p), base, top, { roof: roof.rise + ROOF_LIFT, kind: 'house', holes: b.h });
+    } else {
+      // flat roof (courtyards cut out) with a parapet
+      const tris = triangulate(rings);
+      const g = shade(rc, 1.0);
+      for (const [a, c1, c2] of tris) {
+        const A = [a[0], top + 0.02, a[1]], B = [c1[0], top + 0.02, c1[1]], C = [c2[0], top + 0.02, c2[1]];
+        T0.roof.tri(A, B, C, [0, 1, 0], g, [[A[0], A[2]], [B[0], B[2]], [C[0], C[2]]], STYLE.gravel);
+        // the underside of a building bridging a street
+        if (el) T0.roof.tri([A[0], base, A[2]], [B[0], base, B[2]], [C[0], base, C[2]], [0, -1, 0], shade(col, 0.5), [[A[0], A[2]], [B[0], B[2]], [C[0], C[2]]], sty);
+      }
+      rings.forEach((ring, ri) => {
+        ring.forEach(([ax, az], i) => {
+          const nr = ringNormals[ri][i];
+          if (!nr) return;
+          const [bx, bz] = ring[(i + 1) % ring.length];
+          const L = Math.hypot(bx - ax, bz - az);
+          const [nx, nz] = nr, y0 = top, y1 = top + 0.6;
+          const uv = [[0, y0], [L, y0], [L, y1], [0, y1]];
+          const C4 = [col, col, col, col];
+          T0.roof.quad([ax, y0, az], [bx, y0, bz], [bx, y1, bz], [ax, y1, az], [nx, 0, nz], C4, uv, sty);
+          // inner face, a little darker, and the stone cap
+          const k = shade(col, 0.7), K4 = [k, k, k, k];
+          const Ai = [ax - nx * 0.25, y0, az - nz * 0.25], Bi = [bx - nx * 0.25, y0, bz - nz * 0.25];
+          T0.wall.quad(Ai, Bi, [Bi[0], y1, Bi[2]], [Ai[0], y1, Ai[2]], [-nx, 0, -nz], K4, uv, STYLE.p);
+          const capc = shade(white, 0.72), CC = [capc, capc, capc, capc];
+          T0.wall.quad([ax, y1, az], [bx, y1, bz], [Bi[0], y1, Bi[2]], [Ai[0], y1, Ai[2]], [0, 1, 0], CC, [[0, 0], [L, 0], [L, 0.25], [0, 0.25]], STYLE.stone);
+        });
+      });
+      polys.add(Float32Array.from(b.p), base, top, { roof: 0, kind: 'flat', walk: !el, holes: b.h, el });
     }
+
     if (church) {
-      // a tower at the west end of the church
-      let wi = 0;
-      for (let i = 1; i < n; i++) if (pts[i * 2] < pts[wi * 2]) wi = i;
-      const tx = pts[wi * 2] + 4.5, tz = pts[wi * 2 + 1];
-      opts.geo.box(opts.stone, tx - 3.5, base, tz - 3.5, tx + 3.5, top + 14, tz + 3.5);
-      opts.geo.geom(opts.copper, new THREE.ConeGeometry(5.2, 12, 4), new THREE.Matrix4().makeRotationY(Math.PI / 4).premultiply(new THREE.Matrix4().makeTranslation(tx, top + 20, tz)));
-      polys.add(Float32Array.from([tx - 3.5, tz - 3.5, tx + 3.5, tz - 3.5, tx + 3.5, tz + 3.5, tx - 3.5, tz + 3.5]), base, top + 14, {});
+      // a tower at one end of the church, inside its footprint
+      let ux = 1, uz = 0, hl = 0, cx = 0, cz = 0;
+      if (b.rf) [cx, cz, ux, uz, hl] = b.rf;
+      else {
+        let bi = 0, bl = 0;
+        for (let i = 0; i < n; i++) { const j = (i + 1) % n, l = Math.hypot(outer[j][0] - outer[i][0], outer[j][1] - outer[i][1]); if (l > bl) { bl = l; bi = i; } }
+        const j = (bi + 1) % n; ux = (outer[j][0] - outer[bi][0]) / bl; uz = (outer[j][1] - outer[bi][1]) / bl;
+        cx = outer.reduce((s, p) => s + p[0], 0) / n; cz = outer.reduce((s, p) => s + p[1], 0) / n;
+        hl = Math.max(...outer.map(p => Math.abs((p[0] - cx) * ux + (p[1] - cz) * uz)));
+      }
+      const vx = -uz, vz = ux, hs = 3.5;
+      for (const sgn of [-1, 1]) {
+        const tx = cx + ux * sgn * (hl - hs - 0.5), tz = cz + uz * sgn * (hl - hs - 0.5);
+        const ok = [[-1, -1], [1, -1], [1, 1], [-1, 1], [0, 0]].every(([a, c]) => insideRings(rings, tx + (ux * a + vx * c) * hs, tz + (uz * a + vz * c) * hs));
+        if (!ok) continue;
+        const ry = Math.atan2(-uz, ux);
+        const ttop = top + (roof.rise || 0) + 12;
+        opts.geo.obox(opts.stone, tx, (base + ttop) / 2, tz, hs * 2, ttop - base, hs * 2, 0, ry, 0);
+        opts.geo.geom(opts.copper, new THREE.ConeGeometry(hs * 1.45, 12, 4), new THREE.Matrix4().makeRotationY(Math.PI / 4 + ry).premultiply(new THREE.Matrix4().makeTranslation(tx, ttop + 6, tz)));
+        const sq = [[-1, -1], [1, -1], [1, 1], [-1, 1]].flatMap(([a, c]) => [tx + (ux * a + vx * c) * hs, tz + (uz * a + vz * c) * hs]);
+        polys.add(Float32Array.from(sq), base, ttop, {});
+        break;
+      }
     }
     if (b.n) named.push(b);
+  }
+
+  // ---------------------------------------------------------------- canopies: a roof on posts
+  for (const cn of map.canopies || []) {
+    const ring = []; for (let i = 0; i < cn.p.length; i += 2) ring.push([cn.p[i], cn.p[i + 1]]);
+    const T0 = tileOf(ring[0][0], ring[0][1]);
+    const y1 = cn.y, y0 = cn.y - 0.25;
+    const top = shade(white, 0.42), under = shade(white, 0.7);
+    for (const [a, c1, c2] of triangulate([ring])) {
+      T0.roof.tri([a[0], y1, a[1]], [c1[0], y1, c1[1]], [c2[0], y1, c2[1]], [0, 1, 0], top, [a, c1, c2], STYLE.gravel);
+      T0.roof.tri([a[0], y0, a[1]], [c1[0], y0, c1[1]], [c2[0], y0, c2[1]], [0, -1, 0], under, [a, c1, c2], STYLE.p);
+    }
+    const posts = [];
+    for (let i = 0; i < ring.length; i++) {
+      const [ax, az] = ring[i], [bx, bz] = ring[(i + 1) % ring.length];
+      const L = Math.hypot(bx - ax, bz - az);
+      if (L < 0.05) continue;
+      let nx = (bz - az) / L, nz = -(bx - ax) / L;
+      if (insideRings([ring], (ax + bx) / 2 + nx * 0.05, (az + bz) / 2 + nz * 0.05)) { nx = -nx; nz = -nz; }
+      T0.win.quad([ax, y0, az], [bx, y0, bz], [bx, y1, bz], [ax, y1, az], [nx, 0, nz], W4, WU4, 0);
+      const k = Math.max(1, Math.round(L / 6));
+      for (let s = 0; s < k; s++) posts.push([ax + (bx - ax) * s / k - nx * 0.25, az + (bz - az) * s / k - nz * 0.25]);
+    }
+    const pc = shade(white, 0.25), P4 = [pc, pc, pc, pc];
+    for (const [px, pz] of posts) {
+      const g = terrain.height(px, pz) - 0.2, s = 0.09;
+      for (const [ox, oz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+        const cx = px + ox * s, cz = pz + oz * s, tx = -oz * s, tz = ox * s;
+        T0.wall.quad([cx - tx, g, cz - tz], [cx + tx, g, cz + tz], [cx + tx, y0, cz + tz], [cx - tx, y0, cz - tz], [ox, 0, oz], P4, [[0, g], [0.2, g], [0.2, y0], [0, y0]], STYLE.stone);
+      }
+      polys.add(Float32Array.from([px - 0.1, pz - 0.1, px + 0.1, pz - 0.1, px + 0.1, pz + 0.1, px - 0.1, pz + 0.1]), g, y0, { tree: true, noCam: true });
+    }
   }
 
   if (opts.extra) opts.extra(tileOf, STYLE);
@@ -521,7 +628,6 @@ export function buildBuildings(scene, map, terrain, polys, T, opts) {
     const lod = new THREE.LOD();
     lod.addLevel(near, 0);
     if (far) lod.addLevel(far, 230);
-    lod.position.set(0, 0, 0);
     lod.autoUpdate = true;
     // LOD distance is measured to the object's position: put it at the tile centre
     for (const ch of [near, far]) if (ch) ch.position.set(-t.cx, 0, -t.cz);
