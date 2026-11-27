@@ -12,6 +12,7 @@ Everything in this file is recorded and on air.
 | News (3) | Epidemic Sound's *Alexandra*, who is Sol | |
 | Conversations between songs (4), over the songs (4) | Damon as Regnar and Alexandra as Sol, one line per take | Cut from one long take per voice, split on the 2-second pauses |
 | Ads (4) | Epidemic Sound's *Benjamin* as the announcer | Mixed over music beds from Epidemic Sound, ducked under the voice |
+| Ad: *Weather by Myreze* | Supplied finished, *Gale Force Nine Mix* | A complete spot with its own voice and music; only levelled and converted |
 
 The ads' music and sound effects, all from Epidemic Sound:
 
@@ -174,7 +175,7 @@ Two lines each, played over a song a little before the middle, with the music tu
 
 ## Ads (20–30 s)
 
-Fictional brands only.
+Fictional brands, apart from `ad_myreze`, which came finished.
 
 **`ad_maakeskrekk`** (25 s, Announcer, with a gull and a spray added in the mix)
 > They took your lunch. *(pause)* Again. Tired of feeding the gulls against your will? Introducing **Måkeskrekk**, the spray that tells a seagull: not today. One spritz around your bolle *(pause)* and you're protected for up to forty seconds. *(fast)* Måkeskrekk. Because they're watching. Not for use on people, pets, or Martin.
@@ -187,6 +188,9 @@ Fictional brands only.
 
 **`ad_sparksjo`** (20 s, Announcer)
 > **SparkSjø**: e-scooters for Bergen. Up Fjellveien in four minutes. Down Fjellveien in forty seconds. Helmet sold separately. Dignity not included. SparkSjø. Just tap, and go… somewhere.
+
+**`ad_myreze`** (20 s, supplied finished)
+> *Weather by Myreze*, the *Gale Force Nine Mix*: a complete spot with its own voice and music. It wasn't recorded from a script here, so there is no script for it.
 
 ## The news (15–25 s)
 
@@ -201,4 +205,4 @@ Fictional brands only.
 
 ## All the clips
 
-27 clips: 4 station IDs, 5 intros, 3 outros, 3 news items, 4 ads, 4 conversations between songs and 4 over the music.
+28 clips: 4 station IDs, 5 intros, 3 outros, 3 news items, 5 ads, 4 conversations between songs and 4 over the music.

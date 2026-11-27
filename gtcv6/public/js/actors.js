@@ -88,8 +88,9 @@ function makeAtlas(look, person) {
 
 export class Humanoid {
   // night: { top, skirt, boots, boa } dresses a woman for a night on the corner: bare arms and legs,
-  // a short skirt, knee boots, a boa, long hair, make-up, earrings and a handbag
-  constructor({ jacket = 0xf2c12e, pants = 0x2b3140, skin = 0xe8c4a6, hat = 0xb3261e, hair = 0x5a3a22, umbrella = null, boots = 0x1b1b1b, scale = 1, person = null, night = null } = {}) {
+  // a short skirt, knee boots, a boa, long hair, make-up, earrings and a handbag. longHair gives
+  // anyone else hair down the back and over the shoulders.
+  constructor({ jacket = 0xf2c12e, pants = 0x2b3140, skin = 0xe8c4a6, hat = 0xb3261e, hair = 0x5a3a22, umbrella = null, boots = 0x1b1b1b, scale = 1, person = null, night = null, longHair = false } = {}) {
     const hex = v => typeof v === 'number' ? '#' + v.toString(16).padStart(6, '0') : v;
     const P = person ? PEOPLE[person] : null;
     const look = P
@@ -157,7 +158,7 @@ export class Humanoid {
     });
     // hair over the top and back
     add(new THREE.SphereGeometry(HR * 1.07, 18, 10, 0, Math.PI * 2, 0, Math.PI * 0.55), M(0, HY + 0.008, -0.016, 0.92, 1.12, 1.02, -0.42), head, solid(SWATCH.hair));
-    if (look.night) {
+    if (look.night || longHair) {
       // long hair down the back and over the shoulders
       add(new THREE.SphereGeometry(HR, 14, 10), M(0, HY - 0.13, -0.07, 1.05, 2.0, 0.62), head, solid(SWATCH.hair));
       for (const s of [-1, 1]) add(new THREE.SphereGeometry(HR * 0.5, 8, 8), M(s * HR * 0.85, HY - 0.1, -0.02, 0.7, 2.2, 0.8), head, solid(SWATCH.hair));

@@ -5,7 +5,7 @@ import { loadMapData, buildCity } from './city.js';
 import { buildHouse6 } from './house6.js';
 import { Physics } from './physics.js';
 import { Humanoid, Gull, makeScooter, makeItem, makeMarker, makeArrow, makePistol, PEOPLE, SCOOTER_LAMP } from './actors.js';
-import { Audio } from './audio.js';
+import { Audio, lineDur } from './audio.js';
 import { stylePlaceBuildings, buildPlaces } from './places.js';
 
 const $ = id => document.getElementById(id);
@@ -685,19 +685,88 @@ function updateDoors(dt) {
 
 // ------------------------------------------------------------------ speech bubbles
 const bubbleTex = new Map();
+// a speech bubble; a long line wraps onto two rows at the space nearest the middle
 function bubble(text) {
   if (!bubbleTex.has(text)) {
-    const w = Math.max(384, Math.min(1100, text.length * 34 + 80));
-    bubbleTex.set(text, textTexture([text], { w, h: 128, bg: '#f4f1ea', fg: '#101418', font: '800 54px "Archivo", sans-serif', radius: 40 }));
+    let rows = [text];
+    if (text.length > 24) {
+      let cut = -1;
+      for (let i = 0; i < text.length; i++) if (text[i] === ' ' && (cut < 0 || Math.abs(i - text.length / 2) < Math.abs(cut - text.length / 2))) cut = i;
+      if (cut > 0) rows = [text.slice(0, cut), text.slice(cut + 1)];
+    }
+    const w = Math.max(384, Math.min(1100, Math.max(...rows.map(r => r.length)) * 32 + 90)), h = rows.length > 1 ? 200 : 128;
+    const t = textTexture(rows, { w, h, bg: '#f4f1ea', fg: '#101418', font: '800 54px "Archivo", sans-serif', radius: 40 });
+    t.userData.size = [w / 320, h / 320];
+    bubbleTex.set(text, t);
   }
-  const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: bubbleTex.get(text), depthTest: false, fog: false }));
-  s.scale.set(1.2, 0.4, 1);
+  const t = bubbleTex.get(text);
+  const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: t, depthTest: false, fog: false }));
+  s.scale.set(t.userData.size[0], t.userData.size[1], 1);
   s.renderOrder = 10;
   return s;
 }
 
 // ------------------------------------------------------------------ pedestrians
-const LINES = ['Hei!', 'Uff!', 'Pass deg!', 'Typisk.', 'Neimen!', 'Au!', 'Hallo?!', 'Rolig!', 'Æ e fra Bergen!'];
+// what the housemates say when you knock into them
+const LINES = ['Hei!', 'Uff!', 'Pass deg!', 'Typisk.', 'Neimen!', 'Au!', 'Hallo?!', 'Rolig!', 'Eg e fra Bergen!'];
+// The people on the street have four voices, in Bergensk: Gubben (m1), Studenten (m2), Fruen (f1)
+// and Optimisten (f2). STREET.md has the lines and who reads them; tools/build_street.py makes
+// the clips, ped_m1_01 and so on. Each voice has lines for walking past you, for being knocked
+// over, for a scooter going past too fast, and for a shot going off nearby.
+const STREET_LINES = {
+  m1: ['Ja, ja. Det regner. Det har det gjort siden sekstitallet.', 'Brann tar gull i år. Det sier eg hvert år.',
+    'I min tid gikk vi opp disse bakkene to ganger om dagen.', 'Paraply? Nei, det e for østlendinger.', 'Hørte du buekorpset i går? Det var tider, det.',
+    'Kossen går du, gutten min?!', 'Au! Ryggen min!', 'Din tufs!', 'Herregud, ka e det med ungdommen i dag?',
+    'De sparkesyklene skulle vært forbudt!', 'Sakte, for pokker!',
+    'Nei, nei, nei, eg e for gammel for dette!', 'Ring politiet! Nei, ring kona mi!'],
+  m2: ['Skal du på byen i kveld, eller?', 'Eg sa til han: Dette e ikkje Norge, dette e Bergen.',
+    'Har du sett kor mye en skillingsbolle koster nå?', 'Seks grader og pøsregn. Shortsvær.', 'En måke tok kebaben min på Torget. Hele kebaben.',
+    'Ey! Ser du ikkje kor du går?', 'Seriøst, kompis?', 'Fysj, telefonen min!', 'Gidder du, eller?',
+    'Ey, det e min sparkesykkel!', 'Sjukt! Gjør det igjen!',
+    'Nei, nei, eg stikker!', 'Dette skal på Snapchat.'],
+  f1: ['Fisketorget e bare for turister nå. Bare turister!', 'Tre cruiseskip i dag. Tre! Man kommer seg ikkje frem.',
+    'Det e ikkje dårlig vær, bare dårlige klær.', 'Hun på Rema sa det skal bli sol på torsdag. Ha!', 'Svigersønnen min e fra Oslo. Men han e snill, da.',
+    'Uff! Posene mine!', 'Neimen, har du sett!', 'Du burde skamme deg!', 'Kem e foreldrene dine?!',
+    'På fortauet?! Nei, nå får det være nok!', 'Eg skal skrive til BT om deg!',
+    'Herregud, ikkje skyt! Eg har fisk i posen!', 'Dette hadde aldri skjedd på Kalfaret!'],
+  f2: ['Nei, eg står på Torgallmenningen. Kor e du?', 'Se! Det e sol på Fløyen! …Nei, nå e den borte.',
+    'Eg skal løpe opp på Ulriken i morgen. Kanskje.', 'Har du prøvd reinsdyrpølsen på Trekroneren?', 'Regnjakke, paraply, gummistøvler. Klar for sommeren!',
+    'Au! Hallo?!', 'Neimen, ka driver du med?!', 'Kaffen min! Den var helt ny!', 'Du må jo se deg for!',
+    'Wow. Okei. Fint for deg.', 'Hjelm, kanskje?!',
+    'Mamma, eg ringer deg tilbake!', 'Løp! Alle sammen, løp!'],
+};
+// the lines of each kind (1-based), and how much each matters: a line cuts off one of the same
+// or lower priority, and waits for one of higher
+const LINE_KINDS = { past: { from: 1, to: 5, prio: 0 }, scooter: { from: 10, to: 11, prio: 1 }, hit: { from: 6, to: 9, prio: 2 }, scared: { from: 12, to: 13, prio: 2 } };
+const VOICES = ['m1', 'm2', 'f1', 'f2'];
+// hair to go with the voice: Gubben is grey, the women wear it long
+const VOICE_LOOK = {
+  m1: { hair: [0x8a8a8a, 0xbdb9b2], longHair: false },
+  m2: { hair: [0x3a2618, 0x1d1d1d, 0x6b4a2a], longHair: false },
+  f1: { hair: [0x8a8a8a, 0x6b4a2a, 0xa8906e], longHair: true },
+  f2: { hair: [0xc9a26b, 0x3a2618, 0x8a2e1e], longHair: true },
+};
+const lastLine = {};                 // voice and kind -> the line said last, so it isn't said twice running
+const street = { quietT: 6, scaredT: 0 };   // until someone else on the street may start talking, or cry out at a shot
+const _camR = new THREE.Vector3();
+// a passer-by says a line of the given kind, out loud if it has been recorded
+function talk(n, kind) {
+  if (!n.voice) { say(n, LINES[Math.floor(Math.random() * LINES.length)]); return; }
+  const K = LINE_KINDS[kind], key = n.voice + kind;
+  let i = K.from + Math.floor(Math.random() * (K.to - K.from + 1));
+  if (i === lastLine[key] && K.to > K.from) i = i === K.to ? K.from : i + 1;
+  lastLine[key] = i;
+  const id = `ped_${n.voice}_${String(i).padStart(2, '0')}`;
+  // a remark in passing waits until its recording has loaded, so nobody mouths it in silence
+  if (K.prio === 0 && audio.ctx && audio.on && lineDur(id) && !audio.ready(id)) return;
+  // louder the closer to you, from the side of the screen they're on
+  const d = Math.hypot(n.pos.x - player.pos.x, n.pos.z - player.pos.z);
+  _camR.set(1, 0, 0).applyQuaternion(camera.quaternion);
+  const cx = n.pos.x - camera.position.x, cz = n.pos.z - camera.position.z;
+  const pan = (cx * _camR.x + cz * _camR.z) / Math.max(1, Math.hypot(cx, cz)) * 0.7;
+  audio.speak(id, clamp(1.15 - d / 26, 0, 1), pan, K.prio);
+  say(n, STREET_LINES[n.voice][i - 1], lineDur(id));
+}
 const npcs = [];
 const NPC_N = isTouch ? 14 : 30;
 const jackets = [0x2c4c7a, 0x6b2d3a, 0x3f6b4a, 0x22252b, 0xb14b2e, 0x8a8f96, 0x2f5d3a, 0xd9b75a, 0x4a3f6b, 0x1d1d1d];
@@ -718,9 +787,10 @@ function placeNpc(n, near) {
   return false;
 }
 for (let k = 0; k < NPC_N; k++) {
-  const fig = new Humanoid({ jacket: jackets[k % jackets.length], pants: [0x2b3140, 0x3b3b3b, 0x4a3a2c][k % 3], hat: Math.random() < 0.5 ? null : [0x2c4c7a, 0x7a2e28, 0x3b3b3b][k % 3], hair: [0x3a2618, 0xc9a26b, 0x1d1d1d, 0x8a8a8a][k % 4], umbrella: umbrellaCols[k % umbrellaCols.length] });
+  const voice = VOICES[k % VOICES.length], V = VOICE_LOOK[voice];
+  const fig = new Humanoid({ jacket: jackets[k % jackets.length], pants: [0x2b3140, 0x3b3b3b, 0x4a3a2c][k % 3], hat: Math.random() < 0.5 ? null : [0x2c4c7a, 0x7a2e28, 0x3b3b3b][k % 3], hair: V.hair[Math.floor(k / VOICES.length) % V.hair.length], longHair: V.longHair, umbrella: umbrellaCols[k % umbrellaCols.length] });
   scene.add(fig.root);
-  const n = { fig, a: 0, b: 0, t: 0, pos: new THREE.Vector3(), heading: 0, downT: 0, speed: 1.1 + Math.random() * 0.4, bubble: null, bubbleT: 0, fall: 0, off: 0 };
+  const n = { fig, voice, a: 0, b: 0, t: 0, pos: new THREE.Vector3(), heading: 0, downT: 0, speed: (voice === 'm1' ? 0.85 : 1.1) + Math.random() * 0.4, bubble: null, bubbleT: 0, fall: 0, off: 0, talkT: Math.random() * 20, passT: 0, panicT: 0 };
   npcs.push(n);
 }
 // ---- the people who live at Cappes vei 6
@@ -765,16 +835,16 @@ function knockNpc(n, from) {
   if (n.downT > 0) return;
   n.downT = 3;
   n.fallDir = Math.atan2(n.pos.x - from.x, n.pos.z - from.z);
-  say(n, LINES[Math.floor(Math.random() * LINES.length)]);
+  talk(n, 'hit');
   audio.bump();
 }
-function say(n, text) {
+// a speech bubble over someone's head, for as long as the line takes to say (dur, in seconds)
+function say(n, text, dur = 0) {
   if (n.bubble) n.fig.root.remove(n.bubble);
   n.bubble = bubble(text);
-  n.bubble.position.y = n.mate ? 2.6 : 2.35;
-  if (text.length > 9) n.bubble.scale.set(Math.min(3.2, text.length * 0.11), 0.4, 1);
+  n.bubble.position.y = (n.mate ? 2.6 : 2.35) + (n.bubble.scale.y - 0.4) / 2;
   n.fig.root.add(n.bubble);
-  n.bubbleT = 2.2;
+  n.bubbleT = Math.max(2.2, dur + 0.5);
 }
 // ------------------------------------------------------------------ day and night
 // The sun goes round once every five minutes. By night the sky goes dark blue with stars and a
@@ -941,6 +1011,8 @@ function updateNightPeople(dt) {
 
 function updateNpcs(dt) {
   const focus = state.mode === 'title' ? camera.position : player.pos;
+  street.quietT -= dt; street.scaredT -= dt;
+  const pSpeed = player.riding ? Math.abs(player.riding.speed) : Math.hypot(player.vel.x, player.vel.z);
   for (const n of npcs) {
     if (n.active) continue;          // that one is you
     if (n.bubble) { n.bubbleT -= dt; if (n.bubbleT <= 0) { n.fig.root.remove(n.bubble); n.bubble = null; } }
@@ -971,7 +1043,8 @@ function updateNpcs(dt) {
     } else {
       const ax = gx(n.a), az = gz(n.a), bx = gx(n.b), bz = gz(n.b);
       const len = Math.hypot(bx - ax, bz - az) || 0.1;
-      n.t += n.speed * dt / len;
+      if (n.panicT > 0) n.panicT -= dt;
+      n.t += n.speed * (n.panicT > 0 ? 2.6 : 1) * dt / len;
       if (n.t >= 1) {
         const nb = gAdj[n.b].filter(j => j !== n.a);
         const next = nb.length ? nb[Math.floor(Math.random() * nb.length)] : n.a;
@@ -988,11 +1061,21 @@ function updateNpcs(dt) {
     // bump with the player
     const dx = player.pos.x - n.pos.x, dz = player.pos.z - n.pos.z, d = Math.hypot(dx, dz);
     if (state.mode === 'play' && d < 0.6 && Math.abs(player.pos.y - n.pos.y) < 1.2 && d > 1e-4 && n.downT <= 0) {
-      const speed = player.riding ? Math.abs(player.riding.speed) : Math.hypot(player.vel.x, player.vel.z);
-      if (speed > 5) knockNpc(n, player.pos);
+      if (pSpeed > 5) knockNpc(n, player.pos);
       else { player.pos.x += dx / d * (0.6 - d); player.pos.z += dz / d * (0.6 - d); }
     }
-    n.fig.animate(dt, n.downT > 0 ? 0 : n.speed, 'walk');
+    // Talk as you go by: a word to you when you walk past (now and then: one person at a time,
+    // and nobody says something every time), and a shout after a scooter that went by too fast
+    n.talkT -= dt; n.passT -= dt;
+    if (state.mode === 'play' && n.downT <= 0 && n.fig.root.visible && Math.abs(player.pos.y - n.pos.y) < 1.5) {
+      if (player.riding && pSpeed > 6 && d > 0.6 && d < 3.5 && n.passT <= 0 && street.quietT < 4 && !audio.speaking(1)) {
+        talk(n, 'scooter'); n.passT = 20; street.quietT = Math.max(street.quietT, 3);
+      } else if (!player.riding && d < 3 && n.talkT <= 0 && street.quietT <= 0 && !audio.speaking(0)) {
+        if (Math.random() < 0.6) { talk(n, 'past'); street.quietT = 8 + Math.random() * 8; }
+        n.talkT = 45 + Math.random() * 30;
+      }
+    }
+    n.fig.animate(dt, n.downT > 0 ? 0 : n.speed * (n.panicT > 0 ? 2.6 : 1), 'walk');
     n.fig.root.position.copy(n.pos);
     n.fig.root.rotation.set(0, n.downT > 0 ? n.fallDir : n.heading, 0);
     n.fig.body.rotation.x = n.fall * 1.45;
@@ -1646,6 +1729,15 @@ function shoot() {
   // everyone nearby hears it: gulls on the ground take off, and the alarm goes up
   for (const a of gulls) if (a.state === 'ground' && a.pos.distanceTo(player.pos) < 30) { a.state = 'takeoff'; a.t = 1.2; a.vel.set(a.pos.x - player.pos.x, 4, a.pos.z - player.pos.z).normalize().multiplyScalar(6); }
   const calm = mission && mission.def.noPunchAlarm;
+  // the people nearby hurry off, and the nearest one who isn't hit cries out
+  let scared = null, sd = 28;
+  for (const n of npcs) {
+    if (n.mate || !n.voice || n.downT > 0 || !n.fig.root.visible || (what && what.npc === n)) continue;
+    const d = n.pos.distanceTo(player.pos);
+    if (d < 28) n.panicT = 5 + Math.random() * 3;
+    if (d < sd) { sd = d; scared = n; }
+  }
+  if (scared && street.scaredT <= 0 && !(what && what.npc)) { talk(scared, 'scared'); street.scaredT = 5; street.quietT = Math.max(street.quietT, 6); }
   if (!what) {
     if (tHit >= RANGE) return;
     if (hitP.y < 0.4 && world.terrain.height(hitP.x, hitP.z) < -0.3) emit(hitP, 14, { color: 0xdfe9ee, speed: 2.5, up: 1.6, spread: 0.3, life: 0.6 });   // Vågen
@@ -2767,4 +2859,4 @@ $('play').disabled = false;
 $('play').textContent = save.mission > 0 ? (save.mission >= MISSIONS.length ? 'Free roam' : 'Continue') : 'Play';
 
 // debug hooks for testing
-window.__gt = { gameTime: () => time, places, gun, shoot, toggleGun, brolly, cycleHand, npcs, turbo, clock, dayState, nightPeople, lampLights, audio, switchTo, swapTo, mates: () => housemates, active: () => active, OUT_SPOTS, offer: () => offer, acceptOffer, declineOffer, makeOffer, scene, renderer, camera, player, cam, world, state, startMission, save, weather, scooters, gulls, mission: () => mission, startGame, raiseAlarm, ending, L2V, L2W, W2L, H, house, city, route, BAKERY, CHECKPOINTS: () => CHECKPOINTS, inHouse, housemates, PLACES, hitPlayer, dropBolle, bolle: () => ({ drop: bolleDrop, carrying: !!player.carrying }) };
+window.__gt = { gameTime: () => time, places, street, gun, shoot, toggleGun, brolly, cycleHand, npcs, turbo, clock, dayState, nightPeople, lampLights, audio, switchTo, swapTo, mates: () => housemates, active: () => active, OUT_SPOTS, offer: () => offer, acceptOffer, declineOffer, makeOffer, scene, renderer, camera, player, cam, world, state, startMission, save, weather, scooters, gulls, mission: () => mission, startGame, raiseAlarm, ending, L2V, L2W, W2L, H, house, city, route, BAKERY, CHECKPOINTS: () => CHECKPOINTS, inHouse, housemates, PLACES, hitPlayer, dropBolle, bolle: () => ({ drop: bolleDrop, carrying: !!player.carrying }) };

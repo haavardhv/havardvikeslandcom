@@ -1,5 +1,6 @@
 // Synthesised sound: rain, footsteps, seagulls, punches, the scooter motor and
-// a few jingles. The only audio files are the songs and the talk on the scooter radio.
+// a few jingles. The only audio files are the songs and the talk on the scooter radio, and the
+// voices of the people on the street.
 export const STATION = 'Radio Fjellet 6';
 const DJ = 'Regnar';
 // the songs, in broadcast order (durations in seconds, so the station clock works before a file
@@ -13,7 +14,11 @@ const SONGS = [
 ];
 // The station's clips (gtcv6/RADIO.md has the scripts) and their durations, from clips.json, which
 // tools/build_radio.py writes. A slot whose clip isn't there yet is left out of the broadcast.
-const TALK = await fetch('/audio/radio/clips.json').then(r => r.ok ? r.json() : {}).catch(() => ({}));
+// The people on the street have their lines in the same way (STREET.md, tools/build_street.py).
+const clipList = src => fetch(src).then(r => r.ok ? r.json() : {}).catch(() => ({}));
+const [TALK, STREET] = await Promise.all([clipList('/audio/radio/clips.json'), clipList('/audio/street/clips.json')]);
+// how long a recorded street line is, in seconds (0 if it hasn't been recorded)
+export const lineDur = id => STREET[id] || 0;
 const INTRO = { 'grand-theft-cappes-vei-6': 'intro_grand-theft-cappes-vei-6', 'cappes-vei-six': 'intro_cappes-vei-six',
   'guangdong-house': 'intro_guangdong-house', 'stone-and-salt': 'intro_stone-and-salt', 'cappes-vei-six-2': 'intro_cappes-vei-six-v2' };
 // the rotating slots: a different clip of the kind plays in each slot, round after round
@@ -22,7 +27,7 @@ const POOL = {
   outro: ['outro_01', 'outro_02', 'outro_03'],
   // Regnar and Sol talking between the songs
   chat: ['chat_weather', 'chat_gulls', 'chat_steep', 'chat_party'],
-  ad: ['ad_maakeskrekk', 'ad_regnfrakk', 'ad_bratt', 'ad_sparksjo'],
+  ad: ['ad_maakeskrekk', 'ad_regnfrakk', 'ad_bratt', 'ad_sparksjo', 'ad_myreze'],
   news: ['news_maakemelding', 'news_traffic', 'news_party'],
   // and over the music, halfway through a song
   over: ['over_umbrella', 'over_sunglasses', 'over_bolle', 'over_fortyone'],
@@ -132,6 +137,43 @@ export class Audio {
     this.radioT0 = performance.now() - Math.random() * LOOP * 1000;   // tune in somewhere in the broadcast
     this.radioOn = false;
     this.segIdx = -1;
+    // the voices on the street: each line is a short clip, decoded once and kept; they all load
+    // in the background a few seconds after the start, and any line can also load when first
+    // needed (it is then only shown in the speech bubble that time)
+    this.lines = new Map();          // line id -> AudioBuffer (or the download in progress, or null)
+    this.voice = null;               // the line being spoken: { src, prio, until }
+    setTimeout(() => { for (const id of Object.keys(STREET)) this._line(id); }, 4000);
+  }
+  _line(id) {
+    if (!this.lines.has(id)) {
+      this.lines.set(id, fetch(`/audio/street/${id}.mp3`).then(r => r.ok ? r.arrayBuffer() : Promise.reject(r.status))
+        .then(b => this.ctx.decodeAudioData(b)).then(buf => { this.lines.set(id, buf); }, () => { this.lines.set(id, null); }));
+    }
+    const v = this.lines.get(id);
+    return v instanceof AudioBuffer ? v : null;
+  }
+  // whether a street line is loaded and ready to say (it starts loading if it isn't)
+  ready(id) { return !!this.ctx && !!this._line(id); }
+  // whether someone on the street is speaking a line of this priority or higher
+  speaking(prio = 0) { return !!this.voice && this.voice.until > this.ctx.currentTime && this.voice.prio >= prio; }
+  // A passer-by says one of their lines: dry, from where they stand (gain 0..1 for the distance,
+  // pan -1..1 for the side). One person speaks at a time: a line cuts off one of the same or lower
+  // priority, and is dropped if one of higher priority is playing. Returns whether it plays.
+  speak(id, gain = 1, pan = 0, prio = 0) {
+    if (!this.ctx || !STREET[id] || gain <= 0.01) return false;
+    const now = this.ctx.currentTime;
+    if (this.voice && this.voice.until > now && this.voice.prio > prio) return false;
+    const buf = this._line(id);
+    if (!buf) return false;
+    if (this.voice && this.voice.until > now) { try { this.voice.src.stop(); } catch (e) { /* */ } }
+    const c = this.ctx, src = c.createBufferSource(); src.buffer = buf;
+    const g = c.createGain(); g.gain.value = 0.75 * gain;
+    let out = g;
+    if (c.createStereoPanner) { const p = c.createStereoPanner(); p.pan.value = Math.max(-1, Math.min(1, pan)); g.connect(p); out = p; }
+    src.connect(g); out.connect(this.master);
+    src.start();
+    this.voice = { src, prio, until: now + buf.duration };
+    return true;
   }
   // Each segment is also downloaded whole, once, and played from memory after that: a stream can
   // only be seeked if the server answers range requests, and without seeking, getting back on a
