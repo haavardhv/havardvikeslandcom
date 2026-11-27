@@ -624,6 +624,41 @@ export function buildCity(scene, map, T, opts) {
     });
     trunks.castShadow = crowns.castShadow = true;
     scene.add(trunks, crowns);
+
+    // the forest on Fløyen: spruce, with some birch, all over the mountainside above Fjellveien,
+    // off the roads and paths, out of the buildings
+    const fspots = [];
+    for (let z = g.z0 + 4; z < g.z0 + (g.nz - 1) * g.step - 4 && fspots.length < 9000; z += 6.5)
+      for (let x = g.x0 + 4; x < g.x0 + (g.nx - 1) * g.step - 4 && fspots.length < 9000; x += 6.5) {
+        const px = x + (R() - 0.5) * 5, pz = z + (R() - 0.5) * 5;
+        const h = terrain.height(px, pz);
+        if (h < 88 + (R() - 0.5) * 10) continue;
+        const cl = terrain.cls(px, pz);
+        if (cl === 3 || cl === 4) continue;
+        if (onRoad(px, pz) || onRoad(px + 2.5, pz) || onRoad(px - 2.5, pz) || onRoad(px, pz + 2.5) || onRoad(px, pz - 2.5)) continue;
+        if (polys.query(px - 3, pz - 3, px + 3, pz + 3).length) continue;
+        if (opts.keepClear(px, pz)) continue;
+        fspots.push([px, pz, R() < 0.72]);
+      }
+    const spruceG = new THREE.ConeGeometry(1.7, 7.5, 7); spruceG.translate(0, 5.2, 0);
+    const stemG = new THREE.CylinderGeometry(0.16, 0.24, 2.4, 5); stemG.translate(0, 1.2, 0);
+    const conifers = fspots.filter(f => f[2]), broad = fspots.filter(f => !f[2]);
+    const stems = new THREE.InstancedMesh(stemG, trunks.material, fspots.length);
+    const spruces = new THREE.InstancedMesh(spruceG, new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 1, flatShading: true }), Math.max(1, conifers.length));
+    const birches = new THREE.InstancedMesh(crownG, crowns.material, Math.max(1, broad.length));
+    const darks = [0x2c4a2a, 0x335330, 0x27412a, 0x3a5a34];
+    let si = 0, bi = 0;
+    fspots.forEach(([x, z, con], i) => {
+      const k = con ? 0.75 + R() * 0.7 : 0.6 + R() * 0.5;
+      m4.compose(pp.set(x, terrain.height(x, z) - 0.15, z), q.setFromAxisAngle(new THREE.Vector3(0, 1, 0), R() * 6), s.set(k, k * (0.9 + R() * 0.3), k));
+      stems.setMatrixAt(i, m4);
+      if (con) { spruces.setMatrixAt(si, m4); spruces.setColorAt(si++, col.set(darks[Math.floor(R() * darks.length)])); }
+      else { birches.setMatrixAt(bi, m4); birches.setColorAt(bi++, col.set(greens[Math.floor(R() * greens.length)])); }
+      polys.add(Float32Array.from([x - 0.25, z - 0.25, x + 0.25, z - 0.25, x + 0.25, z + 0.25, x - 0.25, z + 0.25]), terrain.height(x, z) - 1, terrain.height(x, z) + 3 * k, { tree: true, noCam: true });
+    });
+    spruces.count = si; birches.count = bi;
+    stems.castShadow = spruces.castShadow = birches.castShadow = true;
+    scene.add(stems, spruces, birches);
   }
 
   // -------------------------------------------------------------- walls, fences, hedges (OSM barriers)

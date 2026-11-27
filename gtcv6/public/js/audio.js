@@ -96,6 +96,14 @@ export class Audio {
     this.motorGain = c.createGain(); this.motorGain.gain.value = 0;
     this.motor.connect(mf).connect(this.motorGain).connect(this.master);
     this.motor.start();
+    // wind rushing past in free fall, and in the parachute's lines
+    {
+      const s = c.createBufferSource(); s.buffer = buf; s.loop = true;
+      this.windF = c.createBiquadFilter(); this.windF.type = 'bandpass'; this.windF.frequency.value = 500; this.windF.Q.value = 0.6;
+      this.windGain = c.createGain(); this.windGain.gain.value = 0;
+      s.connect(this.windF).connect(this.windGain).connect(this.master);
+      s.start(0, Math.random() * 2);
+    }
     // tyres sliding on wet setts while the scooter drifts: a hiss with a squeal in it
     {
       const s = c.createBufferSource(); s.buffer = buf; s.loop = true;
@@ -265,6 +273,17 @@ export class Audio {
     this.motor.frequency.setTargetAtTime(70 + s * 22 + boost * 60, t, 0.08);
     this.motorF.frequency.setTargetAtTime(500 + s * 90 + boost * 900, t, 0.08);
   }
+  // 0..1: the rush of air (free fall is 1, under the canopy a gentle flutter)
+  wind(level) {
+    if (!this.ctx || !this.windGain) return;
+    const t = this.ctx.currentTime;
+    this.windGain.gain.setTargetAtTime(Math.min(1, level) * 0.22, t, 0.15);
+    this.windF.frequency.setTargetAtTime(300 + level * 900, t, 0.2);
+  }
+  // the tram's bell: two quick dings
+  tramBell() { if (!this.ctx) return; for (const w of [0, 0.32]) { this._tone('sine', 1180, 1170, 0.9, 0.07, w); this._tone('sine', 2360, 2350, 0.5, 0.025, w); } }
+  // the canopy opening with a whump
+  chute() { if (!this.ctx) return; this._noise(0.5, 'lowpass', 600, 0.7, 0.35); this._tone('sine', 90, 60, 0.4, 0.2); }
   // 0..1, how hard the scooter is sliding
   skid(amount) { if (this.ctx && this.skidGain) this.skidGain.gain.setTargetAtTime(Math.min(1, amount) * 0.09, this.ctx.currentTime, 0.05); }
   // the pistol: a hard crack, a thump, and the echo off the houses across the street

@@ -43,7 +43,7 @@ OUT = sys.argv[2]
 LAT0, LON0 = 60.3931275, 5.3333919          # Cappes vei 6 (OSM address node 3126074741)
 MLAT = 111230.0
 MLON = 111320.0 * math.cos(math.radians(LAT0))
-X0, X1, Z0, Z1 = -690.0, 190.0, -750.0, 240.0   # playable area: Bryggen and Bergenhus to Fjellet and Marken
+X0, X1, Z0, Z1 = -690.0, 750.0, -750.0, 330.0   # playable area: Bryggen and Bergenhus to Fløyen, Byparken and Marken
 
 def P(n): return ((n['lon'] - LON0) * MLON, -(n['lat'] - LAT0) * MLAT)
 
@@ -753,6 +753,50 @@ if fl[0][0] > fl[-1][0]: fl = fl[::-1]    # start at the lower station (west)
 funicular = flat(fl)
 print('funicular points', len(fl), 'from', [r1(v) for v in fl[0]], 'to', [r1(v) for v in fl[-1]])
 
+# ------------------------------------------------------------------ Bybanen: the tracks, the platforms and the train's route
+# Every light rail track in the area, the platforms along them, and one route for the train:
+# from the end of the track at Byparken, the straightest way on through the junctions.
+tram_ways = [w for w in ways.values() if w.get('tags', {}).get('railway') in ('light_rail', 'tram') and in_area(coords(w))
+             and w.get('tags', {}).get('tunnel') not in ('yes',)]
+tracks = [flat(coords(w)) for w in tram_ways if len(coords(w)) >= 2]
+tadj = {}
+for w in tram_ways:
+    ids = [i for i in w['nodes'] if i in nodes]
+    for a, b2 in zip(ids, ids[1:]):
+        tadj.setdefault(a, set()).add(b2); tadj.setdefault(b2, set()).add(a)
+tram_route = []
+platforms = []
+if tadj:
+    track_lines = [LineString(coords(w)) for w in tram_ways if len(coords(w)) >= 2]
+    tl_union = unary_union(track_lines)
+    for w in ways.values():
+        t = w.get('tags', {})
+        if not (t.get('railway') == 'platform' or (t.get('public_transport') == 'platform' and (t.get('tram') == 'yes' or t.get('light_rail') == 'yes'))): continue
+        c = coords(w)
+        if len(c) < 4 or c[0] != c[-1] or not in_area(c): continue
+        pg = Polygon(c).buffer(0)
+        if pg.is_empty or pg.distance(tl_union) > 6: continue
+        platforms.append({'p': flat(c[:-1]), 'n': t.get('name', '')})
+    # start: the dead end nearest Byparken's platform
+    byp = next((Polygon([(pp[k], pp[k + 1]) for k in range(0, len(pp), 2)]) for pp in (pl['p'] for pl in platforms)), None)
+    ends = [n for n, a in tadj.items() if len(a) == 1]
+    ref = byp.centroid if byp is not None else Point(-431, 125)
+    start = min(ends, key=lambda n: Point(P(nodes[n])).distance(ref))
+    route, prev, cur, seen = [start], None, start, {start}
+    while True:
+        nxt = [n for n in tadj[cur] if n not in seen]
+        if not nxt: break
+        if prev is None: cur2 = nxt[0]
+        else:
+            px, pz = P(nodes[prev]); cx, cz = P(nodes[cur])
+            def turn(n):
+                nx, nz = P(nodes[n]); a1 = math.atan2(cz - pz, cx - px); a2 = math.atan2(nz - cz, nx - cx)
+                return abs((a2 - a1 + math.pi) % (2 * math.pi) - math.pi)
+            cur2 = min(nxt, key=turn)
+        prev, cur = cur, cur2; seen.add(cur); route.append(cur)
+    tram_route = flat([P(nodes[n]) for n in route])
+print('tram tracks', len(tracks), 'platforms', [p['n'] for p in platforms], 'route points', len(tram_route) // 2)
+
 # ------------------------------------------------------------------ terrain arrays
 def write_grid(g, h, path, scale):
     out = bytearray()
@@ -803,6 +847,7 @@ out = {
     'roads': roads,
     'trees': trees,
     'funicular': funicular,
+    'tram': {'tracks': tracks, 'platforms': platforms, 'route': tram_route},
     'graph': graph,
     'places': places,
     'barriers': barriers,
