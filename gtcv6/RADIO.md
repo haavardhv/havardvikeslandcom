@@ -4,12 +4,23 @@ Scripts for the talk on the scooter radio: Regnar the DJ, his co-host Sol, stati
 
 ## Recorded so far
 
-| Clips | Voice | Status |
+Everything in this file is recorded and on air.
+
+| Clips | Voice | Notes |
 | --- | --- | --- |
-| Song intros (5), outros (3), station IDs (4) | Epidemic Sound's *Damon* as Regnar (he reads `id_04` too) | On air |
-| News (3) | Epidemic Sound's *Alexandra*, who is Sol | On air |
-| Conversations between songs (4), over the songs (4) | Damon as Regnar and Alexandra as Sol, one line per file | Waiting for audio |
-| Ads (4) | | Waiting for audio |
+| Song intros (5), outros (3), station IDs (4) | Epidemic Sound's *Damon* as Regnar (he reads `id_04` too) | |
+| News (3) | Epidemic Sound's *Alexandra*, who is Sol | |
+| Conversations between songs (4), over the songs (4) | Damon as Regnar and Alexandra as Sol, one line per take | Cut from one long take per voice, split on the 2-second pauses |
+| Ads (4) | Epidemic Sound's *Benjamin* as the announcer | Mixed over music beds from Epidemic Sound, ducked under the voice |
+
+The ads' music and sound effects, all from Epidemic Sound:
+
+| Ad | Music | Sound effects |
+| --- | --- | --- |
+| `ad_maakeskrekk` | *Panda Dance*, Lukas Got Lucky | A gull from *Birds, Sea, Seagulls, Call, Weird, Hungry, Group, Loud*; *Air, Burst, Aerosol Can, Spray, Short* |
+| `ad_regnfrakk` | *Summer City (Instrumental Version)*, Chasing Madison | |
+| `ad_bratt` | *Moving Up*, Origo | |
+| `ad_sparksjo` | *A Step Ahead*, Experia | |
 
 ## Adding recordings
 
@@ -190,4 +201,4 @@ Fictional brands only.
 
 ## All the clips
 
-Still to record, 28 files: Regnar 12 lines, Sol 12 lines, and the 4 ads (one voice each). Already on air: 4 station IDs, 5 intros, 3 outros and 3 news items.
+27 clips: 4 station IDs, 5 intros, 3 outros, 3 news items, 4 ads, 4 conversations between songs and 4 over the music.
