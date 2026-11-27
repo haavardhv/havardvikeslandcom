@@ -8,6 +8,7 @@ const PLAYLIST = [
   { title: 'Cappes Vei Six', src: '/audio/cappes-vei-six.mp3', dur: 253.68 },
   { title: 'Guangdong House', src: '/audio/guangdong-house.mp3', dur: 193.96 },
   { title: 'Cappes Vei Stone and Salt', src: '/audio/stone-and-salt.mp3', dur: 203.08 },
+  { title: 'Cappes Vei Six (Version 2)', src: '/audio/cappes-vei-six-2.mp3', dur: 334.97 },
 ];
 const LOOP = PLAYLIST.reduce((a, s) => a + s.dur, 0);
 export class Audio {

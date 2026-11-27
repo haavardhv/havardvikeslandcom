@@ -370,6 +370,11 @@ addEventListener('keydown', e => {
     if (e.code === 'KeyE' || e.code === 'Enter') pressed.use = true;
     if (e.code === 'KeyF') pressed.punch = true;
     if (e.code === 'KeyR') pressed.radio = true;
+    if (e.code === 'KeyY' && offer && !offer.accepted) acceptOffer();
+    if (e.code === 'KeyN' && offer && !offer.accepted) declineOffer();
+    if (e.code === 'KeyQ' || e.code === 'Tab') { openWheel(!wheelOpen); e.preventDefault(); }
+    const dg = /^Digit([1-5])$/.exec(e.code);
+    if (dg) switchTo(CHAR_IDS[+dg[1] - 1]);
   }
   if (e.code === 'KeyM') toggleSound();
   if (e.code === 'Escape' && state.mode === 'pause' && !locked) resumeGame();
@@ -396,7 +401,7 @@ function requestLock() {
 }
 document.addEventListener('pointerlockchange', () => {
   locked = document.pointerLockElement === canvas;
-  if (!locked && state.mode === 'play') pauseGame();
+  if (!locked && state.mode === 'play' && !wheelOpen) pauseGame();
 });
 // touch: left half = stick, right half = look
 const stickEl = $('stick'), stickKnob = stickEl.querySelector('i');
@@ -440,6 +445,7 @@ for (const b of document.querySelectorAll('#touch button')) {
     e.preventDefault();
     const k = b.dataset.k;
     if (k === 'run') { touch.run = !touch.run; b.classList.toggle('on', touch.run); }
+    else if (k === 'switch') openWheel(!wheelOpen);
     else pressed[k] = true;
   }, { passive: false });
 }
@@ -471,7 +477,8 @@ function later(name, sec, fn) { timers[name] = { t: sec, fn }; }
 function showPhone(from, text, sec = 6) {
   hud.phone.hidden = false;
   hud.phone.firstElementChild.textContent = from;
-  hud.phone.lastElementChild.textContent = text;
+  hud.phone.children[1].textContent = text;
+  if (hud.phone.children[2]) hud.phone.children[2].hidden = true;
   hud.phone.style.animation = 'none'; void hud.phone.offsetWidth; hud.phone.style.animation = '';
   later('phone', sec, () => { hud.phone.hidden = true; });
   audio.pickup();
@@ -488,7 +495,7 @@ function banner(title, sub, cls = '', sec = 3.2) {
   hud.banner.style.animation = 'none'; void hud.banner.offsetWidth; hud.banner.style.animation = '';
   later('banner', sec, () => { hud.banner.hidden = true; });
 }
-function setObjective(html) { hud.objective.innerHTML = html || ''; }
+function setObjective(html) { hud.objective.innerHTML = html || ''; hud.objective.dataset.k = ''; }
 const hurtEl = document.createElement('div');
 hurtEl.style.cssText = 'position:fixed;inset:0;pointer-events:none;box-shadow:inset 0 0 120px 30px rgba(200,20,10,.65);opacity:0;transition:opacity .25s';
 document.body.appendChild(hurtEl);
@@ -687,25 +694,35 @@ const HOME_SPOTS = {
   martin: [6.2, 'FL', 10.7, Math.PI, 'idle'],             // on the terrace
 };
 const HOME_LINES = {
+  havard: ['Hei hei!', 'Har du sett nøklene mine?', 'Regner det fortsatt?', 'Middag på Guangdong?'],
   oystein: ['Har du sett laderen min?', 'Det regner. Igjen.', 'Middag snart?', 'Hvem tok siste bolle?'],
   theodor: ['Otters hold hands when they sleep.', 'Jeg har ikke tid, jeg spiller.', 'Kan du skru ned?', 'Rolig, rolig.'],
   jaakko: ['Moi moi!', 'Skitur i morgen?', 'Swix, ikke Madshus.', 'Guangdong House i kveld?'],
   martin: ['Fin utsikt, ikke sant?', 'Måkene ser på oss.', 'Hvem har vasket badet?', 'Kaffe?'],
 };
+// All five are playable, as in GTA: you are one of them, and the others are out in town (or at
+// home during a story mission). `active` is who you are; the others are NPCs that stand where
+// they are and talk when you come close.
+const CHAR_IDS = ['havard', 'oystein', 'theodor', 'jaakko', 'martin'];
+const CHAR_COL = { havard: '#3a8fd8', oystein: '#2bb673', theodor: '#e0712c', jaakko: '#b48cff', martin: '#e8484f' };
+let active = CHAR_IDS.includes(save.char) ? save.char : 'havard';
 const housemates = {};
-for (const id of ['oystein', 'theodor', 'jaakko', 'martin']) {
-  const fig = new Humanoid({ person: id });
-  scene.add(fig.root);
-  const [u, f, v, h, pose] = HOME_SPOTS[id];
-  const n = { fig, id, pos: L2V(u, H[f], v), heading: h + H.theta, party: pose, downT: 0, fall: 0, placed: true, talkT: 0, mate: true };
+for (const id of CHAR_IDS) {
+  const fig = id === 'havard' ? player.fig : new Humanoid({ person: id });
+  if (id !== 'havard') scene.add(fig.root);
+  const hs = HOME_SPOTS[id];
+  const n = { fig, id, pos: hs ? L2V(hs[0], H[hs[1]], hs[2]) : new THREE.Vector3(), heading: (hs ? hs[3] : 0) + H.theta, party: hs ? hs[4] : 'idle', downT: 0, fall: 0, placed: true, talkT: 0, mate: true, active: false };
   fig.root.position.copy(n.pos); fig.root.rotation.y = n.heading;
   // name tag
   const tag = new THREE.Sprite(new THREE.SpriteMaterial({ map: textTexture([PEOPLE[id].name], { w: 256, h: 64, bg: 'rgba(16,20,24,0.7)', fg: '#f2c12e', font: '800 40px "Archivo", sans-serif', radius: 30 }), depthTest: true, fog: false }));
   tag.scale.set(0.8, 0.2, 1); tag.position.y = 2.25;
   fig.root.add(tag);
+  n.tag = tag;
   npcs.push(n);
   housemates[id] = n;
 }
+housemates.havard.active = true;
+housemates.havard.tag.visible = false;
 function knockNpc(n, from) {
   if (n.downT > 0) return;
   n.downT = 3;
@@ -724,6 +741,7 @@ function say(n, text) {
 function updateNpcs(dt) {
   const focus = state.mode === 'title' ? camera.position : player.pos;
   for (const n of npcs) {
+    if (n.active) continue;          // that one is you
     if (n.bubble) { n.bubbleT -= dt; if (n.bubbleT <= 0) { n.fig.root.remove(n.bubble); n.bubble = null; } }
     if (n.party) {
       n.fig.animate(dt, 0, n.party);
@@ -1434,7 +1452,6 @@ const MISSIONS = [
   {
     id: 'home', title: 'Hjem, vått hjem', sub: 'Home, wet home', spawn: 'bryggen', reward: 100,
     start(m) {
-      showPhone('Øystein', 'Hvor ER du? You have the only key and it’s pouring. Cappes vei 6, the black door. Now please.', 7);
       m.step = 0;
     },
     update(m) {
@@ -1488,7 +1505,7 @@ const MISSIONS = [
     id: 'scooter', title: 'Grand Theft Sparkesykkel', sub: 'The bakery on Torget is about to close', spawn: 'lane', reward: 500,
     noPunchAlarm: true,
     start(m) {
-      showPhone('Martin', 'KRISE. No boller for the party. The bakery on Torget closes any minute. Grab a scooter. Go go go.', 8);
+      showPhone('Martin', 'There’s an e-scooter just along the street. Grab it and go go go!', 6);
       m.step = 0; m.cp = 0;
       m.len = planCheckpoints();
       const s = scooters[0];
@@ -1519,7 +1536,6 @@ const MISSIONS = [
     start(m) {
       m.step = 0;
       state.alarmMin = 0;
-      showPhone('Jaakko', 'Did you make it?? Get the LAST skillingsbolle. Every gull in Bergen is watching that counter.', 7);
     },
     update(m, dt) {
       const door = _cpv.copy(BAKERY.door);
@@ -1570,7 +1586,6 @@ MISSIONS.push({
   start(m) {
     m.step = 0;
     state.alarmMin = 0;
-    showPhone('Jaakko', 'Bolle is dessert. DINNER is Guangdong House, obviously. They close at 19:00. Go, go, go!', 8);
     const r = GUANGDONG ? route(player.pos.x, player.pos.z, GUANGDONG.x, GUANGDONG.z) : null;
     let len = 0; if (r) for (let i = 1; i < r.length; i++) len += Math.hypot(r[i][0] - r[i - 1][0], r[i][1] - r[i - 1][1]);
     m.timer = Math.round(len / 5.2 + 35);
@@ -1598,6 +1613,57 @@ MISSIONS.push({
   cleanup() { takeaway.removeFromParent(); },
 });
 
+// GTA-style offers: the next story mission comes as a text from one of the housemates, which
+// you accept (Y) or put off (N). Some start where you meet them: a marker and the GPS show the
+// way, and walking into the marker starts the mission (also if you put it off).
+const OFFERS = {
+  home: { giver: 'Øystein', text: 'Hvor ER du? You have the only key and it’s pouring. Can you come home to Cappes vei 6?', at: null },
+  inside: { giver: 'Theodor', text: 'Party on the terrace tonight! Meet me at our front door, I have a plan for the landlord’s nice things.', at: () => DOOR, where: 'at the front door of Cappes vei 6' },
+  scooter: { giver: 'Martin', text: 'KRISE. No boller for the party, and the bakery on Torget closes any minute. Meet me out on Cappes vei?', at: () => L2V(9.5, H.FU, -2.3), where: 'on Cappes vei, by no. 6' },
+  bolle: { giver: 'Jaakko', text: 'Did you make it?? Get the LAST skillingsbolle. Every gull in Bergen is watching that counter.', at: null },
+  guangdong: { giver: 'Jaakko', text: 'Bolle is dessert. DINNER is Guangdong House, obviously. They close at 19:00. Up for it?', at: null },
+};
+let offer = null;          // { idx, accepted }
+const offerEl = document.createElement('div');
+offerEl.className = 'offer';
+offerEl.innerHTML = '<button type="button" data-a="yes"><kbd>Y</kbd> Accept</button><button type="button" data-a="no"><kbd>N</kbd> Later</button>';
+hud.phone.appendChild(offerEl);
+offerEl.hidden = true;
+offerEl.addEventListener('click', e => { const a = e.target.closest('button'); if (a) (a.dataset.a === 'yes' ? acceptOffer : declineOffer)(); });
+function makeOffer() {
+  const idx = save.mission;
+  if (mission || idx >= MISSIONS.length || (offer && offer.accepted)) return;
+  // story missions are Håvard's: the call waits until you are him again
+  if (active !== 'havard' || state.mode !== 'play') { later('offer', 8, makeOffer); return; }
+  const o = OFFERS[MISSIONS[idx].id];
+  offer = { idx, accepted: false };
+  showPhone(o.giver, o.text, 25);
+  offerEl.hidden = false;
+  later('phone', 25, () => { hud.phone.hidden = true; offerEl.hidden = true; if (offer && !offer.accepted) declineOffer(true); });
+}
+function acceptOffer() {
+  if (!offer || offer.accepted) return;
+  hud.phone.hidden = true; offerEl.hidden = true;
+  const idx = offer.idx, o = OFFERS[MISSIONS[idx].id];
+  if (!o.at) { offer = null; startMission(idx, { spawn: false }); return; }
+  offer.accepted = true;
+  audio.start2();
+  toast(`On my way, ${o.giver}!`, 2);
+}
+function declineOffer(silent = false) {
+  if (!offer) return;
+  hud.phone.hidden = true; offerEl.hidden = true;
+  offer = null;
+  if (!silent) toast('Maybe later.', 1.5);
+  later('offer', 60, makeOffer);
+}
+// where the next story mission starts, if it starts somewhere (and you are Håvard)
+function startPoint() {
+  if (mission || active !== 'havard' || save.mission >= MISSIONS.length) return null;
+  const o = OFFERS[MISSIONS[save.mission].id];
+  return o.at ? o.at() : null;
+}
+
 function startMission(i, { spawn = true, quiet = false } = {}) {
   if (mission && mission.def.cleanup) mission.def.cleanup(mission);
   const def = MISSIONS[i];
@@ -1609,6 +1675,7 @@ function startMission(i, { spawn = true, quiet = false } = {}) {
   if (!quiet) banner(def.title, def.sub, '', 3.4);
   audio.start2();
   def.start(mission);
+  matesT = 0;
 }
 function freeRoam() {
   mission = null;
@@ -1628,8 +1695,7 @@ function completeMission() {
   marker.visible = false;
   save.mission = next; persist();
   if (next === MISSIONS.length) { later('ending', 2.5, ending); return; }
-  if (next === 3) { later('next', 2.4, () => startMission(3, { spawn: false })); return; }
-  later('next', 4, () => startMission(next, { spawn: false }));
+  later('offer', next === 3 ? 2.5 : 8, makeOffer);
 }
 function failMission(reason) {
   audio.fail();
@@ -1638,10 +1704,25 @@ function failMission(reason) {
   if (mission.def.cleanup) mission.def.cleanup(mission);
   mission = null;
   marker.visible = false;
-  later('retry', 3.8, () => fadeThen(() => startMission(idx)));
+  void idx;
+  later('offer', 6, makeOffer);      // you get asked again
 }
 function updateMission(dt) {
-  if (!mission) { marker.visible = false; return; }
+  if (!mission) {
+    const sp = startPoint();
+    if (!sp) { marker.visible = false; if (offer === null && hud.objective.dataset.k === 'meet') { freeRoam(); } return; }
+    marker.visible = true;
+    marker.position.copy(sp);
+    if (offer && offer.accepted) {
+      const o = OFFERS[MISSIONS[save.mission].id];
+      if (hud.objective.dataset.k !== 'meet') { setObjective(`Meet <em>${o.giver}</em> ${o.where}.`); hud.objective.dataset.k = 'meet'; }
+    }
+    if (Math.hypot(player.pos.x - sp.x, player.pos.z - sp.z) < 2.2 && Math.abs(player.pos.y - sp.y) < 2.5 && !player.riding) {
+      offer = null; hud.phone.hidden = true; offerEl.hidden = true;
+      startMission(save.mission, { spawn: false });
+    }
+    return;
+  }
   if (mission.timer !== null) mission.timer -= dt;
   const r = mission.def.update(mission, dt);
   if (r === 'done') { completeMission(); return; }
@@ -1653,6 +1734,129 @@ function updateMission(dt) {
     marker.userData.ring.scale.setScalar(1 + Math.sin(t) * 0.08);
     marker.userData.beam.material.opacity = 0.16 + Math.sin(t * 1.3) * 0.05;
   } else marker.visible = false;
+}
+
+// ------------------------------------------------------------------ the five of you, around town
+// Where each of you hangs out when you are not them: on the street outside their place.
+const OUT_SPOTS = (() => {
+  const near = (k, fb) => {
+    const pl = PLACES.find(p => p.k === k);
+    if (!pl) return fb;
+    const i = nearestNode(pl.x, pl.z, 60);
+    const x = i >= 0 ? gx(i) : pl.x, z = i >= 0 ? gz(i) : pl.z;
+    return [x, world.floorAt(x, z, 300), z, Math.atan2(pl.x - x, pl.z - z)];
+  };
+  const b = SPAWN.bryggen;
+  return {
+    havard: [b[0], world.floorAt(b[0], b[2], 300), b[2], b[3]],      // on Bryggen
+    oystein: near('shop', SPAWN.torget),                               // Rema 1000 Marken
+    theodor: near('bar', SPAWN.torget),                                // Magda
+    jaakko: near('food', SPAWN.torget),                                // Guangdong House
+    martin: (() => {                                                   // by Fløibanen's lower station, off Torget
+      const fx = map.funicular[0], fz = map.funicular[1], i = nearestNode(fx, fz, 60);
+      const x = i >= 0 ? gx(i) : fx, z = i >= 0 ? gz(i) : fz;
+      return [x, world.floorAt(x, z, 300), z, Math.atan2(fx - x, fz - z)];
+    })(),
+  };
+})();
+// During a story mission the others are at home (the party is being prepared); otherwise they are
+// out in town, or where you left them. They only move when neither spot is near you.
+let matesT = 0;
+function updateMates(dt) {
+  matesT -= dt;
+  if (matesT > 0) return;
+  matesT = 1;
+  for (const id of CHAR_IDS) {
+    const n = housemates[id];
+    if (n.active) continue;
+    let want;
+    if (mission && HOME_SPOTS[id]) { const [u, f, v, h, pose] = HOME_SPOTS[id]; want = [...L2V(u, H[f], v).toArray(), h + H.theta, pose]; n.left = false; }
+    else if (n.left) continue;
+    else { const o = OUT_SPOTS[id]; want = [o[0], o[1], o[2], o[3], 'idle']; }
+    if (Math.hypot(n.pos.x - want[0], n.pos.z - want[2]) < 0.5 && Math.abs(n.pos.y - want[1]) < 0.5) continue;
+    const far = (x, z) => Math.hypot(x - player.pos.x, z - player.pos.z) > 45;
+    if (state.mode === 'title' || (far(n.pos.x, n.pos.z) && far(want[0], want[2]))) {
+      n.pos.set(want[0], want[1], want[2]); n.heading = want[3]; n.party = want[4];
+    }
+  }
+}
+for (const id of CHAR_IDS) { const n = housemates[id]; const o = OUT_SPOTS[id]; if (id !== 'havard') { n.pos.set(o[0], o[1], o[2]); n.heading = o[3]; n.party = 'idle'; } }
+
+// switching, with GTA's sky camera: up out of the street, across town, down to the other one
+let wheelOpen = false, sw = null;
+const wheelEl = $('wheel');
+for (const [k, id] of CHAR_IDS.entries()) {
+  const b = document.createElement('button');
+  b.type = 'button'; b.dataset.id = id;
+  b.style.setProperty('--c', CHAR_COL[id]);
+  b.innerHTML = `<img src="/img/people/${id}-face.jpg" alt=""><b>${PEOPLE[id].name}</b><span></span><kbd>${k + 1}</kbd>`;
+  b.addEventListener('click', () => switchTo(id));
+  wheelEl.appendChild(b);
+}
+function openWheel(on) {
+  if (on && state.mode !== 'play') return;
+  wheelOpen = on;
+  $('switch').hidden = !on;
+  if (on) {
+    for (const b of wheelEl.children) {
+      const n = housemates[b.dataset.id];
+      b.classList.toggle('me', n.active);
+      b.querySelector('span').textContent = n.active ? 'You' : inHouse(n.pos) ? 'Cappes vei 6' : (streetName(n.pos.x, n.pos.z) || 'Bergen');
+    }
+    if (!isTouch && document.pointerLockElement) document.exitPointerLock();
+  } else if (state.mode === 'play') requestLock();
+}
+function switchTo(id) {
+  openWheel(false);
+  if (id === active) return;
+  const why = state.mode !== 'play' ? 'Not now' : mission ? 'Finish the mission first' : player.riding ? 'Get off the scooter first' : player.carrying ? 'Put that down first' : null;
+  if (why) { toast(why, 1.6); return; }
+  const to = housemates[id];
+  state.mode = 'switch';
+  audio.whoosh();
+  sw = { t: 0, id, a: camera.position.clone(), from: player.pos.clone(), b: to.pos.clone(), look: new THREE.Vector3(), swapped: false };
+}
+// make `id` the one you play, at their position
+function swapTo(id) {
+  const old = housemates[active], nw = housemates[id];
+  old.active = false; old.tag.visible = true; old.left = true;
+  old.pos.copy(player.pos); old.heading = player.heading; old.party = 'idle'; old.fall = 0; old.downT = 0;
+  old.fig.body.rotation.x = 0;
+  nw.active = true; nw.tag.visible = false; nw.left = false;
+  if (nw.bubble) { nw.fig.root.remove(nw.bubble); nw.bubble = null; }
+  player.fig = nw.fig;
+  nw.fig.elbows[0].add(carryHold);
+  player.pos.copy(nw.pos); player.vel.set(0, 0, 0); player.heading = nw.heading;
+  player.knockT = 0; player.health = 100;
+  cam.yaw = nw.heading + Math.PI; cam.pitch = 0.3; cam.cur = cam.dist = 4.4;
+  active = id; save.char = id; persist();
+}
+function updateSwitch(dt) {
+  sw.t += dt;
+  const UP = 110, T1 = 0.8, T2 = 1.9, T3 = 2.8;
+  const ease = k => k * k * (3 - 2 * k);
+  const up = v => _v2.set(v.x, v.y + UP, v.z);
+  if (sw.t < T1) {
+    const e = ease(sw.t / T1);
+    camera.position.lerpVectors(sw.a, up(sw.from), e);
+    camera.lookAt(sw.from);
+  } else if (sw.t < T2) {
+    if (!sw.swapped) { sw.swapped = true; swapTo(sw.id); }
+    const e = ease((sw.t - T1) / (T2 - T1));
+    const pa = up(sw.from).clone(), pb = up(sw.b).clone();
+    camera.position.lerpVectors(pa, pb, e);
+    sw.look.lerpVectors(sw.from, sw.b, e);
+    camera.lookAt(sw.look.x, sw.look.y, sw.look.z + 0.01);
+  } else if (sw.t < T3) {
+    const e = ease((sw.t - T2) / (T3 - T2));
+    const behind = _v.set(player.pos.x + Math.sin(cam.yaw) * 4.4, player.pos.y + 2.0, player.pos.z + Math.cos(cam.yaw) * 4.4);
+    camera.position.lerpVectors(up(sw.b).clone(), behind, e);
+    camera.lookAt(player.pos.x, player.pos.y + 1.4, player.pos.z);
+  } else {
+    state.mode = 'play'; sw = null;
+    toast(PEOPLE[active].name, 1.4);
+    if (!isTouch) requestLock();
+  }
 }
 
 // ------------------------------------------------------------------ death, water, respawn
@@ -1692,7 +1896,8 @@ function die(title, sub) {
   later('respawn', 3, () => fadeThen(() => {
     player.health = 100; state.alarm = 0; player.knockT = 0;
     state.mode = 'play';
-    if (mission) startMission(mission.idx); else respawn();
+    if (mission) failMission('Knocked out. You come round at home.');
+    respawn();
   }));
 }
 
@@ -1719,8 +1924,9 @@ function ending() {
   later('end2', 7.5, () => banner('Takk for at du spilte', 'Free roam unlocked: find the lost umbrellas', '', 4));
   later('end3', 11, () => {
     state.mode = 'play'; state.cut = null; weather.forced = null; save.done = true; persist(); freeRoam(); if (!locked) requestLock();
-    // back to their usual spots
-    for (const id in HOME_SPOTS) { const [u, f, v, h, pose] = HOME_SPOTS[id], n = housemates[id]; n.pos.copy(L2V(u, H[f], v)); n.heading = h + H.theta; n.party = pose; }
+    // back to their usual spots (out of sight)
+    for (const id of CHAR_IDS) { const n = housemates[id]; if (!n.active) { n.party = 'idle'; n.left = false; } }
+    matesT = 0;
   });
 }
 function updateCut(dt) {
@@ -1751,9 +1957,11 @@ function startGame() {
   if (isTouch) $('touch').hidden = false;
   audio.start();
   state.mode = 'play';
-  const idx = save.mission || 0;
-  if (idx >= MISSIONS.length) { placePlayer(SPAWN.home); freeRoam(); }
-  else startMission(idx);
+  // you start in free roam, wherever your character is in town; the next mission comes as a text
+  placePlayer(housemates[active].left ? [housemates[active].pos.x, housemates[active].pos.y, housemates[active].pos.z, housemates[active].heading] : OUT_SPOTS[active]);
+  freeRoam();
+  matesT = 0;
+  if ((save.mission || 0) < MISSIONS.length) later('offer', 5, makeOffer);
   requestLock();
   later('help', 14, () => { $('help').style.opacity = 0; });
 }
@@ -1771,7 +1979,7 @@ function pauseGame() {
   if (state.mode !== 'play') return;
   state.mode = 'pause';
   $('pause').hidden = false;
-  $('pausetitle').textContent = mission ? mission.def.title : 'Cappes Vei 6';
+  $('pausetitle').textContent = mission ? mission.def.title : PEOPLE[active].name;
   $('pausestats').textContent = `kr ${save.money.toLocaleString('nb-NO')} · umbrellas ${save.umbrellas.length}/${UMBRELLAS.length}`;
   $('restart').hidden = !mission;
   $('fact').innerHTML = '<b>Bergen fact</b>' + FACTS[factIdx++ % FACTS.length];
@@ -1800,7 +2008,14 @@ $('reset').addEventListener('click', () => {
   for (const u of umbrellaObjs) u.o.visible = true;
   shownMoney = 0;
   resumeGame();
-  fadeThen(() => startMission(0));
+  fadeThen(() => {
+    if (mission) { if (mission.def.cleanup) mission.def.cleanup(mission); mission = null; }
+    offer = null; hud.phone.hidden = true; offerEl.hidden = true;
+    if (active !== 'havard') swapTo('havard');
+    const sp = OUT_SPOTS.havard; placePlayer(sp);
+    freeRoam(); matesT = 0;
+    later('offer', 5, makeOffer);
+  });
 });
 
 // ------------------------------------------------------------------ main loop
@@ -1822,20 +2037,23 @@ function frame(now) {
   if (state.mode === 'title') {
     updateTitleCam(time);
   } else {
-    if (state.mode === 'play' || state.mode === 'dead' || state.mode === 'cut') {
+    if (state.mode === 'play' || state.mode === 'dead' || state.mode === 'cut' || state.mode === 'switch') {
       if (state.mode === 'play') updatePlayer(dt);
-      else if (!window.__director) player.fig.animate(dt, 0, state.mode === 'dead' ? 'down' : 'walk');
+      else if (!window.__director) player.fig.animate(dt, 0, state.mode === 'dead' ? 'down' : state.mode === 'switch' ? 'idle' : 'walk');
       for (const s of scooters) if (s !== player.riding) updateScooter(s, dt, { x: 0, y: 0 });
       updateDoors(dt);
       updateAlarm(dt);
       if (state.mode === 'play') updateMission(dt);
       updateUmbrellas(dt, time);
       updatePlaces(dt, time);
-      if (state.mode === 'cut') updateCut(dt); else updateCamera(dt);
+      if (state.mode === 'cut') updateCut(dt); else if (state.mode === 'switch') updateSwitch(dt); else updateCamera(dt);
     }
     updateHud(dt);
     const blips = [];
     if (mission && mission.target) blips.push({ x: mission.target.x, z: mission.target.z, c: '#f2c12e', edge: true, r: 8 });
+    { const sp = startPoint(); if (sp) blips.push({ x: sp.x, z: sp.z, c: '#f2c12e', edge: true, r: 8, label: OFFERS[MISSIONS[save.mission].id].giver }); }
+    // the others, in their colours (not while they are all at home)
+    for (const id of CHAR_IDS) { const n = housemates[id]; if (n.active || inHouse(n.pos)) continue; blips.push({ x: n.pos.x, z: n.pos.z, c: CHAR_COL[id], r: 6, label: PEOPLE[id].name, edge: true }); }
     if (mission && mission.blips) blips.push(...mission.blips);
     if (!mission || mission.def.id === 'scooter') for (const s of scooters) if (s !== player.riding) blips.push({ x: s.pos.x, z: s.pos.z, c: '#2bb673', r: 5 });
     for (const a of gulls) if (['orbit', 'dive', 'climb', 'carry'].includes(a.state)) blips.push({ x: a.pos.x, z: a.pos.z, c: a.state === 'carry' ? '#f2c12e' : '#d2301f', r: 4 });
@@ -1845,7 +2063,7 @@ function frame(now) {
     gpsT -= dt;
     if (gpsT <= 0) {
       gpsT = 1.2;
-      const tgt = mission && mission.target;
+      const tgt = (mission && mission.target) || startPoint();
       gps = tgt && !inHouse(player.pos) && Math.hypot(tgt.x - player.pos.x, tgt.z - player.pos.z) > 15 ? route(player.pos.x, player.pos.z, tgt.x, tgt.z) : null;
       if (gps) gps.unshift([player.pos.x, player.pos.z]);
       const sn = inHouse(player.pos) ? 'Cappes vei 6' : streetName(player.pos.x, player.pos.z);
@@ -1869,6 +2087,7 @@ function frame(now) {
   }
   pressed.jump = pressed.punch = pressed.use = pressed.radio = false;
 
+  updateMates(dt);
   updateNpcs(dt);
   updateGulls(dt);
   updateRain(dt);
@@ -1908,9 +2127,10 @@ function frame(now) {
   }
 }
 placePlayer(SPAWN.home);
+if (active !== 'havard') { const id = active; active = 'havard'; swapTo(id); }
 requestAnimationFrame(frame);
 $('play').disabled = false;
 $('play').textContent = save.mission > 0 ? (save.mission >= MISSIONS.length ? 'Free roam' : 'Continue') : 'Play';
 
 // debug hooks for testing
-window.__gt = { audio, scene, renderer, camera, player, cam, world, state, startMission, save, weather, scooters, gulls, mission: () => mission, startGame, raiseAlarm, ending, L2V, L2W, W2L, H, house, city, route, BAKERY, CHECKPOINTS: () => CHECKPOINTS, inHouse, housemates, PLACES, hitPlayer, dropBolle, bolle: () => ({ drop: bolleDrop, carrying: !!player.carrying }) };
+window.__gt = { gameTime: () => time, audio, switchTo, swapTo, mates: () => housemates, active: () => active, OUT_SPOTS, offer: () => offer, acceptOffer, declineOffer, makeOffer, scene, renderer, camera, player, cam, world, state, startMission, save, weather, scooters, gulls, mission: () => mission, startGame, raiseAlarm, ending, L2V, L2W, W2L, H, house, city, route, BAKERY, CHECKPOINTS: () => CHECKPOINTS, inHouse, housemates, PLACES, hitPlayer, dropBolle, bolle: () => ({ drop: bolleDrop, carrying: !!player.carrying }) };

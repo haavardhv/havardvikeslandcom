@@ -32,10 +32,11 @@
     <div id="objective"></div>
     <div id="prompt" hidden></div>
     <div id="phone" hidden><b></b><span></span></div>
+    <div id="switch" hidden><div id="wheel"></div><p>Switch character · <kbd>1</kbd>–<kbd>5</kbd> or click · <kbd>Q</kbd> to close</p></div>
     <div id="toast" hidden></div>
     <div id="radio" hidden><b></b><span></span></div>
     <div id="banner" hidden><b></b><span></span></div>
-    <div id="help">WASD move · mouse look · Shift run · Space jump · Click punch · E use · R radio · Esc pause</div>
+    <div id="help">WASD move · mouse look · Shift run · Space jump · Click punch · E use · R radio · Q switch · Esc pause</div>
     <button id="pausebtn" type="button" aria-label="Pause">II</button>
   </div>
 
@@ -46,6 +47,7 @@
     <button data-k="use" type="button">E</button>
     <button data-k="run" type="button">Run</button>
     <button data-k="radio" type="button">Radio</button>
+    <button data-k="switch" type="button">Switch</button>
   </div>
 
   <section id="title">
@@ -53,7 +55,7 @@
       <p class="kicker">Grand Theft</p>
       <h1>Cappes Vei&nbsp;6</h1>
       <p class="where">Bryggen · Torget · Fjellet · Bergen</p>
-      <p class="blurb">You are Håvard. It is raining (it is Bergen), a gang of seagulls runs Fjellet, and Øystein, Theodor, Martin and Jaakko are waiting at Cappes vei 6. Get home, throw a party on the terrace, and get dinner from Guangdong House before it closes.</p>
+      <p class="blurb">Five friends share Cappes vei 6, and you can be any of them. It is raining (it is Bergen) and a gang of seagulls runs Fjellet. Håvard has the only key, there is a party to throw on the terrace, and Guangdong House closes at seven.</p>
       <button id="play" type="button" disabled>Loading…</button>
       <dl class="keys">
         <div><dt>WASD</dt><dd>move</dd></div>
@@ -63,6 +65,8 @@
         <div><dt>Click / F</dt><dd>punch</dd></div>
         <div><dt>E</dt><dd>doors, scooters</dd></div>
         <div><dt>R</dt><dd>scooter radio</dd></div>
+        <div><dt>Q / 1–5</dt><dd>switch character</dd></div>
+        <div><dt>Y / N</dt><dd>accept a mission</dd></div>
       </dl>
       <p class="credit">Streets and buildings from OpenStreetMap (© OpenStreetMap contributors, ODbL). Terrain from Kartverket (CC BY 4.0).</p>
     </div>

@@ -103,6 +103,30 @@ body {
   animation: pop 0.2s ease-out;
 }
 
+#phone .offer { display: flex; gap: 8px; margin-top: 10px; }
+#phone .offer button { flex: 1; border: 0; border-radius: 8px; padding: 7px 8px; font: 800 13px/1 var(--cond); letter-spacing: 0.04em; text-transform: uppercase; cursor: pointer; background: #101418; color: #f4f1ea; pointer-events: auto; }
+#phone .offer button[data-a="no"] { background: rgba(16, 20, 24, 0.12); color: #101418; }
+#phone .offer kbd { font: 800 11px/1 var(--cond); background: #f2c12e; color: #101418; border-radius: 3px; padding: 1px 5px; margin-right: 4px; }
+
+#switch {
+  position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center;
+  background: radial-gradient(circle, rgba(16, 20, 24, 0.55), rgba(16, 20, 24, 0.2) 70%); pointer-events: auto;
+}
+#switch[hidden] { display: none; }
+#wheel { display: flex; flex-wrap: wrap; justify-content: center; gap: clamp(8px, 1.6vw, 18px); max-width: 92vw; }
+#wheel button {
+  position: relative; width: clamp(92px, 13vw, 140px); border: 0; background: none; color: #f4f1ea; cursor: pointer;
+  display: flex; flex-direction: column; align-items: center; gap: 4px; text-shadow: var(--shadow); font-family: inherit;
+}
+#wheel img { width: clamp(72px, 10vw, 112px); aspect-ratio: 1; object-fit: cover; border-radius: 50%; border: 4px solid var(--c); box-shadow: 0 6px 24px rgba(0, 0, 0, 0.45); transition: transform 0.15s; }
+#wheel button:hover img, #wheel button:focus-visible img { transform: scale(1.08); }
+#wheel button.me img { filter: grayscale(0.6); opacity: 0.7; }
+#wheel b { font: 900 clamp(15px, 1.8vw, 19px)/1 var(--cond); text-transform: uppercase; letter-spacing: 0.04em; }
+#wheel span { font: 600 12px/1.2 "Archivo", sans-serif; opacity: 0.85; max-width: 100%; }
+#wheel kbd { position: absolute; top: 0; right: 10%; font: 800 12px/1 var(--cond); background: var(--c); color: #101418; border-radius: 4px; padding: 3px 6px; }
+#switch p { margin-top: 18px; font: 700 13px/1.4 var(--cond); color: #f4f1ea; text-shadow: var(--shadow); }
+#switch p kbd { background: #f4f1ea; color: #101418; border-radius: 3px; padding: 0 5px; font: 800 12px/1.4 var(--cond); }
+
 #radio {
   position: absolute; left: 50%; top: 9%; transform: translateX(-50%);
   text-align: center; text-shadow: var(--shadow); pointer-events: none;
