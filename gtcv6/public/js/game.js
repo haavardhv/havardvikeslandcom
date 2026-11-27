@@ -661,16 +661,16 @@ function bubble(text) {
 // ------------------------------------------------------------------ pedestrians
 const LINES = ['Hei!', 'Uff!', 'Pass deg!', 'Typisk.', 'Neimen!', 'Au!', 'Hallo?!', 'Rolig!', 'Æ e fra Bergen!'];
 const npcs = [];
-const NPC_N = isTouch ? 6 : 10;
+const NPC_N = isTouch ? 14 : 30;
 const jackets = [0x2c4c7a, 0x6b2d3a, 0x3f6b4a, 0x22252b, 0xb14b2e, 0x8a8f96, 0x2f5d3a, 0xd9b75a, 0x4a3f6b, 0x1d1d1d];
 const umbrellaCols = [0xd23a2b, 0x2b2f36, 0xf2c12e, 0x3a6ea8, null, 0x7a2e8a, 0xe8e2d2, 0x101418, null, 0x2bb673];
 function placeNpc(n, near) {
-  // a street node 25-90 m from the player, out of sight if possible
+  // a street node 20-110 m from the player
   for (let k = 0; k < 40; k++) {
     const i = Math.floor(Math.random() * gAdj.length);
     if (!gAdj[i].length) continue;
     const d = Math.hypot(gx(i) - near.x, gz(i) - near.z);
-    if (d < 25 || d > 90) continue;
+    if (d < 20 || d > 110) continue;
     n.a = i; n.b = gAdj[i][Math.floor(Math.random() * gAdj[i].length)]; n.t = Math.random();
     n.pos.set(lerp(gx(n.a), gx(n.b), n.t), 0, lerp(gz(n.a), gz(n.b), n.t));
     n.pos.y = world.floorAt(n.pos.x, n.pos.z, 300);
@@ -759,7 +759,7 @@ function updateNpcs(dt) {
       }
       continue;
     }
-    if (!n.placed || n.pos.distanceTo(focus) > 140) { n.placed = placeNpc(n, focus); n.fig.root.visible = n.placed; if (!n.placed) continue; }
+    if (!n.placed || n.pos.distanceTo(focus) > 150) { n.placed = placeNpc(n, focus); n.fig.root.visible = n.placed; if (!n.placed) continue; }
     // far away: don't draw, don't animate; mid distance: no shadow
     const dCam = n.pos.distanceTo(camera.position);
     n.fig.root.visible = dCam < 95;
@@ -878,9 +878,12 @@ function updateScooter(s, dt, input) {
 
 // ------------------------------------------------------------------ seagulls
 const gulls = [];
-const GULL_N = 12;
+const GULL_N = isTouch ? 20 : 30;
 // on the quay at Fisketorget
-const groundSpots = [[-452, -222], [-449, -230], [-455, -214], [-446, -238], [-562, -421], [-577, -436], [-541, -400]].map(([x, z]) => [x, world.floorAt(x, z, 50), z]);
+// on the quays at Fisketorget and Bryggen, on Torget, Domkirkeplassen and Asylplassen
+const groundSpots = [[-452, -222], [-449, -230], [-455, -214], [-446, -238], [-562, -421], [-577, -436], [-541, -400],
+  [-528, -381], [-511, -352], [-432, -204], [-440, -196], [-185, -82], [-176, -90], [-60, 36], [-54, 44]]
+  .slice(0, isTouch ? 9 : 15).map(([x, z]) => [x, world.floorAt(x, z, 50), z]);
 for (let i = 0; i < GULL_N; i++) {
   const g = new Gull();
   scene.add(g.root);
@@ -906,7 +909,7 @@ function updateGulls(dt) {
   const indoors = inHouse(p);
   const head = _v2.set(p.x, p.y + 1.4, p.z);
   // how many attackers the alarm calls for
-  const want = state.alarm > 0 ? Math.min(GULL_N - 2, state.alarm * 2) : 0;
+  const want = state.alarm > 0 ? Math.min(10, state.alarm * 2) : 0;     // the same attack per alarm level, however big the flock
   let have = gulls.filter(a => ['orbit', 'dive', 'climb'].includes(a.state)).length;
   if (have < want) {
     const cands = gulls.filter(a => a.state === 'circle' || a.state === 'ground' || a.state === 'leave').sort((x, y) => x.pos.distanceToSquared(p) - y.pos.distanceToSquared(p));
@@ -1022,7 +1025,10 @@ function updateGulls(dt) {
       a.g.root.lookAt(_v);
       a.g.root.rotateZ(clamp(-a.w * 6, -0.5, 0.5) * (a.state === 'circle' ? 1 : 0));
     }
-    a.g.root.visible = a.pos.distanceToSquared(camera.position) < 170 * 170;
+    const d2 = a.pos.distanceToSquared(camera.position);
+    a.g.root.visible = d2 < 170 * 170;
+    const sh = d2 < 45 * 45;
+    if (a.shadow !== sh) { a.shadow = sh; a.g.root.traverse(o => { if (o.isMesh) o.castShadow = sh; }); }
     a.g.animate(dt, flap, grounded);
   }
 }
