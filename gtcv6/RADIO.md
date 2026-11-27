@@ -2,6 +2,15 @@
 
 Scripts for the talk between the songs on the scooter radio: a DJ, station IDs, fake ads, the news, and short lines that react to what happens in the game. Generate the audio from these, send the files back named after the IDs below (for example `ad_maakeskrekk.mp3`), and they will be wired into the station.
 
+## Recorded so far
+
+| Clips | Status |
+| --- | --- |
+| Song intros (5) | In the game, voiced by Epidemic Sound's *Damon*, levelled to −16 LUFS (the songs are about −14) |
+| Everything else | Waiting for audio |
+
+The clips live in `public/audio/radio/`, named after their IDs, as 96 kbps mono MP3. `public/js/audio.js` lists the ones that exist (`TALK`, with their durations). A slot without a clip is left out of the broadcast.
+
 ## How it will play
 
 The station already runs on one global clock: the songs follow each other in a fixed loop, and getting on a scooter tunes in wherever the broadcast is. The chatter goes into that same loop, between the songs, so it keeps the same behaviour. One full loop of the station:

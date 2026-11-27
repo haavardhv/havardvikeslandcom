@@ -1,16 +1,37 @@
 // Synthesised sound: rain, footsteps, seagulls, punches, the scooter motor and
-// a few jingles. The only audio files are the songs on the scooter radio.
+// a few jingles. The only audio files are the songs and the DJ on the scooter radio.
 export const STATION = 'Radio Fjellet 6';
-// the station's playlist, in broadcast order (durations in seconds, so the station clock works
-// before a song has loaded)
-const PLAYLIST = [
-  { title: 'Grand Theft Cappes Vei 6', src: '/audio/grand-theft-cappes-vei-6.mp3', dur: 167.16 },
-  { title: 'Cappes Vei Six', src: '/audio/cappes-vei-six.mp3', dur: 253.68 },
-  { title: 'Guangdong House', src: '/audio/guangdong-house.mp3', dur: 193.96 },
-  { title: 'Cappes Vei Stone and Salt', src: '/audio/stone-and-salt.mp3', dur: 203.08 },
-  { title: 'Cappes Vei Six (Version 2)', src: '/audio/cappes-vei-six-2.mp3', dur: 334.97 },
+const DJ = 'Regnar';
+// the songs, in broadcast order (durations in seconds, so the station clock works before a file
+// has loaded)
+const SONGS = [
+  { id: 'grand-theft-cappes-vei-6', title: 'Grand Theft Cappes Vei 6', dur: 167.16 },
+  { id: 'cappes-vei-six', title: 'Cappes Vei Six', dur: 253.68 },
+  { id: 'guangdong-house', title: 'Guangdong House', dur: 193.96 },
+  { id: 'stone-and-salt', title: 'Cappes Vei Stone and Salt', dur: 203.08 },
+  { id: 'cappes-vei-six-2', title: 'Cappes Vei Six (Version 2)', dur: 334.97 },
 ];
-const LOOP = PLAYLIST.reduce((a, s) => a + s.dur, 0);
+// Regnar's clips recorded so far (gtcv6/RADIO.md has the scripts), with their durations. A slot
+// whose clip is not here yet is left out of the broadcast.
+const TALK = {
+  'intro_grand-theft-cappes-vei-6': 7.58,
+  'intro_cappes-vei-six': 6.71,
+  'intro_guangdong-house': 7.11,
+  'intro_stone-and-salt': 7.34,
+  'intro_cappes-vei-six-v2': 6.37,
+};
+const INTRO = { 'grand-theft-cappes-vei-6': 'intro_grand-theft-cappes-vei-6', 'cappes-vei-six': 'intro_cappes-vei-six',
+  'guangdong-house': 'intro_guangdong-house', 'stone-and-salt': 'intro_stone-and-salt', 'cappes-vei-six-2': 'intro_cappes-vei-six-v2' };
+// the broadcast: every song, introduced by Regnar
+const PROGRAM = [];
+for (const song of SONGS) {
+  const intro = INTRO[song.id];
+  if (TALK[intro]) PROGRAM.push({ talk: true, title: DJ, src: `/audio/radio/${intro}.mp3`, dur: TALK[intro] });
+  PROGRAM.push({ title: song.title, src: `/audio/${song.id}.mp3`, dur: song.dur });
+}
+const START = [];
+{ let t = 0; for (const seg of PROGRAM) { START.push(t); t += seg.dur; } }
+const LOOP = PROGRAM.reduce((a, seg) => a + seg.dur, 0);
 export class Audio {
   constructor() {
     this.ctx = null;
@@ -51,45 +72,78 @@ export class Audio {
     this.motor.start();
     this.motorF = mf;
     // the scooter radio: a station that has been broadcasting since the game started, so getting
-    // on a scooter tunes in mid-song, like the radio in a car
-    const el = this.radioEl = document.createElement('audio');
-    el.preload = 'none';
-    el.addEventListener('ended', () => { if (this.radioOn) this._tune(true); });
+    // on a scooter tunes in mid-song (or mid-sentence), like the radio in a car. Two players take
+    // turns: while one plays a segment, the other has the next one loaded, so Regnar runs
+    // straight into the song.
     this.radioGain = c.createGain(); this.radioGain.gain.value = 0;
     this.radioTone = c.createBiquadFilter(); this.radioTone.type = 'highshelf'; this.radioTone.frequency.value = 6000; this.radioTone.gain.value = -4;
-    c.createMediaElementSource(el).connect(this.radioTone).connect(this.radioGain).connect(this.master);
+    this.radioTone.connect(this.radioGain).connect(this.master);
+    this.radioEls = [0, 1].map(() => {
+      const el = document.createElement('audio');
+      el.preload = 'none';
+      el.addEventListener('ended', () => { if (this.radioOn && el === this.radioEl) this._advance(); });
+      c.createMediaElementSource(el).connect(this.radioTone);
+      return el;
+    });
+    this.radioEl = this.radioEls[0];
     this.radioT0 = performance.now() - Math.random() * LOOP * 1000;   // tune in somewhere in the broadcast
     this.radioOn = false;
+    this.segIdx = -1;
   }
-  // play whatever the station is broadcasting right now
-  _tune(next = false) {
-    const el = this.radioEl;
+  _load(el, seg) {
+    if (el.dataset.src === seg.src) return;
+    el.dataset.src = seg.src;
+    el.preload = 'auto';
+    el.src = seg.src;
+    el.load();
+  }
+  // have the segment after `i` ready in the other player
+  _preloadAfter(i) {
+    const other = this.radioEls[this.radioEl === this.radioEls[0] ? 1 : 0];
+    this._load(other, PROGRAM[(i + 1) % PROGRAM.length]);
+  }
+  // play whatever the station is broadcasting right now (the clock runs while you are away)
+  _tune() {
     let t = ((performance.now() - this.radioT0) / 1000) % LOOP, i = 0;
-    while (t >= PLAYLIST[i].dur) { t -= PLAYLIST[i].dur; i++; }
-    if (next) { i = (this.songIdx + 1) % PLAYLIST.length; t = 0; }
-    const song = PLAYLIST[i], asked = performance.now();
+    while (i < PROGRAM.length - 1 && t >= PROGRAM[i].dur) { t -= PROGRAM[i].dur; i++; }
+    const seg = PROGRAM[i], asked = performance.now();
+    // if the other player already has this segment loaded, use it
+    if (this.radioEl.dataset.src !== seg.src) {
+      const other = this.radioEls.find(e => e.dataset.src === seg.src);
+      if (other) this.radioEl = other;
+    }
+    const el = this.radioEl;
+    this.segIdx = i;
     const go = () => {
-      if (!this.radioOn) return;
+      if (!this.radioOn || el !== this.radioEl) return;
       // where the broadcast is now, the loading time included
-      const at = Math.min(t + (performance.now() - asked) / 1000, (el.duration || song.dur) - 0.5);
-      try { if (Math.abs(el.currentTime - at) > 1) el.currentTime = at; } catch (e) { /* plays from where it is */ }
+      const at = Math.min(t + (performance.now() - asked) / 1000, (el.duration || seg.dur) - 0.3);
+      try { if (Math.abs(el.currentTime - at) > 0.5) el.currentTime = at; } catch (e) { /* plays from where it is */ }
       el.play().catch(() => {});
     };
-    if (this.songIdx !== i) {
-      this.songIdx = i;
-      el.preload = 'auto';
-      el.src = song.src;
-      el.load();
-      el.addEventListener('loadedmetadata', go, { once: true });
-    } else go();
-    if (next) this.radioT0 = performance.now() - (PLAYLIST.slice(0, i).reduce((a, s2) => a + s2.dur, 0)) * 1000;   // keep the clock with the song
-    if (this.onSong) this.onSong(STATION, song.title);
+    this._load(el, seg);
+    if (el.readyState >= 1) go(); else el.addEventListener('loadedmetadata', go, { once: true });
+    this._preloadAfter(i);
+    if (this.onSong) this.onSong(STATION, seg.title);
+  }
+  // the segment ended: the other player takes over with the next one, from the top
+  _advance() {
+    const i = (this.segIdx + 1) % PROGRAM.length, seg = PROGRAM[i];
+    this.radioEl = this.radioEls[this.radioEl === this.radioEls[0] ? 1 : 0];
+    const el = this.radioEl;
+    this.segIdx = i;
+    this._load(el, seg);
+    const go = () => { if (!this.radioOn || el !== this.radioEl) return; try { el.currentTime = 0; } catch (e) { /* */ } el.play().catch(() => {}); };
+    if (el.readyState >= 1) go(); else el.addEventListener('loadedmetadata', go, { once: true });
+    this.radioT0 = performance.now() - START[i] * 1000;         // keep the clock with the broadcast
+    this._preloadAfter(i);
+    if (!seg.talk && this.onSong) this.onSong(STATION, seg.title);
   }
   // turn the radio on or off; call as often as you like
   setRadio(on) {
-    if (!this.ctx || !this.radioEl || on === this.radioOn) return;
+    if (!this.ctx || !this.radioEls || on === this.radioOn) return;
     this.radioOn = on;
-    const el = this.radioEl, t = this.ctx.currentTime;
+    const t = this.ctx.currentTime;
     clearTimeout(this._radioStop);
     if (on) {
       this._tune();
@@ -98,11 +152,11 @@ export class Audio {
     } else {
       this.radioGain.gain.cancelScheduledValues(t);
       this.radioGain.gain.setTargetAtTime(0, t, 0.15);
-      this._radioStop = setTimeout(() => { if (!this.radioOn) el.pause(); }, 700);
+      this._radioStop = setTimeout(() => { if (!this.radioOn) for (const e of this.radioEls) e.pause(); }, 700);
     }
   }
   pauseRadio(paused) {
-    if (!this.radioEl || !this.radioOn) return;
+    if (!this.radioEls || !this.radioOn) return;
     if (paused) this.radioEl.pause(); else this.radioEl.play().catch(() => {});
   }
   setOn(on) {
