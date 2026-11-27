@@ -1,8 +1,9 @@
 // Grand Theft Cappes Vei 6 — main loop, player, camera, seagulls, missions, HUD.
 import * as THREE from '../vendor/three.module.min.js';
 import { buildTextures, textTexture } from './textures.js';
-import { loadMapData, buildCity } from './city.js';
+import { loadMapData, buildCity, PolyWorld } from './city.js';
 import { buildHouse6 } from './house6.js';
+import { buildOffice, officeFrame } from './office.js';
 import { Physics } from './physics.js';
 import { Humanoid, Gull, makeScooter, makeItem, makeMarker, makeArrow, makePistol, PEOPLE, SCOOTER_LAMP } from './actors.js';
 import { Audio, lineDur } from './audio.js';
@@ -189,12 +190,96 @@ const phys = new Physics(city.terrain, city.polys);
 phys.addLocal(house.world, OX, OZ, HUX, HUZ);
 const world = phys;
 for (const d of house.doors) d.pos = L2V(d.local.x, d.local.y, d.local.z);
-for (const [x, y, z] of house.lights.slice(0, 3)) {
+const interiorLights = house.lights.slice(0, 3).map(([x, y, z]) => {
   const l = new THREE.PointLight(0xffd6a0, 5, 9, 1.6);
   l.position.copy(L2V(x, y, z));
   scene.add(l);
-}
+  return l;
+});
 const inHouse = p => { const [u, v] = W2L(p.x, p.z); return house.inside(u, p.y, v); };
+
+// Myreze's office: Halfdan Kjerulfs gate 4, on the 4th floor, built inside the OSM building
+const OF = officeFrame();
+const OL2W = (x, z) => [OF.ox + OF.ux * x - OF.uz * z, OF.oz + OF.uz * x + OF.ux * z];
+const OW2L = (x, z) => { const dx = x - OF.ox, dz = z - OF.oz; return [dx * OF.ux + dz * OF.uz, -dx * OF.uz + dz * OF.ux]; };
+const OL2V = (x, y, z) => { const [wx, wz] = OL2W(x, z); return new THREE.Vector3(wx, y, wz); };
+const officeBld = (() => { const [x, z] = OL2W(2, 0); return map.buildings.find(b => PolyWorld.inside(b.p, x, z)) || null; })();
+// the 4th storey of the facade: its windows are the second row down from the eaves (2.9 m storeys)
+const OFFICE_FLOOR = officeBld ? officeBld.t - 5.9 : 14.0;
+const officeGroup = new THREE.Group();
+officeGroup.position.set(OF.ox, 0, OF.oz);
+officeGroup.rotation.y = OF.theta;
+scene.add(officeGroup);
+const office = buildOffice(officeGroup, T, OFFICE_FLOOR);
+officeGroup.updateMatrixWorld(true);
+phys.addLocal(office.world, OF.ox, OF.oz, OF.ux, OF.uz);
+for (const d of office.doors) d.pos = OL2V(d.local.x, d.local.y, d.local.z);
+const inOffice = p => { const [x, z] = OW2L(p.x, p.z); return office.inside(x, p.y, z); };
+const isIndoors = p => inHouse(p) || inOffice(p);
+// inside the office, the building's own outline doesn't block you or the camera; the office's walls do
+city.polys.hollowAt = (x, y, z) => { const [lx, lz] = OW2L(x, z); return office.inside(lx, y, lz); };
+{
+  const [x, z] = OL2W(2, 0);
+  for (const it of city.polys.query(x - 1, z - 1, x + 1, z + 1)) if (it.kind && PolyWorld.insideItem(it, x, z)) it.hollow = true;
+}
+const OFFICE_CENTRE = OL2V(...office.centre);
+// the three interior lights hang wherever you are: in no. 6, or at the office
+let lightsAt = 'house';
+function updateInteriorLights() {
+  officeGroup.visible = camera.position.distanceTo(OFFICE_CENTRE) < 70;
+  const want = inOffice(player.pos) || inOffice(camera.position) ? 'office' : 'house';
+  if (want === lightsAt) return;
+  lightsAt = want;
+  interiorLights.forEach((l, i) => {
+    if (want === 'office') { l.position.copy(OL2V(...office.lights[i])); l.distance = 12; l.intensity = 7; }
+    else { l.position.copy(L2V(...house.lights[i])); l.distance = 9; l.intensity = 5; }
+  });
+}
+// the building's street door, and where you stand in front of it
+const OFFICE_STREET = (() => {
+  let x, z, nx, nz;
+  const b = officeBld;
+  if (b && b.d) {
+    const n = b.p.length / 2, i = b.d[0], j = (i + 1) % n;
+    const ax = b.p[i * 2], az = b.p[i * 2 + 1], bx = b.p[j * 2], bz = b.p[j * 2 + 1], L = Math.hypot(bx - ax, bz - az);
+    x = ax + (bx - ax) * b.d[1]; z = az + (bz - az) * b.d[1];
+    nx = (bz - az) / L; nz = -(bx - ax) / L;
+    if (PolyWorld.inside(b.p, x + nx * 0.5, z + nz * 0.5)) { nx = -nx; nz = -nz; }
+  } else {
+    [x, z] = OL2W(2.1, 5.85); nx = -OF.uz; nz = OF.ux;
+  }
+  const sx = x + nx * 1.3, sz = z + nz * 1.3;
+  return { doorX: x, doorZ: z, nx, nz, x: sx, z: sz, y: city.terrain.height(sx, sz), heading: Math.atan2(nx, nz) };
+})();
+const OFFICE_EXIT = OL2V(...office.exitDoor);
+const OFFICE_ENTRY = OL2V(...office.entry);
+{
+  // a plate by the street door
+  const S = OFFICE_STREET, tx = -S.nz, tz = S.nx;
+  const plate = new THREE.Mesh(new THREE.PlaneGeometry(0.55, 0.3), new THREE.MeshStandardMaterial({ roughness: 0.4, metalness: 0.3,
+    map: textTexture(['MYREZE', '4. etasje'], { w: 256, h: 140, bg: '#16181b', fg: '#f3f2ee', font: '700 40px "Archivo", sans-serif', radius: 10, border: '#c9a23a' }) }));
+  plate.position.set(S.doorX + tx * 0.95 + S.nx * 0.07, city.terrain.height(S.doorX + S.nx, S.doorZ + S.nz) + 1.5, S.doorZ + tz * 0.95 + S.nz * 0.07);
+  plate.rotation.y = S.heading;
+  scene.add(plate);
+}
+function stairsHere() {
+  if (state.mode !== 'play' || player.riding || dive.on || player.knockT > 0) return null;
+  const p = player.pos;
+  if (inOffice(p)) return Math.hypot(p.x - OFFICE_EXIT.x, p.z - OFFICE_EXIT.z) < 1.4 ? 'down' : null;
+  return Math.hypot(p.x - OFFICE_STREET.doorX, p.z - OFFICE_STREET.doorZ) < 2.2 && Math.abs(p.y - OFFICE_STREET.y) < 2 ? 'up' : null;
+}
+function takeStairs(dir) {
+  audio.door();
+  fadeThen(() => {
+    const up = dir === 'up';
+    const h = up ? Math.atan2(-OF.ux, -OF.uz) : OFFICE_STREET.heading;
+    if (up) player.pos.set(OFFICE_ENTRY.x, OFFICE_FLOOR + 0.02, OFFICE_ENTRY.z);
+    else player.pos.set(OFFICE_STREET.x, world.floorAt(OFFICE_STREET.x, OFFICE_STREET.z, OFFICE_STREET.y + 1), OFFICE_STREET.z);
+    player.vel.set(0, 0, 0); player.heading = h;
+    cam.yaw = h + Math.PI; cam.pitch = 0.3; cam.cur = cam.dist = up ? 2.5 : 4.4;
+    toast(up ? 'Myreze, 4th floor' : 'Halfdan Kjerulfs gate', 2);
+  });
+}
 const [AX0, AZ0, AX1, AZ1] = map.area;
 
 // walking graph (OSM streets, lanes, steps)
@@ -298,11 +383,11 @@ const rainGeo = new THREE.BufferGeometry();
   rainGeo.setAttribute('seed', new THREE.BufferAttribute(seed, 4));
   rainGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(RAIN_N * 2 * 3), 3));
 }
-const rainU = { time: { value: 0 }, cam: { value: new THREE.Vector3() }, house: { value: new THREE.Vector4(OX, OZ, HUX, HUZ) }, houseTop: { value: H.FU + 6 }, color: { value: new THREE.Color(0xb8c6d2) } };
+const rainU = { time: { value: 0 }, cam: { value: new THREE.Vector3() }, house: { value: new THREE.Vector4(OX, OZ, HUX, HUZ) }, houseTop: { value: H.FU + 6 }, office: { value: new THREE.Vector4(OF.ox, OF.oz, OF.ux, OF.uz) }, officeTop: { value: (officeBld ? officeBld.t : OFFICE_FLOOR + 6) + 1 }, color: { value: new THREE.Color(0xb8c6d2) } };
 const rain = new THREE.LineSegments(rainGeo, new THREE.ShaderMaterial({
   uniforms: rainU, transparent: true, depthWrite: false, fog: false,
   vertexShader: `
-    attribute vec4 seed; uniform float time; uniform vec3 cam; uniform vec4 house; uniform float houseTop;
+    attribute vec4 seed; uniform float time; uniform vec3 cam; uniform vec4 house; uniform float houseTop; uniform vec4 office; uniform float officeTop;
     varying float vA;
     void main() {
       float end = floor(seed.w * 0.5), spd = 11.0 + fract(seed.w) * 5.0, wind = 1.8;
@@ -313,6 +398,9 @@ const rain = new THREE.LineSegments(rainGeo, new THREE.ShaderMaterial({
       float dx = x - house.x, dz = z - house.y;
       float u = dx * house.z + dz * house.w, v = dx * -house.w + dz * house.z;
       if (u > -0.5 && u < 8.5 && v > -0.5 && v < 8.9 && y < houseTop) y = -1e5;
+      float ox = x - office.x, oz = z - office.y;
+      float ou = ox * office.z + oz * office.w, ov = ox * -office.w + oz * office.z;
+      if (ou > -4.6 && ou < 8.4 && ov > -11.5 && ov < 6.0 && y < officeTop) y = -1e5;
       vA = 0.42;
       gl_Position = projectionMatrix * viewMatrix * vec4(x, y, z, 1.0);
     }`,
@@ -371,7 +459,7 @@ const _v = new THREE.Vector3(), _v2 = new THREE.Vector3(), _dir = new THREE.Vect
 const camBox = new THREE.Vector3();
 function updateCamera(dt) {
   const p = player.pos;
-  const inside = inHouse(p);
+  const inside = isIndoors(p);
   const want = funiState.ride ? 13 : dive.on ? (dive.phase === 'free' ? 7 : 10) : lerp(player.riding ? 5.6 : inside ? 2.5 : 4.6, 3.1, gun.aimK);
   cam.dist = damp(cam.dist, want, 3, dt);
   const baseFov = camera.aspect < 0.8 ? 78 : 64;
@@ -427,8 +515,9 @@ addEventListener('keydown', e => {
     const dg = /^Digit([1-5])$/.exec(e.code);
     if (dg) switchTo(CHAR_IDS[+dg[1] - 1]);
   }
-  if (e.code === 'KeyM') toggleSound();
-  if (e.code === 'Escape' && state.mode === 'pause' && !locked) resumeGame();
+  if (e.code === 'KeyM') { if (state.mode === 'map') closeMap(); else if (state.mode === 'play') openMap(); }
+  if (e.code === 'Escape' && state.mode === 'map') closeMap();
+  else if (e.code === 'Escape' && state.mode === 'pause' && !locked) resumeGame();
   else if ((e.code === 'Escape' || e.code === 'KeyP') && state.mode === 'play') pauseGame();
 });
 addEventListener('keyup', e => { keys[e.code] = false; });
@@ -458,6 +547,7 @@ function requestLock() {
 }
 document.addEventListener('pointerlockchange', () => {
   locked = document.pointerLockElement === canvas;
+  if (locked && state.mode === 'map') { document.exitPointerLock(); return; }   // the lock came in late: the map needs the mouse
   if (!locked && state.mode === 'play' && !wheelOpen) pauseGame();
 });
 // touch: left half = stick, right half = look
@@ -655,6 +745,11 @@ mapBase.width = (MAP.x1 - MAP.x0) * MAP.ppm; mapBase.height = (MAP.z1 - MAP.z0) 
 }
 const mm = $('minimap'), mg = mm.getContext('2d'), northEl = $('north');
 let gps = null;   // [[x,z], ...] route shown on the map
+let waypoint = null, wpGps = null;   // the waypoint you set on the big map, and the route to it
+const WP_COL = '#c04ad8';
+const routeLen = r => { let d = 0; if (r) for (let i = 1; i < r.length; i++) d += Math.hypot(r[i][0] - r[i - 1][0], r[i][1] - r[i - 1][1]); return d; };
+const fmtDist = d => d >= 1000 ? (d / 1000).toFixed(1).replace('.', ',') + ' km' : Math.round(d / 10) * 10 + ' m';
+function diamond(g, x, y, r) { g.beginPath(); g.moveTo(x, y - r * 1.25); g.lineTo(x + r, y); g.lineTo(x, y + r * 1.25); g.lineTo(x - r, y); g.closePath(); }
 function drawMinimap(blips) {
   const S = mm.width, c = S / 2, scale = 2.6 * (S / 360) / MAP.ppm * 1.0;
   const p = player.pos;
@@ -664,11 +759,12 @@ function drawMinimap(blips) {
   mg.fillStyle = '#22404d'; mg.fillRect(0, 0, S, S);
   mg.translate(c, c); mg.rotate(rot); mg.scale(scale, scale);
   mg.drawImage(mapBase, -(p.x - MAP.x0) * MAP.ppm, -(p.z - MAP.z0) * MAP.ppm);
-  if (gps && gps.length > 1) {
-    mg.strokeStyle = '#f2c12e'; mg.lineWidth = 5 / scale * 1.4; mg.lineCap = 'round'; mg.lineJoin = 'round';
+  for (const [r, col] of [[gps, '#f2c12e'], [wpGps, WP_COL]]) {
+    if (!r || r.length < 2) continue;
+    mg.strokeStyle = col; mg.lineWidth = 5 / scale * 1.4; mg.lineCap = 'round'; mg.lineJoin = 'round';
     mg.globalAlpha = 0.9;
     mg.beginPath();
-    gps.forEach(([x, z], i) => (i ? mg.lineTo : mg.moveTo).call(mg, (x - p.x) * MAP.ppm, (z - p.z) * MAP.ppm));
+    r.forEach(([x, z], i) => (i ? mg.lineTo : mg.moveTo).call(mg, (x - p.x) * MAP.ppm, (z - p.z) * MAP.ppm));
     mg.stroke();
     mg.globalAlpha = 1;
   }
@@ -683,7 +779,8 @@ function drawMinimap(blips) {
     const dx = x - c, dy = y - c, l = Math.hypot(dx, dy), R = c - 14;
     if (l > R) { if (!b.edge) continue; x = c + dx / l * R; y = c + dy / l * R; }
     mg.fillStyle = b.c; mg.strokeStyle = b.label ? '#f4f1ea' : '#101418'; mg.lineWidth = 3;
-    mg.beginPath(); mg.arc(x, y, b.r || 7, 0, 7); mg.fill(); mg.stroke();
+    if (b.shape === 'wp') { mg.strokeStyle = '#f4f1ea'; diamond(mg, x, y, b.r || 8); } else { mg.beginPath(); mg.arc(x, y, b.r || 7, 0, 7); }
+    mg.fill(); mg.stroke();
     if (b.label && l < R) {
       mg.font = '700 19px Archivo, sans-serif'; mg.textAlign = 'center';
       mg.lineWidth = 4; mg.strokeStyle = 'rgba(16,20,24,.85)'; mg.strokeText(b.label, x, y - 13);
@@ -698,9 +795,258 @@ function drawMinimap(blips) {
   northEl.style.top = 50 - Math.cos(rot) * 41 + '%';
 }
 
+// ------------------------------------------------------------------ the big map
+// M (or a click on the minimap, or Map in the pause menu) opens the whole town, north up. Drag to
+// move, scroll or pinch to zoom, click to set a waypoint (click it again to take it away). The
+// GPS then shows the way there in purple, next to the mission's yellow route, as in GTA. The game
+// stands still while the map is open.
+const bm = { cv: $('bigmapc'), cx: 0, cz: 0, zoom: 1.2, ptrs: new Map(), drag: null, pinch: null, hover: null, blips: [] };
+const bmg = bm.cv.getContext('2d');
+const wpMarker = makeMarker(0xc04ad8);
+wpMarker.visible = false;
+scene.add(wpMarker);
+// one label per street name, every 160 m or so along it, for the zoomed-in map
+const streetLabels = (() => {
+  const out = [], seen = {};
+  for (const r of namedRoads) {
+    if (r.k === 'steps' || r.k === 'foot') continue;
+    const p = r.p;
+    for (let i = 0; i < p.length - 2; i += 2) {
+      const ax = p[i], az = p[i + 1], bx = p[i + 2], bz = p[i + 3], l = Math.hypot(bx - ax, bz - az);
+      if (l < 22) continue;
+      const x = (ax + bx) / 2, z = (az + bz) / 2;
+      const near = (seen[r.n] || []).some(([qx, qz]) => Math.hypot(qx - x, qz - z) < 160);
+      if (near) continue;
+      (seen[r.n] = seen[r.n] || []).push([x, z]);
+      let a = Math.atan2(bz - az, bx - ax);
+      if (a > Math.PI / 2) a -= Math.PI; else if (a < -Math.PI / 2) a += Math.PI;
+      out.push({ n: r.n, x, z, a, l, main: r.k === 'road' });
+    }
+  }
+  return out;
+})();
+const bmFit = () => Math.min(innerWidth / (MAP.x1 - MAP.x0), innerHeight / (MAP.z1 - MAP.z0)) * 0.95;
+const bmMax = 3.5;
+function bmClamp() {
+  bm.zoom = clamp(bm.zoom, bmFit(), bmMax);
+  const hw = innerWidth / 2 / bm.zoom, hh = innerHeight / 2 / bm.zoom;
+  const mx = (MAP.x0 + MAP.x1) / 2, mz = (MAP.z0 + MAP.z1) / 2;
+  bm.cx = hw * 2 >= MAP.x1 - MAP.x0 ? mx : clamp(bm.cx, MAP.x0 + hw, MAP.x1 - hw);
+  bm.cz = hh * 2 >= MAP.z1 - MAP.z0 ? mz : clamp(bm.cz, MAP.z0 + hh, MAP.z1 - hh);
+}
+const bmToWorld = (sx, sy) => [bm.cx + (sx - innerWidth / 2) / bm.zoom, bm.cz + (sy - innerHeight / 2) / bm.zoom];
+const bmToScreen = (x, z) => [innerWidth / 2 + (x - bm.cx) * bm.zoom, innerHeight / 2 + (z - bm.cz) * bm.zoom];
+let bmQueued = false;
+function bmDraw() { if (!bmQueued) { bmQueued = true; requestAnimationFrame(() => { bmQueued = false; if (state.mode === 'map') drawBigMap(); }); } }
+function drawBigMap() {
+  const cv = bm.cv, dpr = Math.min(devicePixelRatio || 1, 2), W = innerWidth, Hh = innerHeight;
+  if (cv.width !== Math.round(W * dpr) || cv.height !== Math.round(Hh * dpr)) { cv.width = Math.round(W * dpr); cv.height = Math.round(Hh * dpr); }
+  const g = bmg, z = bm.zoom;
+  g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  g.fillStyle = '#22404d'; g.fillRect(0, 0, W, Hh);
+  g.imageSmoothingEnabled = true; g.imageSmoothingQuality = 'high';
+  const [ox, oy] = bmToScreen(MAP.x0, MAP.z0);
+  g.drawImage(mapBase, ox, oy, mapBase.width / MAP.ppm * z, mapBase.height / MAP.ppm * z);
+  // street names when zoomed in
+  if (z >= 1.5) {
+    g.save();
+    g.globalAlpha = clamp((z - 1.5) / 0.8, 0, 1);
+    g.textAlign = 'center'; g.textBaseline = 'middle'; g.lineJoin = 'round';
+    for (const L of streetLabels) {
+      if (!L.main && z < 2.6) continue;
+      const [x, y] = bmToScreen(L.x, L.z);
+      if (x < -100 || y < -40 || x > W + 100 || y > Hh + 40) continue;
+      g.font = `700 ${L.main ? 12 : 11}px Archivo, sans-serif`;
+      if (g.measureText(L.n).width > L.l * z * 1.6) continue;
+      g.setTransform(dpr, 0, 0, dpr, x * dpr, y * dpr); g.rotate(L.a);
+      g.lineWidth = 3; g.strokeStyle = 'rgba(244,241,234,.85)'; g.strokeText(L.n, 0, 0);
+      g.fillStyle = '#2a2f36'; g.fillText(L.n, 0, 0);
+    }
+    g.restore();
+    g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+  // routes
+  for (const [r, col] of [[gps, '#f2c12e'], [wpGps, WP_COL]]) {
+    if (!r || r.length < 2) continue;
+    g.strokeStyle = 'rgba(16,20,24,.6)'; g.lineWidth = 8; g.lineCap = 'round'; g.lineJoin = 'round';
+    g.beginPath(); r.forEach(([x, zz], i) => (i ? g.lineTo : g.moveTo).call(g, ...bmToScreen(x, zz))); g.stroke();
+    g.strokeStyle = col; g.lineWidth = 5; g.stroke();
+  }
+  // blips, then their labels on top
+  const labels = [];
+  for (const b of bm.blips) {
+    const [x, y] = bmToScreen(b.x, b.z);
+    if (x < -20 || y < -20 || x > W + 20 || y > Hh + 20) continue;
+    const r = Math.max(3.5, (b.r || 7) * 0.8);
+    g.fillStyle = b.c; g.strokeStyle = b.label ? '#f4f1ea' : '#101418'; g.lineWidth = 2;
+    g.beginPath(); g.arc(x, y, r, 0, 7); g.fill(); g.stroke();
+    if (b.label) labels.push([b.label, x, y - r - 7]);
+  }
+  g.font = '700 13px Archivo, sans-serif'; g.textAlign = 'center'; g.textBaseline = 'alphabetic';
+  for (const [t, x, y] of labels) {
+    g.lineWidth = 4; g.strokeStyle = 'rgba(16,20,24,.85)'; g.strokeText(t, x, y);
+    g.fillStyle = '#f4f1ea'; g.fillText(t, x, y);
+  }
+  // the waypoint, a purple diamond on a pin
+  if (waypoint) {
+    const [x, y] = bmToScreen(waypoint.x, waypoint.z);
+    g.strokeStyle = '#101418'; g.lineWidth = 3; g.beginPath(); g.moveTo(x, y); g.lineTo(x, y - 16); g.stroke();
+    g.fillStyle = WP_COL; g.strokeStyle = '#f4f1ea'; g.lineWidth = 2.5;
+    diamond(g, x, y - 24, 9); g.fill(); g.stroke();
+    g.fillStyle = '#101418'; g.beginPath(); g.arc(x, y, 3, 0, 7); g.fill();
+  }
+  // you
+  {
+    const [x, y] = bmToScreen(player.pos.x, player.pos.z);
+    g.save(); g.translate(x, y); g.rotate(Math.PI - player.heading);
+    g.fillStyle = '#f2c12e'; g.strokeStyle = '#101418'; g.lineWidth = 2.5;
+    g.beginPath(); g.moveTo(0, -12); g.lineTo(8, 9); g.lineTo(0, 4.5); g.lineTo(-8, 9); g.closePath(); g.fill(); g.stroke();
+    g.restore();
+  }
+  // north and a scale bar
+  {
+    const x = W - Math.max(16, 0) - 34, y = Math.max(16, 0) + 96;
+    g.fillStyle = '#f4f1ea'; g.beginPath(); g.arc(x, y, 13, 0, 7); g.fill();
+    g.fillStyle = '#101418'; g.font = '800 13px Archivo, sans-serif'; g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillText('N', x, y + 1);
+    const steps = [25, 50, 100, 200, 250, 500, 1000];
+    const m = steps.find(s => s * z >= 70) || 1000, w = m * z, bx = W - 22 - w, by = y + 34;
+    g.strokeStyle = '#101418'; g.lineWidth = 6; g.beginPath(); g.moveTo(bx, by); g.lineTo(bx + w, by); g.stroke();
+    g.strokeStyle = '#f4f1ea'; g.lineWidth = 3; g.stroke();
+    g.font = '700 12px Archivo, sans-serif'; g.textBaseline = 'bottom'; g.lineWidth = 3; g.strokeStyle = 'rgba(16,20,24,.85)';
+    g.strokeText(m >= 1000 ? m / 1000 + ' km' : m + ' m', bx + w / 2, by - 5); g.fillStyle = '#f4f1ea'; g.fillText(m >= 1000 ? m / 1000 + ' km' : m + ' m', bx + w / 2, by - 5);
+  }
+  bmInfo();
+}
+function bmInfo() {
+  let t = '';
+  if (bm.hover) t = bm.hover;
+  else if (waypoint) t = `Waypoint: ${waypoint.name || 'Bergen'}` + (wpGps ? ` · ${fmtDist(routeLen(wpGps))}` : '');
+  else t = isTouch ? 'Tap the map to set a waypoint' : 'Click the map to set a waypoint';
+  if ($('mapinfo').textContent !== t) $('mapinfo').textContent = t;
+  $('mapclear').hidden = !waypoint;
+}
+function wpRoute() {
+  if (!waypoint) { wpGps = null; return; }
+  wpGps = isIndoors(player.pos) && Math.hypot(waypoint.x - player.pos.x, waypoint.z - player.pos.z) < 15 ? null : route(player.pos.x, player.pos.z, waypoint.x, waypoint.z);
+  if (wpGps) wpGps.unshift([player.pos.x, player.pos.z]);
+}
+function setWaypoint(x, z, name) {
+  x = clamp(x, MAP.x0, MAP.x1); z = clamp(z, MAP.z0, MAP.z1);
+  waypoint = { x, z, name: name || streetName(x, z) || (city.terrain.height(x, z) < 0.2 ? 'Vågen' : null) };
+  wpRoute();
+}
+function clearWaypoint() { waypoint = null; wpGps = null; }
+// what's under the pointer: a labelled blip, else the street
+function bmPick(sx, sy) {
+  let best = null, bd = 16;
+  for (const b of bm.blips) {
+    if (!b.label) continue;
+    const [x, y] = bmToScreen(b.x, b.z), d = Math.hypot(x - sx, y - sy);
+    if (d < bd) { bd = d; best = b; }
+  }
+  return best;
+}
+function bmTap(sx, sy) {
+  if (waypoint) {
+    const [x, y] = bmToScreen(waypoint.x, waypoint.z);
+    if (Math.hypot(x - sx, y - sy) < 16 || Math.hypot(x - sx, y - 24 - sy) < 14) { clearWaypoint(); bmDraw(); return; }
+  }
+  const b = bmPick(sx, sy);
+  if (b) setWaypoint(b.x, b.z, b.label);
+  else { const [x, z] = bmToWorld(sx, sy); setWaypoint(x, z); }
+  bmDraw();
+}
+function openMap() {
+  if (state.mode !== 'play' && state.mode !== 'pause') return;
+  if (state.mode === 'play') { audio.pauseRadio(true); if (audio.ctx) audio.ctx.suspend(); }
+  $('pause').hidden = true;
+  if (wheelOpen) { wheelOpen = false; $('switch').hidden = true; }
+  state.mode = 'map';
+  $('bigmap').hidden = false;
+  $('maptitle').textContent = inHouse(player.pos) ? 'Cappes vei 6' : inOffice(player.pos) ? 'Myreze' : (streetName(player.pos.x, player.pos.z) || 'Bergen');
+  if (!isTouch && document.pointerLockElement) document.exitPointerLock();
+  bm.cx = player.pos.x; bm.cz = player.pos.z; bm.zoom = Math.max(bm.zoom, bmFit()); bm.hover = null; bm.ptrs.clear(); bm.drag = bm.pinch = null;
+  bmClamp();
+  drawBigMap();
+}
+function closeMap() {
+  if (state.mode !== 'map') return;
+  $('bigmap').hidden = true;
+  state.mode = 'play';
+  if (audio.ctx) audio.ctx.resume();
+  audio.pauseRadio(false);
+  for (const k in keys) keys[k] = false;
+  requestLock();
+  last = performance.now();
+  gpsT = 0;
+}
+bm.cv.addEventListener('pointerdown', e => {
+  bm.cv.setPointerCapture(e.pointerId);
+  bm.ptrs.set(e.pointerId, [e.clientX, e.clientY]);
+  if (bm.ptrs.size === 1) bm.drag = { x: e.clientX, y: e.clientY, cx: bm.cx, cz: bm.cz, moved: false, button: e.button };
+  else if (bm.ptrs.size === 2) {
+    const [[ax, ay], [bx, by]] = [...bm.ptrs.values()];
+    const mx = (ax + bx) / 2, my = (ay + by) / 2;
+    bm.pinch = { d: Math.hypot(ax - bx, ay - by) || 1, zoom: bm.zoom, w: bmToWorld(mx, my) };
+    if (bm.drag) bm.drag.moved = true;
+  }
+});
+bm.cv.addEventListener('pointermove', e => {
+  if (!bm.ptrs.has(e.pointerId)) {
+    if (e.pointerType === 'mouse') {
+      const b = bmPick(e.clientX, e.clientY), [x, z] = bmToWorld(e.clientX, e.clientY);
+      bm.hover = b ? b.label : streetName(x, z);
+      bmInfo();
+    }
+    return;
+  }
+  bm.ptrs.set(e.pointerId, [e.clientX, e.clientY]);
+  if (bm.pinch && bm.ptrs.size >= 2) {
+    const [[ax, ay], [bx, by]] = [...bm.ptrs.values()];
+    const mx = (ax + bx) / 2, my = (ay + by) / 2;
+    bm.zoom = clamp(bm.pinch.zoom * Math.hypot(ax - bx, ay - by) / bm.pinch.d, bmFit(), bmMax);
+    bm.cx = bm.pinch.w[0] - (mx - innerWidth / 2) / bm.zoom; bm.cz = bm.pinch.w[1] - (my - innerHeight / 2) / bm.zoom;
+  } else if (bm.drag) {
+    const dx = e.clientX - bm.drag.x, dy = e.clientY - bm.drag.y;
+    if (Math.hypot(dx, dy) > 6) { bm.drag.moved = true; bm.cv.classList.add('drag'); }
+    if (bm.drag.moved) { bm.cx = bm.drag.cx - dx / bm.zoom; bm.cz = bm.drag.cz - dy / bm.zoom; }
+  }
+  bmClamp(); bmDraw();
+});
+const bmUp = e => {
+  if (!bm.ptrs.has(e.pointerId)) return;
+  bm.ptrs.delete(e.pointerId);
+  bm.cv.classList.remove('drag');
+  if (bm.ptrs.size < 2) bm.pinch = null;
+  if (bm.ptrs.size === 1) { const [[x, y]] = [...bm.ptrs.values()]; bm.drag = { x, y, cx: bm.cx, cz: bm.cz, moved: true }; return; }
+  const d = bm.drag; bm.drag = null;
+  if (e.type !== 'pointerup' || !d || d.moved) return;
+  if (d.button === 2) { clearWaypoint(); bmDraw(); return; }
+  if (d.button === 0) bmTap(e.clientX, e.clientY);
+};
+bm.cv.addEventListener('pointerup', bmUp);
+bm.cv.addEventListener('pointercancel', bmUp);
+bm.cv.addEventListener('contextmenu', e => e.preventDefault());
+bm.cv.addEventListener('wheel', e => {
+  e.preventDefault();
+  const [wx, wz] = bmToWorld(e.clientX, e.clientY);
+  bm.zoom = clamp(bm.zoom * Math.exp(-e.deltaY * (e.deltaMode ? 0.05 : 0.0018)), bmFit(), bmMax);
+  bm.cx = wx - (e.clientX - innerWidth / 2) / bm.zoom; bm.cz = wz - (e.clientY - innerHeight / 2) / bm.zoom;
+  bmClamp(); bmDraw();
+}, { passive: false });
+bm.cv.addEventListener('pointerleave', () => { if (bm.hover) { bm.hover = null; bmInfo(); } });
+addEventListener('resize', () => { if (state.mode === 'map') { bmClamp(); bmDraw(); } });
+$('mapclose').addEventListener('click', closeMap);
+$('mapcentre').addEventListener('click', () => { bm.cx = player.pos.x; bm.cz = player.pos.z; bmClamp(); bmDraw(); });
+$('mapclear').addEventListener('click', () => { clearWaypoint(); bmDraw(); });
+$('mapwrap').addEventListener('click', () => { if (state.mode === 'play') openMap(); });
+$('pausemap').addEventListener('click', openMap);
+if (isTouch) $('maphint').textContent = 'Tap to set a waypoint · tap it again to remove · drag to move · pinch to zoom';
+
 // ------------------------------------------------------------------ doors
 function updateDoors(dt) {
-  for (const d of house.doors) {
+  updateInteriorLights();
+  for (const d of [...house.doors, ...office.doors]) {
     if (!d.auto) continue;
     const near = d.pos.distanceTo(_v2.set(player.pos.x, player.pos.y, player.pos.z)) < 2.3;
     if (near && d.target === 0) audio.door();
@@ -1442,7 +1788,7 @@ function newCircle(a, place) {
 let gullCallT = 4;
 function updateGulls(dt) {
   const p = player.pos;
-  const indoors = inHouse(p);
+  const indoors = isIndoors(p);
   const head = _v2.set(p.x, p.y + 1.4, p.z);
   // how many attackers the alarm calls for
   const want = [0, 1, 2, 3, 4, 6][state.alarm] || 0;     // the same attack per alarm level, however big the flock
@@ -1501,7 +1847,7 @@ function updateGulls(dt) {
       case 'orbit': {
         a.ang += dt * 0.9;
         const r = 7, h = indoors ? 12 : 4.5;
-        const hc = L2W(4, 4.2), cx = indoors ? hc[0] : p.x, cz = indoors ? hc[1] : p.z;
+        const hc = inOffice(p) ? [OFFICE_CENTRE.x, OFFICE_CENTRE.z] : L2W(4, 4.2), cx = indoors ? hc[0] : p.x, cz = indoors ? hc[1] : p.z;
         desired.set(cx + Math.cos(a.ang) * r - a.pos.x, p.y + h + Math.sin(a.ang * 2) - a.pos.y, cz + Math.sin(a.ang) * r - a.pos.z).multiplyScalar(1.8);
         flap = 0.5;
         if (a.t <= 0 && !indoors && player.knockT <= 0 && player.hurtT <= 0 && divers < maxDivers && state.mode === 'play') { a.state = 'dive'; a.t = 2.4; a.lock = null; divers++; audio.squawk(); }
@@ -1601,7 +1947,7 @@ function raiseAlarm(n = 1) {
 function updateAlarm(dt) {
   if (state.alarm < state.alarmMin) state.alarm = state.alarmMin;
   if (state.alarm > state.alarmMin) {
-    state.alarmCool -= dt * (inHouse(player.pos) ? 2.5 : 1);
+    state.alarmCool -= dt * (isIndoors(player.pos) ? 2.5 : 1);
     if (state.alarmCool <= 0) { state.alarm--; state.alarmCool = 10; if (state.alarm === 0) toast('The gulls lost interest.'); }
   }
 }
@@ -1659,9 +2005,10 @@ const PLACE_STYLE = {
   shop: { bg: '#0d3a7a', fg: '#ffffff', line: 'Rema 1000 Marken: snacks for the party, and a little energy.' },
   food: { bg: '#a3121b', fg: '#f6d46b', line: 'Guangdong House. The most important place in Bergen.' },
   pizza: { bg: '#1f6a3a', fg: '#ffffff', line: 'A slice at Johnny’s. Health restored.' },
+  office: { bg: '#2c6fb5', fg: '#ffffff', line: 'Myreze, Halfdan Kjerulfs gate 4. The office is up on the 4th floor.' },
 };
 save.places = save.places || [];
-const PLACES = (map.places || []).map(pl => {
+const PLACES = [...(map.places || []), { n: 'Myreze', k: 'office', x: OFFICE_STREET.x, z: OFFICE_STREET.z }].map(pl => {
   const st = PLACE_STYLE[pl.k];
   const y = world.floorAt(pl.x, pl.z, 300);
   const sign = new THREE.Sprite(new THREE.SpriteMaterial({ map: textTexture([pl.n], { w: 640, h: 128, bg: st.bg, fg: st.fg, font: '800 64px "Archivo", sans-serif', radius: 24, border: st.fg }), fog: false }));
@@ -1806,7 +2153,7 @@ function brollyBlocks(a) {
 function updateBrolly(dt) {
   if (!brolly.up || state.mode !== 'play') { brolly.shelterT = 0; return; }
   const v = player.riding ? Math.abs(player.riding.speed) : Math.hypot(player.vel.x, player.vel.z);
-  if (state.alarm > state.alarmMin && v < 1.5 && !inHouse(player.pos)) {
+  if (state.alarm > state.alarmMin && v < 1.5 && !isIndoors(player.pos)) {
     brolly.shelterT += dt;
     if (brolly.shelterT >= SHELTER_T) {
       state.alarm = state.alarmMin; state.alarmCool = 10; brolly.shelterT = 0;
@@ -1915,7 +2262,7 @@ function updateGun(dt) {
   if (gun.reloadT > 0) { gun.reloadT -= dt; if (gun.reloadT <= 0) gun.ammo = gun.mag; }
   if (gun.drawn && (player.carrying || state.mode !== 'play')) { if (player.carrying) toggleGun(false); }
   const aiming = gun.drawn && state.mode === 'play' && player.knockT <= 0;
-  gun.aimK = damp(gun.aimK, aiming && !player.riding && !inHouse(player.pos) ? 1 : 0, 10, dt);
+  gun.aimK = damp(gun.aimK, aiming && !player.riding && !isIndoors(player.pos) ? 1 : 0, 10, dt);
   if (aiming) {
     // the arm points where the crosshair does: pitch from the camera, yaw relative to the body
     camera.getWorldDirection(_rd);
@@ -2087,6 +2434,7 @@ function surfaceAt() {
     if (p.y < H.FU - 1 && u < 5.0 && v < 5.6) return 'tile';     // the two bathrooms and the tiled hall downstairs
     return 'wood';
   }
+  if (inOffice(p)) return 'wood';
   return 'stone';
 }
 function updatePlayer(dt) {
@@ -2105,7 +2453,8 @@ function updatePlayer(dt) {
     audio.door();
     toast(funiState.u[funiState.ride.car] < 0.5 ? 'Fløibanen: up to Fløyen' : 'Fløibanen: down to town', 2.5);
   }
-  // use: get on / off scooters, or jump from Fløyen
+  // use: the stairs at Halfdan Kjerulfs gate 4, get on / off scooters, or jump from Fløyen
+  if (pressed.use && stairsHere()) { pressed.use = false; takeStairs(stairsHere()); }
   if (pressed.use && player.knockT <= 0 && !player.riding && !player.carrying && Math.hypot(player.pos.x - JUMP.x, player.pos.z - JUMP.z) < 3.5 && Math.abs(player.pos.y - JUMP.y) < 3) { pressed.use = false; startSkydive(); }
   if (pressed.use && player.knockT <= 0 && player.riding && tryPickup()) pressed.use = false;
   if (pressed.use && player.knockT <= 0) {
@@ -2733,7 +3082,7 @@ function openWheel(on) {
     for (const b of wheelEl.children) {
       const n = housemates[b.dataset.id];
       b.classList.toggle('me', n.active);
-      b.querySelector('span').textContent = n.active ? 'You' : inHouse(n.pos) ? 'Cappes vei 6' : (streetName(n.pos.x, n.pos.z) || 'Bergen');
+      b.querySelector('span').textContent = n.active ? 'You' : inHouse(n.pos) ? 'Cappes vei 6' : inOffice(n.pos) ? 'Myreze' : (streetName(n.pos.x, n.pos.z) || 'Bergen');
     }
     if (!isTouch && document.pointerLockElement) document.exitPointerLock();
   } else if (state.mode === 'play') requestLock();
@@ -3057,6 +3406,7 @@ function frame(now) {
   let dt = clamp((now - last) / 1000, 0, 0.05);
   last = now;
   time += dt;
+  if (state.mode === 'map') { pressed.jump = pressed.punch = pressed.use = pressed.radio = pressed.gun = pressed.trick = false; audio.skid(0); return; }
   if (state.mode === 'pause') { pressed.jump = pressed.punch = pressed.use = pressed.radio = pressed.gun = pressed.trick = false; audio.skid(0); renderer.render(scene, camera); return; }
 
   updateWeather(dt);
@@ -3091,20 +3441,35 @@ function frame(now) {
     if (mission && mission.blips) blips.push(...mission.blips);
     if (!mission || mission.def.id === 'scooter') for (const s of scooters) if (s !== player.riding) blips.push({ x: s.pos.x, z: s.pos.z, c: '#2bb673', r: 5 });
     for (const a of gulls) if (['orbit', 'dive', 'climb', 'carry'].includes(a.state)) blips.push({ x: a.pos.x, z: a.pos.z, c: a.state === 'carry' ? '#f2c12e' : '#d2301f', r: 4 });
-    { const [hx, hz] = L2W(4, 4.2); blips.push({ x: hx, z: hz, c: '#f4f1ea', r: 6, edge: true }); }
+    { const [hx, hz] = L2W(4, 4.2); blips.push({ x: hx, z: hz, c: '#f4f1ea', r: 6, edge: true, home: true }); }
     for (const pl of PLACES) blips.push({ x: pl.x, z: pl.z, c: pl.st.bg, r: 7, label: pl.n, edge: pl.k === 'food' });
     blips.push({ x: JUMP.x, z: JUMP.z, c: '#e2231a', r: 6, label: 'Skydive' });
     blips.push({ x: funiStop[0].x, z: funiStop[0].z, c: '#2f6db5', r: 5, label: 'Fløibanen' });
     for (const lm of map.landmarks || []) if (lm.n !== 'Fløyen') blips.push({ x: lm.x, z: lm.z, c: '#cfd6dc', r: 4, label: lm.n });
     for (const sec of tram.sections) if (sec.g.visible) blips.push({ x: sec.x, z: sec.z, c: '#f07c1a', r: 4 });
+    bm.blips = blips.map(b => b.home ? { ...b, label: 'Cappes vei 6' } : b);
+    // the waypoint: reached when you get there
+    if (waypoint) {
+      const d = Math.hypot(waypoint.x - player.pos.x, waypoint.z - player.pos.z);
+      if (d < 10 && state.mode === 'play') { toast(`You have arrived${waypoint.name ? ': ' + waypoint.name : ''}`, 2.2); clearWaypoint(); }
+      else blips.push({ x: waypoint.x, z: waypoint.z, c: WP_COL, r: 8, edge: true, shape: 'wp' });
+    }
+    wpMarker.visible = !!waypoint && state.mode !== 'switch';
+    if (waypoint) {
+      wpMarker.position.set(waypoint.x, city.terrain.height(waypoint.x, waypoint.z), waypoint.z);
+      wpMarker.userData.beam.material.opacity = 0.18 + Math.sin(time * 1.3) * 0.05;
+    }
     // GPS route to the current target, recomputed now and then
     gpsT -= dt;
     if (gpsT <= 0) {
       gpsT = 1.2;
       const tgt = (mission && mission.target) || startPoint();
-      gps = tgt && !inHouse(player.pos) && Math.hypot(tgt.x - player.pos.x, tgt.z - player.pos.z) > 15 ? route(player.pos.x, player.pos.z, tgt.x, tgt.z) : null;
+      gps = tgt && !isIndoors(player.pos) && Math.hypot(tgt.x - player.pos.x, tgt.z - player.pos.z) > 15 ? route(player.pos.x, player.pos.z, tgt.x, tgt.z) : null;
       if (gps) gps.unshift([player.pos.x, player.pos.z]);
-      const sn = inHouse(player.pos) ? 'Cappes vei 6' : streetName(player.pos.x, player.pos.z);
+      wpRoute();
+      const wt = waypoint ? (wpGps ? fmtDist(routeLen(wpGps)) : fmtDist(Math.hypot(waypoint.x - player.pos.x, waypoint.z - player.pos.z))) + (waypoint.name ? ' · ' + waypoint.name : '') : '';
+      $('wpinfo').hidden = !wt; if ($('wpinfo').textContent !== wt) $('wpinfo').textContent = wt;
+      const sn = inHouse(player.pos) ? 'Cappes vei 6' : inOffice(player.pos) ? 'Myreze · Halfdan Kjerulfs gate 4' : streetName(player.pos.x, player.pos.z);
       if (sn !== hud.street.textContent) hud.street.textContent = sn || '';
     }
     drawMinimap(blips);
@@ -3118,11 +3483,12 @@ function frame(now) {
     if (state.mode === 'play' && !prompt && funiCarHere() >= 0) prompt = `<kbd>E</kbd>Ride Fløibanen ${funiState.u[funiCarHere()] < 0.5 ? 'up to Fløyen' : 'down to town'}`;
     if (state.mode === 'play' && funiState.ride) prompt = funiState.waiting && !funiState.ride.moved ? 'Fløibanen: leaving shortly…' : 'Fløibanen';
     if (state.mode === 'play' && !player.riding && !dive.on && !prompt && Math.hypot(player.pos.x - JUMP.x, player.pos.z - JUMP.z) < 3.5 && Math.abs(player.pos.y - JUMP.y) < 3) prompt = '<kbd>E</kbd>Skydive from 450 m';
+    if (!prompt && stairsHere()) prompt = stairsHere() === 'up' ? '<kbd>E</kbd>Take the stairs up to Myreze, 4th floor' : '<kbd>E</kbd>Take the stairs down to Halfdan Kjerulfs gate';
     if (dive.on && state.mode === 'play') prompt = `Altitude ${Math.max(0, Math.round(skyAlt))} m · ` + (dive.phase === 'free' ? (isTouch ? '<kbd>Jump</kbd>open the parachute' : '<kbd>Space</kbd>open the parachute') : 'A/D steer · W dive · S flare');
     if (!prompt && brolly.shelterT > 0.3) prompt = `Sheltering under the umbrella… ${Math.ceil(SHELTER_T - brolly.shelterT)}`;
     hud.prompt.hidden = !prompt;
     if (prompt && hud.prompt.innerHTML !== prompt) hud.prompt.innerHTML = prompt;
-    audio.update(weather.rain, inHouse(camera.position), player.riding ? Math.abs(player.riding.speed) : 0, player.riding && turbo.on ? 1 : 0);
+    audio.update(weather.rain, isIndoors(camera.position), player.riding ? Math.abs(player.riding.speed) : 0, player.riding && turbo.on ? 1 : 0);
     if (player.riding && turbo.on && state.mode === 'play') {
       const r = player.riding;
       emit(_v.set(r.pos.x - Math.sin(r.heading) * 0.5, r.pos.y + 0.12, r.pos.z - Math.cos(r.heading) * 0.5), 2,
@@ -3194,4 +3560,4 @@ $('play').disabled = false;
 $('play').textContent = save.mission > 0 ? (save.mission >= MISSIONS.length ? 'Free roam' : 'Continue') : 'Play';
 
 // debug hooks for testing
-window.__gt = { gameTime: () => time, nightPassenger, tryPickup, quietHere, places, street, tram, dive, funiState, funiStop, funiCarHere, startSkydive, JUMP, gun, shoot, toggleGun, brolly, cycleHand, npcs, turbo, clock, dayState, nightPeople, lampLights, audio, switchTo, swapTo, mates: () => housemates, active: () => active, OUT_SPOTS, offer: () => offer, acceptOffer, declineOffer, makeOffer, scene, renderer, camera, player, cam, world, state, startMission, save, weather, scooters, gulls, mission: () => mission, startGame, raiseAlarm, ending, L2V, L2W, W2L, H, house, city, route, BAKERY, CHECKPOINTS: () => CHECKPOINTS, inHouse, housemates, PLACES, hitPlayer, dropBolle, bolle: () => ({ drop: bolleDrop, carrying: !!player.carrying }) };
+window.__gt = { openMap, closeMap, setWaypoint, clearWaypoint, waypoint: () => waypoint, wpGps: () => wpGps, bm, gameTime: () => time, nightPassenger, tryPickup, quietHere, places, street, tram, dive, funiState, funiStop, funiCarHere, startSkydive, JUMP, gun, shoot, toggleGun, brolly, cycleHand, npcs, turbo, clock, dayState, nightPeople, lampLights, audio, switchTo, swapTo, mates: () => housemates, active: () => active, OUT_SPOTS, offer: () => offer, acceptOffer, declineOffer, makeOffer, scene, renderer, camera, player, cam, world, state, startMission, save, weather, scooters, gulls, mission: () => mission, startGame, raiseAlarm, ending, L2V, L2W, W2L, H, house, city, route, BAKERY, CHECKPOINTS: () => CHECKPOINTS, inHouse, housemates, PLACES, hitPlayer, dropBolle, bolle: () => ({ drop: bolleDrop, carrying: !!player.carrying }) };
