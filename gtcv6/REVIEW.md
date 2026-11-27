@@ -144,3 +144,34 @@ Measured the same way as above (headless Chromium, one frame, the same camera po
 | Torget | 110 | 102 | 327 k | 369 k |
 
 Roofs, soffits, canopies and streets still go into each tile's shared meshes, so the count of draw calls is about the same. The extra triangles come from the finer street ribbons, the roof pieces and eaves, and, in the Bryggen view, from distant tiles that are now drawn where they belong. Before, they were shifted off to one side, often out of view. The map builder takes about 6 s, and `map.json` shrank from 809 KB to 783 KB.
+
+## Inside Cappes vei 6: getting around
+
+The same method, applied to the house. Its collision blocks were dumped and flood-filled at the player's size: 0.3 m radius, 1.8 m tall, 0.5 m step. Then a scripted walk drove the real player, with key presses and the game's own physics, along a 45-waypoint route. The route goes from the street through every doorway on both floors, down the stairs and out to the terrace.
+
+| | Before | After |
+| --- | --- | --- |
+| Rooms you could not get into | Upper bedroom, lower bedrooms 3 and 4 | None |
+| Scripted walk, waypoints where the player got stuck | 8 of 45 | 0 of 45 |
+
+### What was in the way
+
+- **Furniture in front of doors, under low lintels.** The second sofa stood right in front of the upper bedroom door. A bed or sofa is low enough to step onto, but standing on it your head (1.8 m) hits a 2.05 m lintel, so the room could not be entered at all. Bedroom 4's bed started right inside its door. Bedroom 3's door opened onto a 20 cm gap between the wardrobe and the bed. The lower study's 2.1 m wardrobe covered half its door.
+- **A housemate in the corridor.** Housemates push the player out to 0.55 m. Jaakko stood in the middle of the 1 m lower corridor, so nobody could get past him to bedroom 3 or the study.
+- **Narrow doorways.** Interior doors were 0.8 m wide for a player 0.6 m across.
+- **No floor in the doorways of the outer walls.** The 30 cm wall thickness under the front and terrace doors had no floor. At walking speed you skipped over it, but slowly you could drop through.
+- **Door leaves in the corridors.** Open doors stood out into the passages.
+
+### What changed (`public/js/house6.js`, `HOME_SPOTS` in `public/js/game.js`)
+
+- **Doors:**
+  - Interior doorways are 0.95–1 m wide with 2.2 m lintels.
+  - Every open door stands into its own room against the hinge side.
+  - The front and terrace doors have stone thresholds you can stand on.
+- **Furniture:** each door now has a clear path into its room, and the rooms are the same as in the video.
+  - **Living room:** the second sofa moved under the terrace windows, making an L with the sofa on the pine wall. Theodor sits on it.
+  - **Bedroom 3:** the bed moved to the street wall and the wardrobe out of the doorway.
+  - **Bedroom 4:** its door moved to the corridor junction, clear of the bed.
+  - **Lower study:** the wardrobe moved further in.
+  - **Dresser:** the dresser at the end of the corridor is slimmer.
+- **Jaakko** stands by his desk in bedroom 2, away from the corridor and the doorway.

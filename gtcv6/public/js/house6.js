@@ -17,6 +17,10 @@ export function buildHouse6(group, T, H) {
   const C2 = FU + 2.55;           // upper ceiling
   const TOP = C2 + 0.15;          // eaves
   const t = 0.3;                  // outer walls
+  // Interior doorways are 0.95-1 m wide with 2.2 m lintels: the player is 0.6 m across and
+  // 1.8 m tall, and must be able to step onto a bed or a sofa next to a door without hitting
+  // the lintel. Furniture keeps the path from each door into its room clear.
+  const DH = 2.2;
   const ix0 = t, ix1 = W - t, iz0 = t, iz1 = D - t;
 
   const std = (o, tex) => { const m = new THREE.MeshStandardMaterial({ roughness: 0.85, metalness: 0, ...o }); if (tex) m.map = tex; return m; };
@@ -214,11 +218,11 @@ export function buildHouse6(group, T, H) {
 
   // =================================================================== upper floor partitions
   const P = (axis, c0, c1, a0, a1, ops = [], mA = M.paint, mB) => wall(axis, c0, c1, a0, a1, FU, C2, ops, mA, mB);
-  const dU = (a0, a1) => ({ a0, a1, y0: FU, y1: FU + 2.05, door: true });
-  P('z', 2.55, 2.65, iz0, 3.2, [dU(1.9, 2.7)]);                 // corridor | study
+  const dU = (a0, a1) => ({ a0, a1, y0: FU, y1: FU + DH, door: true });
+  P('z', 2.55, 2.65, iz0, 3.2, [dU(1.75, 2.75)]);                // corridor | study
   P('x', 3.1, 3.2, 2.65, 4.9, []);                                // study back wall
   P('z', 4.9, 5.0, iz0, 4.5, []);                                 // study | bedroom
-  P('x', 4.4, 4.5, 5.0, ix1, [dU(5.3, 6.1)], M.paint, M.paint);  // bedroom | living
+  P('x', 4.4, 4.5, 5.0, ix1, [dU(5.15, 6.15)], M.paint, M.paint);  // bedroom | living
   // pine: the living room's and the bedroom's wall against no. 4
   deco(M.pine, ix1 - 0.02, FU, iz0, ix1, C2, iz1);
   // fire extinguishers where the corridor meets the kitchen
@@ -226,14 +230,14 @@ export function buildHouse6(group, T, H) {
 
   // =================================================================== lower floor partitions
   const Q = (axis, c0, c1, a0, a1, ops = [], mA = M.paint, mB) => wall(axis, c0, c1, a0, a1, FL, C1, ops, mA, mB);
-  const dL = (a0, a1) => ({ a0, a1, y0: FL, y1: FL + 2.05, door: true });
+  const dL = (a0, a1) => ({ a0, a1, y0: FL, y1: FL + DH, door: true });
   Q('z', 3.9, 4.0, iz0, 3.5, []);                                  // bedroom 1 | 2
   Q('z', 5.85, 5.95, iz0, 3.5, []);                                // bedroom 2 | 3
-  Q('x', 3.5, 3.6, 1.35, ix1, [dL(2.9, 3.7), dL(4.4, 5.2), dL(6.3, 7.1)]);  // bedrooms | cross corridor
-  Q('x', 5.6, 5.7, ix0, 2.6, [dL(1.0, 1.8)], M.paint, M.tileW);   // landing | bathroom
+  Q('x', 3.5, 3.6, 1.35, ix1, [dL(2.8, 3.75), dL(4.4, 5.35), dL(6.3, 7.25)]);  // bedrooms | cross corridor
+  Q('x', 5.6, 5.7, ix0, 2.6, [dL(0.95, 1.9)], M.paint, M.tileW);  // landing | bathroom
   Q('z', 2.6, 2.7, 5.6, iz1, [], M.tileW, M.paint);                // bathroom | corridor
-  Q('z', 4.0, 4.1, 4.6, iz1, [dL(6.9, 7.7)]);                      // corridor | bedroom 4
-  Q('x', 4.6, 4.7, 4.1, ix1, [dL(6.4, 7.2)]);                      // cross corridor | bedroom 4 + study
+  Q('z', 4.0, 4.1, 4.6, iz1, [dL(4.75, 5.7)]);                     // corridor | bedroom 4, by the junction
+  Q('x', 4.6, 4.7, 4.1, ix1, [dL(6.3, 7.25)]);                     // cross corridor | bedroom 4 + study
   Q('z', 5.8, 5.9, 4.7, iz1, []);                                  // bedroom 4 | study
   // bathroom tiles on the outer walls
   deco(M.tileW, ix0, FL, iz1 - 0.02, 2.6, C1, iz1);
@@ -243,14 +247,20 @@ export function buildHouse6(group, T, H) {
   door(1.45, FU, 0.15, 1.0, 2.15, 'x', M.door, true, 1.5);                  // front door, opens in
   door(2.9, FL, D - 0.15, 0.9, 2.15, 'x', M.trim, true, 1.5, false, true);  // glass door to the terrace
   const innerDoor = M.trim;
-  door(2.6, FU, 1.9, 0.8, 2.0, 'z', innerDoor, false, -1.4, true);
-  door(5.3, FU, 4.45, 0.8, 2.0, 'x', innerDoor, false, -1.4, true);
-  door(2.9, FL, 3.55, 0.8, 2.0, 'x', innerDoor, false, -1.4, true);
-  door(4.4, FL, 3.55, 0.8, 2.0, 'x', innerDoor, false, -1.4, true);
-  door(6.3, FL, 3.55, 0.8, 2.0, 'x', innerDoor, false, -1.4, true);
-  door(1.0, FL, 5.65, 0.8, 2.0, 'x', innerDoor, false, 1.4, true);
-  door(4.05, FL, 6.9, 0.8, 2.0, 'z', innerDoor, false, -1.4, true);
-  door(6.4, FL, 4.65, 0.8, 2.0, 'x', innerDoor, false, 1.4, true);
+  // inner doors stand open into their rooms, against the hinge side, out of the corridors
+  door(2.6, FU, 1.75, 1.0, 2.15, 'z', innerDoor, false, -1.52, true);    // study
+  door(5.15, FU, 4.45, 1.0, 2.15, 'x', innerDoor, false, -1.52, true);   // bedroom
+  door(2.8, FL, 3.55, 0.95, 2.15, 'x', innerDoor, false, -1.52, true);   // bedroom 1
+  door(4.4, FL, 3.55, 0.95, 2.15, 'x', innerDoor, false, -1.52, true);   // bedroom 2
+  door(6.3, FL, 3.55, 0.95, 2.15, 'x', innerDoor, false, -1.52, true);   // bedroom 3
+  door(0.95, FL, 5.65, 0.95, 2.15, 'x', innerDoor, false, 1.52, true); // bathroom
+  door(4.05, FL, 4.75, 0.95, 2.15, 'z', innerDoor, false, -1.52, true);  // bedroom 4
+  door(6.3, FL, 4.65, 0.95, 2.15, 'x', innerDoor, false, 1.52, true);  // lower study
+  // thresholds: floor across the thickness of the outer walls under the two outside doors
+  deco(M.stone, 1.45, FU - 0.3, 0, 2.45, FU, t);
+  world.add({ x0: 1.45, x1: 2.45, z0: -0.05, z1: t + 0.05, bottom: FU - 0.3, top: FU, solid: false });
+  deco(M.stone, 2.9, FL - 0.3, D - t, 3.8, FL, D);
+  world.add({ x0: 2.9, x1: 3.8, z0: D - t - 0.05, z1: D + 0.05, bottom: FL - 0.3, top: FL, solid: false });
 
   // =================================================================== roof: ridge along the street
   {
@@ -388,9 +398,10 @@ export function buildHouse6(group, T, H) {
   deco(M.navy, 6.85, u + 0.45, 7.32, ix1 - 0.05, u + 0.65, 7.5);
   geo.obox(M.pink, 7.2, u + 0.62, 5.6, 0.14, 0.34, 0.42, 0, 0, -0.25);
   geo.obox(M.cushion, 7.2, u + 0.62, 6.9, 0.14, 0.34, 0.42, 0, 0, -0.25);
-  furn(M.navy, 4.7, u + 0.1, 4.6, 6.6, u + 0.45, 5.35);
-  deco(M.navy, 4.7, u + 0.45, 4.6, 6.6, u + 0.85, 4.82);
-  geo.obox(M.cushion, 5.2, u + 0.62, 4.95, 0.42, 0.34, 0.14, -0.25, 0, 0);
+  // the second sofa makes an L with the first, under the terrace windows (the bedroom door stays clear)
+  furn(M.navy, 4.95, u + 0.1, 7.45, 6.8, u + 0.45, iz1 - 0.05);
+  deco(M.navy, 4.95, u + 0.45, iz1 - 0.27, 6.8, u + 0.85, iz1 - 0.05);
+  geo.obox(M.cushion, 5.4, u + 0.62, 7.85, 0.42, 0.34, 0.14, 0.25, 0, 0);
   furn(M.lightWood, 5.3, u + 0.38, 5.9, 6.3, u + 0.43, 6.8);
   for (const [lx, lz] of [[5.33, 5.93], [6.23, 5.93], [5.33, 6.73], [6.23, 6.73]]) deco(M.lightWood, lx, u, lz, lx + 0.05, u + 0.38, lz + 0.05);
   for (let k = 0; k < 5; k++) deco(M.white, 2.75, u + 0.05 + k * 0.42, 3.3, 3.15, u + 0.08 + k * 0.42, 4.35);
@@ -417,16 +428,16 @@ export function buildHouse6(group, T, H) {
   deco(M.black, 4.3, C1 - 0.04, 2.0, 5.6, C1, 2.06);
   for (const tx of [4.5, 5.3]) deco(M.lamp, tx - 0.05, C1 - 0.18, 1.98, tx + 0.05, C1 - 0.04, 2.08);
   // bedroom 3: bed, desk with a black chair under the lightwell, wardrobe
-  furn(M.bed, 6.8, l, 1.2, ix1 - 0.02, l + 0.5, 3.4);
+  furn(M.bed, 6.8, l, iz0 + 0.05, ix1 - 0.02, l + 0.5, 2.4);
   furn(M.lightWood, 6.0, l + 0.72, iz0 + 0.02, 6.75, l + 0.76, 1.0);
   chair(6.4, 1.35, M.black, 1);
-  furn(M.white, 6.0, l, 2.75, 6.6, l + 2.0, 3.45);
+  furn(M.white, 5.98, l, 1.85, 6.5, l + 2.0, 2.45);
   deco(M.lamp, 6.6, C1 - 0.05, 1.6, 7.0, C1, 2.0);
   // landing: washer and dryer stacked, facing the corridor
   furn(M.white, 2.0, l, 4.65, 2.58, l + 1.75, 5.25);
   for (const wy of [l + 0.42, l + 1.3]) geo.geom(M.black, new THREE.CylinderGeometry(0.19, 0.19, 0.02, 18), new THREE.Matrix4().makeRotationZ(Math.PI / 2).premultiply(new THREE.Matrix4().makeTranslation(2.59, wy, 4.95)));
   // dresser with flowers at the end of the cross corridor
-  furn(M.white, 7.2, l, 3.65, ix1 - 0.02, l + 0.9, 4.55);
+  furn(M.white, 7.32, l, 3.65, ix1 - 0.02, l + 0.9, 4.55);
   deco(M.glass, 7.4, l + 0.9, 4.0, 7.5, l + 1.12, 4.1);
   for (let k = 0; k < 6; k++) geo.geom(k % 2 ? M.pink : M.cushion, new THREE.SphereGeometry(0.05, 6, 4), new THREE.Matrix4().makeTranslation(7.45 + Math.cos(k) * 0.07, l + 1.18 + (k % 3) * 0.04, 4.05 + Math.sin(k) * 0.07));
   deco(M.lamp, 2.8, C1 - 0.05, 3.9, 3.2, C1, 4.3);
@@ -444,12 +455,12 @@ export function buildHouse6(group, T, H) {
   for (let k = 0; k < 2; k++) geo.geom(M.plant, new THREE.IcosahedronGeometry(0.15, 0), new THREE.Matrix4().makeTranslation(0.5, l + 1.55 + k * 0.4, 6.2 + k * 0.3));
   deco(M.lamp, 1.2, C1 - 0.05, 6.6, 1.6, C1, 7.0);
   // bedroom 4 (by the terrace door): single bed, black pillow, arc lamp
-  furn(M.bed, 4.15, l, 5.7, 5.1, l + 0.5, iz1 - 0.02);
+  furn(M.bed, 4.15, l, 6.0, 5.1, l + 0.5, iz1 - 0.02);
   geo.obox(M.black, 4.6, l + 0.6, 7.75, 0.55, 0.16, 0.35, 0, 0, 0);
-  geo.geom(M.white, new THREE.TorusGeometry(0.45, 0.015, 4, 16, Math.PI), new THREE.Matrix4().makeTranslation(5.3, l + 1.2, 6.2));
+  geo.geom(M.white, new THREE.TorusGeometry(0.45, 0.015, 4, 16, Math.PI), new THREE.Matrix4().makeTranslation(5.35, l + 1.2, 6.6));
   deco(M.lamp, 4.8, C1 - 0.05, 6.2, 5.2, C1, 6.6);
   // lower study: white wardrobe, desk with a white chair, flowers and a book
-  furn(M.white, 7.0, l, 4.75, ix1 - 0.02, l + 2.1, 5.6);
+  furn(M.white, 7.15, l, 5.75, ix1 - 0.02, l + 2.1, 6.7);
   furn(M.lightWood, 6.2, l + 0.72, 7.45, ix1 - 0.05, l + 0.76, iz1 - 0.02);
   chair(6.9, 7.0, M.white, -1);
   deco(M.lamp, 6.6, C1 - 0.05, 6.2, 7.0, C1, 6.6);

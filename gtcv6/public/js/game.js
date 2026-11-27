@@ -671,8 +671,8 @@ for (let k = 0; k < NPC_N; k++) {
 const HOME_SPOTS = {
   // person: [u, floor, v, local heading, pose]
   oystein: [1.55, 'FU', 6.3, -Math.PI / 2, 'idle'],      // in the kitchen
-  theodor: [5.5, 'FU', 4.98, 0, 'sit'],                   // on the sofa
-  jaakko: [5.0, 'FL', 4.1, Math.PI / 2, 'idle'],          // downstairs
+  theodor: [5.85, 'FU', 7.6, Math.PI, 'sit'],              // on the sofa
+  jaakko: [5.45, 'FL', 1.75, 0, 'idle'],                  // downstairs, by his desk (housemates push you away: keep them off the corridors and doorways)
   martin: [6.2, 'FL', 10.7, Math.PI, 'idle'],             // on the terrace
 };
 const HOME_LINES = {
