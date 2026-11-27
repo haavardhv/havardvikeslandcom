@@ -175,3 +175,23 @@ The same method, applied to the house. Its collision blocks were dumped and floo
   - **Lower study:** the wardrobe moved further in.
   - **Dresser:** the dresser at the end of the corridor is slimmer.
 - **Jaakko** stands by his desk in bedroom 2, away from the corridor and the doorway.
+
+### The lower floor, redrawn
+
+The lower floor was wrong: it had four bedrooms, a study and one bathroom. It is now built after the walkthrough video (1:10–2:30) and Håvard's sketch of the floor plan.
+
+- **Stairs and hall:** the stairs come down along the passage wall into a hall with the grey and white block-pattern floor, the stacked washer and dryer, and a dresser with a mirror and flowers between the two bathroom doors.
+- **Street side** (buried, so lit by a lightwell):
+  - the toilet (sink and toilet side by side);
+  - the shower room (shower with a curtain, wall-hung toilet, sink, shelves with plants);
+  - at the far end, the bedroom with the lightwell window and the blue cushions.
+- **Terrace side:**
+  - the bedroom with the white bed, desk, black chair and wardrobe, with its window at garden level;
+  - the bedroom with the black pillow, wardrobe, desk and white chair. Its glass door is the way out to the terrace.
+
+The sketch gives the arrangement, and the sizes come from the house's outline and the video. The same checks were run on the new floor:
+
+- **Flood fill:** every room is reachable from the street.
+- **Scripted walk:** all 45 waypoints reached, through the street door, every doorway on both floors, down the stairs, through the black-pillow bedroom and out onto the terrace.
+- **Doors:** open doors stand against the nearer wall, so no leaf stands across a doorway's line of sight.
+- **Mission text:** the texts that send you to the terrace now say to go through the black-pillow bedroom.

@@ -672,7 +672,7 @@ const HOME_SPOTS = {
   // person: [u, floor, v, local heading, pose]
   oystein: [1.55, 'FU', 6.3, -Math.PI / 2, 'idle'],      // in the kitchen
   theodor: [5.85, 'FU', 7.6, Math.PI, 'sit'],              // on the sofa
-  jaakko: [5.45, 'FL', 1.75, 0, 'idle'],                  // downstairs, by his desk (housemates push you away: keep them off the corridors and doorways)
+  jaakko: [6.35, 'FL', 6.4, Math.PI, 'idle'],             // downstairs, by the desk in the white bedroom (housemates push you away: keep them off the corridors and doorways)
   martin: [6.2, 'FL', 10.7, Math.PI, 'idle'],             // on the terrace
 };
 const HOME_LINES = {
@@ -1145,7 +1145,7 @@ function surfaceAt() {
   const p = player.pos;
   if (inHouse(p)) {
     const [u, v] = W2L(p.x, p.z);
-    if (p.y < H.FU - 1 && u < 2.6 && v > 4.6) return 'tile';
+    if (p.y < H.FU - 1 && u < 5.0 && v < 5.6) return 'tile';     // the two bathrooms and the tiled hall downstairs
     return 'wood';
   }
   return 'stone';
@@ -1463,8 +1463,8 @@ const MISSIONS = [
         m.blips = remaining.map(i => ({ x: i.o.position.x, z: i.o.position.z, c: '#f2c12e', r: 5, edge: false }));
         void best;
       } else {
-        if (!m.allGot) { m.allGot = true; showPhone('Martin', 'Perfect. Bring it all down to me on the terrace: downstairs, the glass door at the end of the corridor.', 6); }
-        setObjective('Carry it all to the <em>terrace</em> (downstairs, out the glass door).');
+        if (!m.allGot) { m.allGot = true; showPhone('Martin', 'Perfect. Bring it all down to me on the terrace: downstairs, through the bedroom with the black pillow and out the glass door.', 6); }
+        setObjective('Carry it all to the <em>terrace</em> (downstairs, out the glass door in the black-pillow bedroom).');
         m.target = TERRACE;
         m.blips = null;
         if (player.pos.distanceTo(TERRACE) < 2.2) return 'done';
