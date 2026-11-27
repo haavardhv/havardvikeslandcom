@@ -3,7 +3,7 @@
 import * as THREE from '../vendor/three.module.min.js';
 import { Geo } from './engine.js';
 import { rng } from './textures.js';
-import { buildBuildings } from './buildings.js';
+import { buildBuildings, facadeAtlas, TILE_M, STYLE } from './buildings.js';
 
 export async function loadMapData(base = '/data/') {
   const [map, terr, coarse, ground] = await Promise.all([
@@ -15,6 +15,9 @@ export async function loadMapData(base = '/data/') {
   map.terrH = new Int16Array(terr);
   map.coarseH = new Int16Array(coarse);
   map.groundCls = new Uint8Array(ground);
+  // the street surfaces (tools/build_map.py): asphalt, setts, paving in roads.png, gravel in paths.png
+  const img = src => new Promise((res, rej) => { const im = new Image(); im.onload = () => res(im); im.onerror = rej; im.src = src; });
+  [map.roadImg, map.pathImg] = await Promise.all([img(base + 'roads.png'), img(base + 'paths.png')]);
   return map;
 }
 
@@ -234,6 +237,7 @@ function detailTexture(size, seed, base, amp) {
 // ---------------------------------------------------------------------------
 export function buildCity(scene, map, T, opts) {
   const terrain = new Terrain(map);
+  const atlas = facadeAtlas(T);     // walls, roofs and street surfaces share one texture atlas
   const polys = new PolyWorld(16);
   const geo = new Geo();
   const col = new THREE.Color();
@@ -278,6 +282,51 @@ export function buildCity(scene, map, T, opts) {
     bg.setIndex(idx);
     bg.computeVertexNormals();
     const tmat = new THREE.MeshStandardMaterial({ vertexColors: true, map: detailTexture(256, 9, 200, 70), roughness: 0.9 });
+    // The streets are part of the terrain: the map builder levels the ground under them, and two
+    // textures say where to show asphalt, setts, paving or gravel (with soft edges). What you see
+    // is exactly what you walk and drive on.
+    {
+      const rm = map.roadmask;
+      const mk = im => { const t = new THREE.Texture(im); t.flipY = false; t.colorSpace = THREE.NoColorSpace; t.minFilter = THREE.LinearMipmapLinearFilter; t.magFilter = THREE.LinearFilter; t.anisotropy = 4; t.needsUpdate = true; return t; };
+      const roadTex = mk(map.roadImg), pathTex = mk(map.pathImg);
+      const cellOf = k => STYLE[k], tm = k => TILE_M[STYLE[k]];
+      tmat.onBeforeCompile = (sh) => {
+        sh.uniforms.roadTex = { value: roadTex };
+        sh.uniforms.pathTex = { value: pathTex };
+        sh.uniforms.atlas = { value: atlas };
+        sh.uniforms.rBox = { value: new THREE.Vector4(rm.x0, rm.z0, 1 / (rm.w * rm.res), 1 / (rm.h * rm.res)) };
+        sh.vertexShader = sh.vertexShader
+          .replace('#include <common>', '#include <common>\nvarying vec3 vWp;')
+          .replace('#include <begin_vertex>', '#include <begin_vertex>\nvWp = (modelMatrix * vec4(transformed, 1.0)).xyz;');
+        sh.fragmentShader = sh.fragmentShader
+          .replace('#include <common>', `#include <common>
+            uniform sampler2D roadTex, pathTex, atlas; uniform vec4 rBox; varying vec3 vWp;
+            vec3 atlasTile(float s, float ts, vec2 xz) {
+              vec2 cell = vec2(mod(s, 4.0), floor(s / 4.0));
+              vec2 p = xz / ts, f = fract(p);
+              vec2 auv = (cell + 0.01 + vec2(f.x, 1.0 - f.y) * 0.98) * 0.25;
+              auv.y = 1.0 - auv.y;
+              return textureGrad(atlas, auv, dFdx(p) * 0.245, dFdy(p) * 0.245).rgb;
+            }`)
+          .replace('#include <color_fragment>', `#include <color_fragment>
+            vec2 ruv = (vWp.xz - rBox.xy) * rBox.zw;
+            vec3 rm = texture2D(roadTex, ruv).rgb;
+            float gm = texture2D(pathTex, ruv).r;
+            float roadAmt = clamp(rm.r + rm.g + rm.b + gm, 0.0, 1.0);
+            if (roadAmt > 0.004) {
+              vec3 c = atlasTile(${cellOf('asphalt').toFixed(1)}, ${tm('asphalt').toFixed(2)}, vWp.xz) * rm.r
+                     + atlasTile(${cellOf('cobble').toFixed(1)}, ${tm('cobble').toFixed(2)}, vWp.xz) * rm.g
+                     + atlasTile(${cellOf('paving').toFixed(1)}, ${tm('paving').toFixed(2)}, vWp.xz) * rm.b
+                     + atlasTile(${cellOf('foot').toFixed(1)}, ${tm('foot').toFixed(2)}, vWp.xz) * gm;
+              c /= max(rm.r + rm.g + rm.b + gm, 1e-3);
+              // keep the baked contact shadow of the walls on the street too
+              float ao = clamp(dot(vColor.rgb, vec3(0.333)) / 0.4, 0.55, 1.0);
+              diffuseColor.rgb = mix(diffuseColor.rgb, c * ao, roadAmt);
+            }`)
+          .replace('#include <roughnessmap_fragment>', '#include <roughnessmap_fragment>\nroughnessFactor = mix(roughnessFactor, 0.62, roadAmt);   // wet streets');
+      };
+      tmat.customProgramCacheKey = () => 'terrainStreets';
+    }
     const nrm = bg.attributes.normal.array, TS = 40;
     // contact shadow: darken the ground next to buildings (baked ambient occlusion from the outlines)
     {
@@ -451,10 +500,10 @@ export function buildCity(scene, map, T, opts) {
   const LIFT = { road: 0.08, sett: 0.085, ped: 0.09, side: 0.1, foot: 0.11, steps: 0.12 };
   const RSTY = { road: 'asphalt', sett: 'cobble', ped: 'paving', side: 'side', foot: 'foot', steps: 'steps' };
   const stepsMask = new Map();          // 1 m cells on steps
-  const roadMask = new Map();           // 2 m cells on any road
   const white = new THREE.Color(1, 1, 1), W4 = [white, white, white, white];
   const buildRoads = (tileOf, STYLE) => {
     for (const r of map.roads) {
+      if (r.k !== 'steps') continue;       // every other street is painted on the levelled terrain
       const p = r.p, w = r.w / 2, lift = LIFT[r.k];
       const pts = [];
       for (let i = 0; i < p.length - 2; i += 2) {
@@ -500,7 +549,6 @@ export function buildCity(scene, map, T, opts) {
         for (let s = -wl; s <= wr + 0.01; s += 1) {
           const mx = x + dz * s, mz = z - dx * s;
           if (steps) stepsMask.set(Math.round(mx) * 100003 + Math.round(mz), 1);
-          roadMask.set(Math.round(mx / 2) * 100003 + Math.round(mz / 2), r.k);
         }
       }
     }
@@ -509,7 +557,26 @@ export function buildCity(scene, map, T, opts) {
     geo, stone: opts.stone, copper: opts.copper, extra: buildRoads,
   });
   const onSteps = (x, z) => stepsMask.has(Math.round(x) * 100003 + Math.round(z));
-  const onRoad = (x, z) => roadMask.get(Math.round(x / 2) * 100003 + Math.round(z / 2));
+  // what street surface is at (x, z), from the road map: 'road', 'sett', 'ped', 'foot' or undefined
+  const roadPix = (() => {
+    const rm = map.roadmask, cv = document.createElement('canvas');
+    cv.width = rm.w; cv.height = rm.h;
+    const g = cv.getContext('2d', { willReadFrequently: true });
+    g.drawImage(map.roadImg, 0, 0);
+    const a = g.getImageData(0, 0, rm.w, rm.h).data;
+    g.drawImage(map.pathImg, 0, 0);
+    const b = g.getImageData(0, 0, rm.w, rm.h).data;
+    return { a, b, rm };
+  })();
+  const onRoad = (x, z) => {
+    const { a, b, rm } = roadPix;
+    const i = Math.floor((x - rm.x0) / rm.res), j = Math.floor((z - rm.z0) / rm.res);
+    if (i < 0 || j < 0 || i >= rm.w || j >= rm.h) return undefined;
+    const k = (j * rm.w + i) * 4, r = a[k], g = a[k + 1], bb = a[k + 2], p = b[k];
+    const m = Math.max(r, g, bb, p);
+    if (m < 100) return onSteps(x, z) ? 'steps' : undefined;
+    return m === r ? 'road' : m === g ? 'sett' : m === bb ? 'ped' : 'foot';
+  };
 
   // -------------------------------------------------------------- trees
   {
@@ -648,7 +715,7 @@ export function buildCity(scene, map, T, opts) {
         if (PolyWorld.inside(poly, x, z) && R() < 0.7 && !polys.query(x - 1, z - 1, x + 1, z + 1).length) carSpots.push([x, z, 0]);
     }
     for (const r of map.roads) {
-      if (r.k !== 'road' || r.w > 6) continue;
+      if (!(r.k === 'road' || r.k === 'sett') || r.w < 5 || r.w > 9) continue;
       const p = r.p;
       for (let i = 0; i < p.length - 2; i += 2) {
         const ax = p[i], az = p[i + 1], bx = p[i + 2], bz = p[i + 3], L = Math.hypot(bx - ax, bz - az);
@@ -656,7 +723,7 @@ export function buildCity(scene, map, T, opts) {
         const dx = (bx - ax) / L, dz = (bz - az) / L, ang = Math.atan2(dx, dz);
         for (let t = 3; t < L - 3; t += 5.2) {
           if (R() < 0.6) continue;
-          const off = r.w / 2 + 0.95;
+          const off = r.w / 2 - 1.05;     // at the kerb, leaving the rest of the street free
           const x = ax + dx * t - dz * off, z = az + dz * t + dx * off;
           if (polys.query(x - 1.2, z - 1.2, x + 1.2, z + 1.2).length) continue;
           if (opts.keepClear(x, z)) continue;

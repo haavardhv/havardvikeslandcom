@@ -19,9 +19,9 @@ const TILE = 100;
 const STOREY = 2.9;
 // one atlas for walls, roofs and street surfaces: 4 x 4 cells of 256 px
 export const STYLE = { w: 0, y: 1, p: 2, b: 3, stone: 4, gravel: 5, wfar: 6, pfar: 7, roof: 8, asphalt: 9, cobble: 10, paving: 11, steps: 12, side: 13, foot: 14 };
-const TILE_M = [1.2, 1.2, 3.0, 1.6, 2.4, 3.0, 2.4, 2.4, 1.0, 4.0, 2.4, 2.4, 0.64, 3.0, 3.0, 1.0];   // metres per texture repeat
+export const TILE_M = [1.2, 1.2, 3.0, 1.6, 2.4, 3.0, 2.4, 2.4, 1.0, 4.0, 2.4, 2.4, 0.64, 3.0, 3.0, 1.0];   // metres per texture repeat
 
-function facadeAtlas(T) {
+export function facadeAtlas(T) {
   const C = 256, c = document.createElement('canvas');
   c.width = C * 4; c.height = C * 4;
   const g = c.getContext('2d');
@@ -304,7 +304,7 @@ function roofField(b) {
 
 // ---------------------------------------------------------------------------
 export function buildBuildings(scene, map, terrain, polys, T, opts) {
-  const facadeTex = facadeAtlas(T);
+  const facadeTex = opts.atlas || facadeAtlas(T);
   const winTex = windowAtlas();
   const facadeMat = facadeMaterial(facadeTex);
   const winMat = new THREE.MeshStandardMaterial({ map: winTex, vertexColors: true, roughness: 0.35, metalness: 0.05 });

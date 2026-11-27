@@ -112,10 +112,37 @@ def num(v, default=None):
     except (ValueError, IndexError): return default
 
 # ------------------------------------------------------------------ roads (parsed first: the terrain is levelled under them)
+# Widths, surfaces and sidewalks come from OpenStreetMap where it has them: `width`, then `lanes`,
+# then a typical width for the kind of street (Fjellet's lanes are narrow); `surface` decides
+# between asphalt, setts, paving and gravel; `sidewalk=*` adds paved strips beside a road.
 WIDTH_KEYS = {'trunk', 'primary', 'secondary', 'tertiary', 'unclassified', 'residential', 'living_street', 'service', 'pedestrian', 'footway', 'steps', 'path'}
-WIDTH = {'trunk': 9, 'primary': 8.5, 'secondary': 7.5, 'tertiary': 7, 'unclassified': 5, 'residential': 5, 'living_street': 4.5,
-         'service': 3.5, 'pedestrian': 5, 'footway': 2.2, 'path': 1.6, 'steps': 2, 'cycleway': 2.5, 'track': 3, 'corridor': 2,
+CAR = {'trunk', 'primary', 'secondary', 'tertiary', 'unclassified', 'residential', 'living_street', 'service', 'trunk_link', 'primary_link', 'secondary_link', 'tertiary_link'}
+WIDTH = {'trunk': 10, 'primary': 9, 'secondary': 8, 'tertiary': 7, 'unclassified': 5.5, 'residential': 5, 'living_street': 4.5,
+         'service': 3.5, 'pedestrian': 5, 'footway': 2.0, 'path': 1.6, 'steps': 1.8, 'cycleway': 2.5, 'track': 3, 'corridor': 2,
          'trunk_link': 6, 'primary_link': 6, 'secondary_link': 6, 'tertiary_link': 5}
+SURF = {'asphalt': 'R', 'sett': 'G', 'cobblestone': 'G', 'unhewn_cobblestone': 'G', 'paving_stones': 'B', 'concrete:plates': 'B',
+        'concrete': 'B', 'slate': 'B', 'stone': 'B', 'wood': 'B', 'metal': 'B', 'paved': 'R', 'ground': 'A', 'gravel': 'A',
+        'fine_gravel': 'A', 'compacted': 'A', 'dirt': 'A', 'grass': 'A', 'unpaved': 'A', 'earth': 'A', 'pebblestone': 'A'}
+SIDEWALK_W = 1.8
+def road_width(t, hw):
+    w = num(t.get('width'))
+    if w: return max(1.0, min(w, 16.0))
+    lanes = num(t.get('lanes'))
+    if lanes and hw in CAR: return max(3.0, min(lanes * 3.1 + 0.4, 16.0))
+    if hw == 'footway' and t.get('footway') == 'sidewalk': return SIDEWALK_W
+    if hw == 'footway' and t.get('footway') == 'crossing': return 2.5
+    if hw in ('residential', 'unclassified') and t.get('oneway') == 'yes': return 4.0
+    return WIDTH[hw]
+def road_surface(t, hw):
+    s = SURF.get(t.get('surface', ''))
+    if s: return s
+    if hw in ('path', 'track'): return 'A'
+    if hw in ('footway', 'pedestrian', 'cycleway', 'steps'): return 'B'
+    return 'R'
+def sidewalks(t):
+    sw = t.get('sidewalk:both') or t.get('sidewalk') or ''
+    left, right = sw in ('both', 'yes', 'left'), sw in ('both', 'yes', 'right')
+    return left or t.get('sidewalk:left') == 'yes', right or t.get('sidewalk:right') == 'yes'
 roads, road_geo = [], []
 graph_nodes, graph_edges = {}, set()
 for w in ways.values():
@@ -126,79 +153,146 @@ for w in ways.values():
     ids = [i for i in w['nodes'] if i in nodes]
     c = [P(nodes[i]) for i in ids]
     if len(c) < 2 or not in_area(c): continue
-    surf = t.get('surface', '')
-    k = 'steps' if hw == 'steps' else ('foot' if hw in ('footway', 'path', 'cycleway', 'track') else
-         ('ped' if hw == 'pedestrian' else ('sett' if surf in ('sett', 'cobblestone', 'paving_stones', 'unhewn_cobblestone') else 'road')))
-    if hw == 'footway' and t.get('footway') == 'sidewalk': k = 'side'
-    wdt = num(t.get('width'), WIDTH[hw])
-    wdt = max(1.0, min(wdt, 14.0))
+    wdt = road_width(t, hw)
+    surf = road_surface(t, hw)
+    k = ('steps' if hw == 'steps' else 'side' if hw == 'footway' and t.get('footway') == 'sidewalk'
+         else 'foot' if surf == 'A' or hw in ('path', 'track') else 'ped' if hw in ('pedestrian', 'footway', 'cycleway')
+         else 'sett' if surf == 'G' else 'road')
+    sl, sr = sidewalks(t) if hw in CAR else (False, False)
     r = {'p': flat(c), 'w': round(wdt, 1), 'k': k}
+    if sl or sr: r['sw'] = [int(sl), int(sr)]
     if t.get('name'): r['n'] = t['name']
     bridge = t.get('bridge') not in (None, 'no')
     if bridge: r['br'] = 1
     roads.append(r)
-    road_geo.append((c, wdt, k, bridge, hw))
+    road_geo.append({'ids': ids, 'c': c, 'w': wdt, 'k': k, 'surf': surf, 'bridge': bridge, 'hw': hw, 'sl': sl, 'sr': sr})
     # walking graph (everything but trunk roads without sidewalks still counts: it is a game)
     for a, b2 in zip(ids, ids[1:]):
         graph_nodes[a] = P(nodes[a]); graph_nodes[b2] = P(nodes[b2])
         graph_edges.add((min(a, b2), max(a, b2)))
-print('roads', len(roads))
+print('roads', len(roads), 'with sidewalks', sum(1 for r in roads if 'sw' in r))
 gids = {nid: i for i, nid in enumerate(graph_nodes)}
 graph = {'n': flat(graph_nodes.values()), 'e': [x for a, b2 in graph_edges for x in (gids[a], gids[b2])]}
 
-# ------------------------------------------------------------------ level the terrain across the streets
-# Each street gets a height profile along its centre line (the measured ground, smoothed a little
-# along the street). Grid nodes within half the width plus 2.5 m take that height (so every
-# triangle under the street surface is level across it), and the next 2.5 m blend back into the
-# hillside. Where streets meet, the nearest one wins. The sea and house 6 are left alone.
-SMOOTH = {'road': 4, 'sett': 4, 'ped': 3, 'side': 3, 'foot': 2, 'steps': 1}
-FULL, BLEND = 2.5, 2.5
-score = [math.inf] * (FNX * FNZ)
-target = [0.0] * (FNX * FNZ)
-dist = [0.0] * (FNX * FNZ)
+# ------------------------------------------------------------------ street profiles, solved over the whole network
+# Every street is sampled every metre. Streets that meet share the same OSM node, so they share
+# one height there. The heights are smoothed along the streets (strongly for roads, lightly for
+# steps), pulled towards the measured ground: the 1 m elevation model has noise next to walls
+# and cars that would otherwise become kerbs and cliffs in the middle of a street.
+import numpy as np
+LAMBDA = {'road': 0.03, 'sett': 0.03, 'ped': 0.06, 'side': 0.06, 'foot': 0.1, 'steps': 0.4}
+var_of_node, xs, zs, lam = {}, [], [], []
+edges, segs = [], []      # segs: (var a, var b, road index)
+def newvar(x, z, l):
+    xs.append(x); zs.append(z); lam.append(l); return len(xs) - 1
+for ri, rg in enumerate(road_geo):
+    l = 0.0 if rg['bridge'] else LAMBDA[rg['k']]
+    prev = None
+    for nid, (x, z) in zip(rg['ids'], rg['c']):
+        if nid in var_of_node:
+            v = var_of_node[nid]; lam[v] = max(lam[v], l)
+        else:
+            v = var_of_node[nid] = newvar(x, z, l)
+        if prev is not None and prev != v:
+            px, pz = xs[prev], zs[prev]
+            n = max(1, int(math.ceil(math.hypot(x - px, z - pz) / 1.0)))
+            last = prev
+            for k in range(1, n):
+                u = newvar(px + (x - px) * k / n, pz + (z - pz) * k / n, l)
+                edges.append((last, u)); segs.append((last, u, ri)); last = u
+            edges.append((last, v)); segs.append((last, v, ri))
+        prev = v
+NV = len(xs)
+d0 = np.array([ground0(x, z) for x, z in zip(xs, zs)])
+lw = np.array(lam)
+lw[d0 < 0.3] = 0.0                      # over the sea the elevation model says nothing useful
+E = np.array(edges, dtype=np.int64)
+deg = np.bincount(E[:, 0], minlength=NV) + np.bincount(E[:, 1], minlength=NV)
+hprof = d0.copy()
+for _ in range(500):
+    acc = np.zeros(NV)
+    np.add.at(acc, E[:, 0], hprof[E[:, 1]]); np.add.at(acc, E[:, 1], hprof[E[:, 0]])
+    den = deg + lw
+    hprof = np.where(den > 0, (acc + lw * d0) / np.maximum(den, 1e-9), hprof)
+print('street profile points', NV, 'mean change', round(float(np.mean(np.abs(hprof - d0))), 2), 'm')
+
+# ------------------------------------------------------------------ level the terrain to the street profiles
+# Grid nodes within half the street's width (sidewalks included) plus 1.5 m take the height of
+# the street at the nearest point of its centre line, and the next 3 m blend back into the
+# hillside. A node on a street's surface belongs to that street, and where surfaces overlap the
+# bigger kind wins (a road over the steps or the footway beside it, which may be at another
+# level); off the surfaces the nearest street wins. At junctions they already agree.
+FULL, BLEND = 1.5, 3.0
+RANK = {'road': 0, 'sett': 0, 'ped': 1, 'side': 2, 'foot': 2, 'steps': 3}
+near = {}            # node -> {road: (sc, height, d)}, the closest point of each street to the node
 keep_p = prep(reserved.buffer(1.0))
-for c, wdt, k, bridge, hwy in road_geo:
-    if bridge: continue
-    hw = wdt / 2
-    pts = []
-    for (ax, az), (bx, bz) in zip(c, c[1:]):
-        L = math.hypot(bx - ax, bz - az); n = max(1, int(math.ceil(L)))
-        for s in range(n): pts.append((ax + (bx - ax) * s / n, az + (bz - az) * s / n))
-    pts.append(c[-1])
-    hs = [ground0(x, z) for x, z in pts]
-    win = SMOOTH[k]
-    sm = [sum(hs[max(0, i - win):i + win + 1]) / len(hs[max(0, i - win):i + win + 1]) for i in range(len(hs))]
+for va, vb, ri in segs:
+    rg = road_geo[ri]
+    if rg['bridge']: continue
+    hw = rg['w'] / 2 + (SIDEWALK_W if (rg['sl'] or rg['sr']) else 0)
+    ax, az, bx, bz = xs[va], zs[va], xs[vb], zs[vb]
+    ha, hb = hprof[va], hprof[vb]
+    dx, dz = bx - ax, bz - az
+    L2 = dx * dx + dz * dz or 1e-9
     R = hw + FULL + BLEND
-    for (x, z), h in zip(pts, sm):
-        i0, i1 = max(0, int((x - R - FX0) / FST)), min(FNX - 1, int((x + R - FX0) / FST) + 1)
-        j0, j1 = max(0, int((z - R - FZ0) / FST)), min(FNZ - 1, int((z + R - FZ0) / FST) + 1)
-        for j in range(j0, j1 + 1):
-            gz = FZ0 + j * FST
-            for i in range(i0, i1 + 1):
-                d = math.hypot(FX0 + i * FST - x, gz - z)
-                if d > R: continue
-                s = d - hw
-                n = j * FNX + i
-                if s < score[n]: score[n] = s; target[n] = h; dist[n] = d
+    i0, i1 = max(0, int((min(ax, bx) - R - FX0) / FST)), min(FNX - 1, int((max(ax, bx) + R - FX0) / FST) + 1)
+    j0, j1 = max(0, int((min(az, bz) - R - FZ0) / FST)), min(FNZ - 1, int((max(az, bz) + R - FZ0) / FST) + 1)
+    for j in range(j0, j1 + 1):
+        gz = FZ0 + j * FST
+        for i in range(i0, i1 + 1):
+            gx = FX0 + i * FST
+            t = min(1.0, max(0.0, ((gx - ax) * dx + (gz - az) * dz) / L2))
+            d = math.hypot(gx - ax - dx * t, gz - az - dz * t)
+            if d > R: continue
+            n = j * FNX + i
+            m = near.setdefault(n, {})
+            sc = d - hw
+            if ri not in m or sc < m[ri][0]: m[ri] = (sc, ha + (hb - ha) * t, d)
+# The terrain is drawn as two triangles per 2.5 m cell, so a lane narrower than a cell can have a
+# corner of the triangle under it up on the embankment beside it. Every triangle that the street
+# surface passes over (sampled along its centre line and edges every 50 cm) is levelled.
+force = {}
+def tri_nodes(x, z):
+    fx, fz = (x - FX0) / FST, (z - FZ0) / FST
+    i0 = max(0, min(FNX - 2, int(math.floor(fx)))); j0 = max(0, min(FNZ - 2, int(math.floor(fz))))
+    a, b, c, d = j0 * FNX + i0, j0 * FNX + i0 + 1, (j0 + 1) * FNX + i0, (j0 + 1) * FNX + i0 + 1
+    return (a, b, c) if (fx - i0) + (fz - j0) <= 1 else (d, c, b)
+for va, vb, ri in segs:
+    rg = road_geo[ri]
+    if rg['bridge']: continue
+    hw = rg['w'] / 2
+    ax, az, bx, bz = xs[va], zs[va], xs[vb], zs[vb]
+    L = math.hypot(bx - ax, bz - az) or 1e-9
+    ux, uz = (bx - ax) / L, (bz - az) / L
+    for k in range(int(L / 0.5) + 1):
+        t = min(1.0, k * 0.5 / L)
+        cx, cz = ax + (bx - ax) * t, az + (bz - az) * t
+        for o in ((-hw, -hw / 2, 0.0, hw / 2, hw) if rg['k'] == 'steps' or hw < 1.6 else (-0.6 * hw, -0.3 * hw, 0.0, 0.3 * hw, 0.6 * hw)):
+            for n in tri_nodes(cx - uz * o, cz + ux * o): force.setdefault(n, set()).add(ri)
 levelled = 0
-for n in range(FNX * FNZ):
-    s = score[n]
-    if s == math.inf or FH0[n] < 0.5: continue
+for n, m in near.items():
+    if FH0[n] < 0.5: continue
     x, z = FX0 + (n % FNX) * FST, FZ0 + (n // FNX) * FST
     if keep_p.contains(Point(x, z)): continue
-    diff = target[n] - FH0[n]
-    if s > 1.0:
+    # on one or more street surfaces (with the full band): the biggest kind there, and where
+    # several of that kind overlap (a junction, two lanes side by side), a blend of their heights
+    fn = force.get(n, ())
+    on = [(RANK[road_geo[ri]['k']], ri, (min(v[0], FULL), v[1], v[2]) if ri in fn else v) for ri, v in m.items() if v[0] <= FULL or ri in fn]
+    if on:
+        top = min(r for r, _, _ in on)
+        ws = [((FULL + 0.5 - v[0]) ** 2, v[1]) for r, _, v in on if r == top]
+        FH[n] = sum(w * h for w, h in ws) / sum(w for w, _ in ws)
+    else:
+        ri, (sc, h, d) = min(m.items(), key=lambda kv: kv[1][0])
+        diff = h - FH0[n]
         # beside the street: a cut into a 60 % slope at most. Far more than that is another
         # street at another level (the legs of a hairpin, a lane above a retaining wall), so
         # the node keeps its height; a little more is clamped.
-        allowed = 0.6 + 0.6 * dist[n]
+        allowed = 0.6 + 0.6 * d
         if abs(diff) > 2 * allowed: continue
         diff = max(-allowed, min(allowed, diff))
-    if s <= FULL: wgt = 1.0
-    else:
-        t = 1 - (s - FULL) / BLEND
-        wgt = t * t * (3 - 2 * t)
-    FH[n] = FH0[n] + diff * wgt
+        tt = 1 - (sc - FULL) / BLEND
+        FH[n] = FH0[n] + diff * tt * tt * (3 - 2 * tt)
     if abs(FH[n] - FH0[n]) > 0.05: levelled += 1
 print('terrain nodes levelled under streets', levelled)
 
@@ -308,6 +402,7 @@ for j in range(1, FNZ - 1):
             FH[n] = max(out); capped += 1
 print('terrain nodes under buildings capped', capped)
 
+
 # ------------------------------------------------------------------ building attributes
 WOOD = ['#efede6', '#efede6', '#f2efe6', '#e7e3d6', '#dcdcd4', '#e9ddb1', '#c8d6dd', '#d9cfc0', '#b9c6c9', '#e8e2cf']
 PLASTER = ['#e8e1d2', '#d9cdb5', '#cdbf9f', '#e2d6bd', '#bfb7a8', '#d8c3a5', '#a9a49b', '#e9e4d8']
@@ -411,7 +506,7 @@ def blocked(pt, self_i):
         j = int(j)
         if j != self_i and others[j].contains(pt) and not (j < len(buildings) and 'el' in buildings[j][1]): return True
     return False
-road_lines = [LineString(c) for c, wdt, k, br, hwy in road_geo if hwy in WIDTH_KEYS]
+road_lines = [LineString(rg['c']) for rg in road_geo if rg['hw'] in WIDTH_KEYS]
 road_tree = STRtree(road_lines)
 def edge_masks(ring_pts, poly, bi, b, want_door):
     masks, best = [], None
@@ -576,6 +671,46 @@ for r in rels.values():
                 if len(c) >= 4 and c[0] == c[-1] and in_area(c): area_polys.append((k, Polygon(c).buffer(0)))
 print('areas', len(area_polys))
 
+# ------------------------------------------------------------------ the street surfaces, painted onto the terrain
+# The streets are not separate strips laid over the ground: the terrain under them is levelled
+# (above), and these two textures tell the terrain where to show asphalt (red), setts (green),
+# paving (blue) and gravel (paths.png), at 50 cm, with soft edges. Streets are cut where a
+# building stands, and higher kinds win where they overlap (a road over its crossing).
+from PIL import Image, ImageDraw
+MRES, MSS = 0.5, 2
+MW, MH = int(round((FX1 - FX0) / MRES)), int(round((FZ1 - FZ0) / MRES))
+chan = {'R': [], 'G': [], 'B': [], 'A': []}
+for rg in road_geo:
+    line = LineString(rg['c'])
+    chan[rg['surf']].append(line.buffer(rg['w'] / 2, cap_style=1, join_style=1, quad_segs=4))
+    for side, on in ((1, rg['sl']), (-1, rg['sr'])):
+        if not on: continue
+        try: off = line.offset_curve(side * (rg['w'] / 2 + SIDEWALK_W / 2), quad_segs=4, join_style=1)
+        except Exception: continue
+        if not off.is_empty: chan['B'].append(off.buffer(SIDEWALK_W / 2, cap_style=2, quad_segs=2))
+for w in ways.values():
+    t = w.get('tags', {})
+    c = coords(w)
+    if len(c) < 4 or c[0] != c[-1] or not in_area(c): continue
+    if t.get('amenity') == 'parking' and t.get('parking') not in ('underground', 'multi-storey') and 'building' not in t: chan['R'].append(Polygon(c).buffer(0))
+    elif t.get('place') == 'square' or t.get('amenity') == 'marketplace' or (t.get('highway') == 'pedestrian' and t.get('area') == 'yes'): chan['B'].append(Polygon(c).buffer(0))
+masks = {k: unary_union(v) if v else Polygon() for k, v in chan.items()}
+masks['G'] = masks['G'].difference(masks['R'])
+masks['B'] = masks['B'].difference(unary_union([masks['R'], masks['G']]))
+masks['A'] = masks['A'].difference(unary_union([masks['R'], masks['G'], masks['B']]))
+blocked_by = unary_union([kept_union, reserved])
+def raster(geom):
+    im = Image.new('L', (MW * MSS, MH * MSS), 0)
+    dr = ImageDraw.Draw(im)
+    px = lambda cs: [((x - FX0) / MRES * MSS, (z - FZ0) / MRES * MSS) for x, z in cs]
+    for poly in polys_of(geom.difference(blocked_by)):
+        dr.polygon(px(poly.exterior.coords), fill=255)
+        for hole in poly.interiors: dr.polygon(px(hole.coords), fill=0)
+    return im.reduce(MSS)
+Image.merge('RGB', [raster(masks['R']), raster(masks['G']), raster(masks['B'])]).save(os.path.join(OUT, 'roads.png'), optimize=True)
+raster(masks['A']).save(os.path.join(OUT, 'paths.png'), optimize=True)
+print('street surfaces', {k: round(v.area) for k, v in masks.items()}, 'm2 ->', os.path.getsize(os.path.join(OUT, 'roads.png')) // 1024, '+', os.path.getsize(os.path.join(OUT, 'paths.png')) // 1024, 'KB')
+
 # ------------------------------------------------------------------ trees
 trees = []
 bprep = prep(kept_union.buffer(1.0))
@@ -674,6 +809,7 @@ out = {
     'benches': benches,
     'lamps': lamps,
     'parking': parking,
+    'roadmask': {'x0': FX0, 'z0': FZ0, 'res': MRES, 'w': MW, 'h': MH},
 }
 json.dump(out, open(os.path.join(OUT, 'map.json'), 'w'), separators=(',', ':'))
 print('wrote', os.path.getsize(os.path.join(OUT, 'map.json')) // 1024, 'KB')
