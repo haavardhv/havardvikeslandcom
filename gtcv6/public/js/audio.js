@@ -127,7 +127,14 @@ export class Audio {
     this.radioGain = c.createGain(); this.radioGain.gain.value = 0;
     this.radioTone = c.createBiquadFilter(); this.radioTone.type = 'highshelf'; this.radioTone.frequency.value = 6000; this.radioTone.gain.value = -4;
     this.musicGain = c.createGain();                 // ducks the music while Regnar and Sol talk over it
-    this.radioTone.connect(this.musicGain).connect(this.radioGain).connect(this.master);
+    this.streetDuck = c.createGain();                // dips the whole radio while someone on the street talks to you
+    this.radioTone.connect(this.musicGain).connect(this.radioGain).connect(this.streetDuck).connect(this.master);
+    // the people on the street: loud enough to hear over the radio, with a limiter so a shout
+    // close by doesn't clip
+    this.voiceBus = c.createDynamicsCompressor();
+    this.voiceBus.threshold.value = -10; this.voiceBus.knee.value = 6; this.voiceBus.ratio.value = 8;
+    this.voiceBus.attack.value = 0.003; this.voiceBus.release.value = 0.2;
+    this.voiceBus.connect(this.master);
     this.overEl = document.createElement('audio');
     this.overEl.preload = 'none';
     c.createMediaElementSource(this.overEl).connect(this.radioGain);
@@ -175,12 +182,17 @@ export class Audio {
     if (!buf) return false;
     if (this.voice && this.voice.until > now) { try { this.voice.src.stop(); } catch (e) { /* */ } }
     const c = this.ctx, src = c.createBufferSource(); src.buffer = buf;
-    const g = c.createGain(); g.gain.value = 0.75 * gain;
+    const g = c.createGain(); g.gain.value = 1.7 * gain;
     let out = g;
     if (c.createStereoPanner) { const p = c.createStereoPanner(); p.pan.value = Math.max(-1, Math.min(1, pan)); g.connect(p); out = p; }
-    src.connect(g); out.connect(this.master);
+    src.connect(g); out.connect(this.voiceBus);
     src.start();
     this.voice = { src, prio, until: now + buf.duration };
+    // the radio dips under them, more the closer they are, and comes back when they're done
+    const d = this.streetDuck.gain, dip = 1 - 0.6 * Math.min(1, gain);
+    d.cancelScheduledValues(now);
+    d.setTargetAtTime(dip, now, 0.06);
+    d.setTargetAtTime(1, now + buf.duration + 0.1, 0.4);
     return true;
   }
   // Each segment is also downloaded whole, once, and played from memory after that: a stream can

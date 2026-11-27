@@ -427,8 +427,9 @@ addEventListener('keydown', e => {
     const dg = /^Digit([1-5])$/.exec(e.code);
     if (dg) switchTo(CHAR_IDS[+dg[1] - 1]);
   }
-  if (e.code === 'KeyM') toggleSound();
-  if (e.code === 'Escape' && state.mode === 'pause' && !locked) resumeGame();
+  if (e.code === 'KeyM') { if (state.mode === 'map') closeMap(); else if (state.mode === 'play') openMap(); }
+  if (e.code === 'Escape' && state.mode === 'map') closeMap();
+  else if (e.code === 'Escape' && state.mode === 'pause' && !locked) resumeGame();
   else if ((e.code === 'Escape' || e.code === 'KeyP') && state.mode === 'play') pauseGame();
 });
 addEventListener('keyup', e => { keys[e.code] = false; });
@@ -458,6 +459,7 @@ function requestLock() {
 }
 document.addEventListener('pointerlockchange', () => {
   locked = document.pointerLockElement === canvas;
+  if (locked && state.mode === 'map') { document.exitPointerLock(); return; }   // the lock came in late: the map needs the mouse
   if (!locked && state.mode === 'play' && !wheelOpen) pauseGame();
 });
 // touch: left half = stick, right half = look
@@ -655,6 +657,11 @@ mapBase.width = (MAP.x1 - MAP.x0) * MAP.ppm; mapBase.height = (MAP.z1 - MAP.z0) 
 }
 const mm = $('minimap'), mg = mm.getContext('2d'), northEl = $('north');
 let gps = null;   // [[x,z], ...] route shown on the map
+let waypoint = null, wpGps = null;   // the waypoint you set on the big map, and the route to it
+const WP_COL = '#c04ad8';
+const routeLen = r => { let d = 0; if (r) for (let i = 1; i < r.length; i++) d += Math.hypot(r[i][0] - r[i - 1][0], r[i][1] - r[i - 1][1]); return d; };
+const fmtDist = d => d >= 1000 ? (d / 1000).toFixed(1).replace('.', ',') + ' km' : Math.round(d / 10) * 10 + ' m';
+function diamond(g, x, y, r) { g.beginPath(); g.moveTo(x, y - r * 1.25); g.lineTo(x + r, y); g.lineTo(x, y + r * 1.25); g.lineTo(x - r, y); g.closePath(); }
 function drawMinimap(blips) {
   const S = mm.width, c = S / 2, scale = 2.6 * (S / 360) / MAP.ppm * 1.0;
   const p = player.pos;
@@ -664,11 +671,12 @@ function drawMinimap(blips) {
   mg.fillStyle = '#22404d'; mg.fillRect(0, 0, S, S);
   mg.translate(c, c); mg.rotate(rot); mg.scale(scale, scale);
   mg.drawImage(mapBase, -(p.x - MAP.x0) * MAP.ppm, -(p.z - MAP.z0) * MAP.ppm);
-  if (gps && gps.length > 1) {
-    mg.strokeStyle = '#f2c12e'; mg.lineWidth = 5 / scale * 1.4; mg.lineCap = 'round'; mg.lineJoin = 'round';
+  for (const [r, col] of [[gps, '#f2c12e'], [wpGps, WP_COL]]) {
+    if (!r || r.length < 2) continue;
+    mg.strokeStyle = col; mg.lineWidth = 5 / scale * 1.4; mg.lineCap = 'round'; mg.lineJoin = 'round';
     mg.globalAlpha = 0.9;
     mg.beginPath();
-    gps.forEach(([x, z], i) => (i ? mg.lineTo : mg.moveTo).call(mg, (x - p.x) * MAP.ppm, (z - p.z) * MAP.ppm));
+    r.forEach(([x, z], i) => (i ? mg.lineTo : mg.moveTo).call(mg, (x - p.x) * MAP.ppm, (z - p.z) * MAP.ppm));
     mg.stroke();
     mg.globalAlpha = 1;
   }
@@ -683,7 +691,8 @@ function drawMinimap(blips) {
     const dx = x - c, dy = y - c, l = Math.hypot(dx, dy), R = c - 14;
     if (l > R) { if (!b.edge) continue; x = c + dx / l * R; y = c + dy / l * R; }
     mg.fillStyle = b.c; mg.strokeStyle = b.label ? '#f4f1ea' : '#101418'; mg.lineWidth = 3;
-    mg.beginPath(); mg.arc(x, y, b.r || 7, 0, 7); mg.fill(); mg.stroke();
+    if (b.shape === 'wp') { mg.strokeStyle = '#f4f1ea'; diamond(mg, x, y, b.r || 8); } else { mg.beginPath(); mg.arc(x, y, b.r || 7, 0, 7); }
+    mg.fill(); mg.stroke();
     if (b.label && l < R) {
       mg.font = '700 19px Archivo, sans-serif'; mg.textAlign = 'center';
       mg.lineWidth = 4; mg.strokeStyle = 'rgba(16,20,24,.85)'; mg.strokeText(b.label, x, y - 13);
@@ -697,6 +706,254 @@ function drawMinimap(blips) {
   northEl.style.left = 50 + Math.sin(rot) * 41 + '%';
   northEl.style.top = 50 - Math.cos(rot) * 41 + '%';
 }
+
+// ------------------------------------------------------------------ the big map
+// M (or a click on the minimap, or Map in the pause menu) opens the whole town, north up. Drag to
+// move, scroll or pinch to zoom, click to set a waypoint (click it again to take it away). The
+// GPS then shows the way there in purple, next to the mission's yellow route, as in GTA. The game
+// stands still while the map is open.
+const bm = { cv: $('bigmapc'), cx: 0, cz: 0, zoom: 1.2, ptrs: new Map(), drag: null, pinch: null, hover: null, blips: [] };
+const bmg = bm.cv.getContext('2d');
+const wpMarker = makeMarker(0xc04ad8);
+wpMarker.visible = false;
+scene.add(wpMarker);
+// one label per street name, every 160 m or so along it, for the zoomed-in map
+const streetLabels = (() => {
+  const out = [], seen = {};
+  for (const r of namedRoads) {
+    if (r.k === 'steps' || r.k === 'foot') continue;
+    const p = r.p;
+    for (let i = 0; i < p.length - 2; i += 2) {
+      const ax = p[i], az = p[i + 1], bx = p[i + 2], bz = p[i + 3], l = Math.hypot(bx - ax, bz - az);
+      if (l < 22) continue;
+      const x = (ax + bx) / 2, z = (az + bz) / 2;
+      const near = (seen[r.n] || []).some(([qx, qz]) => Math.hypot(qx - x, qz - z) < 160);
+      if (near) continue;
+      (seen[r.n] = seen[r.n] || []).push([x, z]);
+      let a = Math.atan2(bz - az, bx - ax);
+      if (a > Math.PI / 2) a -= Math.PI; else if (a < -Math.PI / 2) a += Math.PI;
+      out.push({ n: r.n, x, z, a, l, main: r.k === 'road' });
+    }
+  }
+  return out;
+})();
+const bmFit = () => Math.min(innerWidth / (MAP.x1 - MAP.x0), innerHeight / (MAP.z1 - MAP.z0)) * 0.95;
+const bmMax = 3.5;
+function bmClamp() {
+  bm.zoom = clamp(bm.zoom, bmFit(), bmMax);
+  const hw = innerWidth / 2 / bm.zoom, hh = innerHeight / 2 / bm.zoom;
+  const mx = (MAP.x0 + MAP.x1) / 2, mz = (MAP.z0 + MAP.z1) / 2;
+  bm.cx = hw * 2 >= MAP.x1 - MAP.x0 ? mx : clamp(bm.cx, MAP.x0 + hw, MAP.x1 - hw);
+  bm.cz = hh * 2 >= MAP.z1 - MAP.z0 ? mz : clamp(bm.cz, MAP.z0 + hh, MAP.z1 - hh);
+}
+const bmToWorld = (sx, sy) => [bm.cx + (sx - innerWidth / 2) / bm.zoom, bm.cz + (sy - innerHeight / 2) / bm.zoom];
+const bmToScreen = (x, z) => [innerWidth / 2 + (x - bm.cx) * bm.zoom, innerHeight / 2 + (z - bm.cz) * bm.zoom];
+let bmQueued = false;
+function bmDraw() { if (!bmQueued) { bmQueued = true; requestAnimationFrame(() => { bmQueued = false; if (state.mode === 'map') drawBigMap(); }); } }
+function drawBigMap() {
+  const cv = bm.cv, dpr = Math.min(devicePixelRatio || 1, 2), W = innerWidth, Hh = innerHeight;
+  if (cv.width !== Math.round(W * dpr) || cv.height !== Math.round(Hh * dpr)) { cv.width = Math.round(W * dpr); cv.height = Math.round(Hh * dpr); }
+  const g = bmg, z = bm.zoom;
+  g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  g.fillStyle = '#22404d'; g.fillRect(0, 0, W, Hh);
+  g.imageSmoothingEnabled = true; g.imageSmoothingQuality = 'high';
+  const [ox, oy] = bmToScreen(MAP.x0, MAP.z0);
+  g.drawImage(mapBase, ox, oy, mapBase.width / MAP.ppm * z, mapBase.height / MAP.ppm * z);
+  // street names when zoomed in
+  if (z >= 1.5) {
+    g.save();
+    g.globalAlpha = clamp((z - 1.5) / 0.8, 0, 1);
+    g.textAlign = 'center'; g.textBaseline = 'middle'; g.lineJoin = 'round';
+    for (const L of streetLabels) {
+      if (!L.main && z < 2.6) continue;
+      const [x, y] = bmToScreen(L.x, L.z);
+      if (x < -100 || y < -40 || x > W + 100 || y > Hh + 40) continue;
+      g.font = `700 ${L.main ? 12 : 11}px Archivo, sans-serif`;
+      if (g.measureText(L.n).width > L.l * z * 1.6) continue;
+      g.setTransform(dpr, 0, 0, dpr, x * dpr, y * dpr); g.rotate(L.a);
+      g.lineWidth = 3; g.strokeStyle = 'rgba(244,241,234,.85)'; g.strokeText(L.n, 0, 0);
+      g.fillStyle = '#2a2f36'; g.fillText(L.n, 0, 0);
+    }
+    g.restore();
+    g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+  // routes
+  for (const [r, col] of [[gps, '#f2c12e'], [wpGps, WP_COL]]) {
+    if (!r || r.length < 2) continue;
+    g.strokeStyle = 'rgba(16,20,24,.6)'; g.lineWidth = 8; g.lineCap = 'round'; g.lineJoin = 'round';
+    g.beginPath(); r.forEach(([x, zz], i) => (i ? g.lineTo : g.moveTo).call(g, ...bmToScreen(x, zz))); g.stroke();
+    g.strokeStyle = col; g.lineWidth = 5; g.stroke();
+  }
+  // blips, then their labels on top
+  const labels = [];
+  for (const b of bm.blips) {
+    const [x, y] = bmToScreen(b.x, b.z);
+    if (x < -20 || y < -20 || x > W + 20 || y > Hh + 20) continue;
+    const r = Math.max(3.5, (b.r || 7) * 0.8);
+    g.fillStyle = b.c; g.strokeStyle = b.label ? '#f4f1ea' : '#101418'; g.lineWidth = 2;
+    g.beginPath(); g.arc(x, y, r, 0, 7); g.fill(); g.stroke();
+    if (b.label) labels.push([b.label, x, y - r - 7]);
+  }
+  g.font = '700 13px Archivo, sans-serif'; g.textAlign = 'center'; g.textBaseline = 'alphabetic';
+  for (const [t, x, y] of labels) {
+    g.lineWidth = 4; g.strokeStyle = 'rgba(16,20,24,.85)'; g.strokeText(t, x, y);
+    g.fillStyle = '#f4f1ea'; g.fillText(t, x, y);
+  }
+  // the waypoint, a purple diamond on a pin
+  if (waypoint) {
+    const [x, y] = bmToScreen(waypoint.x, waypoint.z);
+    g.strokeStyle = '#101418'; g.lineWidth = 3; g.beginPath(); g.moveTo(x, y); g.lineTo(x, y - 16); g.stroke();
+    g.fillStyle = WP_COL; g.strokeStyle = '#f4f1ea'; g.lineWidth = 2.5;
+    diamond(g, x, y - 24, 9); g.fill(); g.stroke();
+    g.fillStyle = '#101418'; g.beginPath(); g.arc(x, y, 3, 0, 7); g.fill();
+  }
+  // you
+  {
+    const [x, y] = bmToScreen(player.pos.x, player.pos.z);
+    g.save(); g.translate(x, y); g.rotate(Math.PI - player.heading);
+    g.fillStyle = '#f2c12e'; g.strokeStyle = '#101418'; g.lineWidth = 2.5;
+    g.beginPath(); g.moveTo(0, -12); g.lineTo(8, 9); g.lineTo(0, 4.5); g.lineTo(-8, 9); g.closePath(); g.fill(); g.stroke();
+    g.restore();
+  }
+  // north and a scale bar
+  {
+    const x = W - Math.max(16, 0) - 34, y = Math.max(16, 0) + 96;
+    g.fillStyle = '#f4f1ea'; g.beginPath(); g.arc(x, y, 13, 0, 7); g.fill();
+    g.fillStyle = '#101418'; g.font = '800 13px Archivo, sans-serif'; g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillText('N', x, y + 1);
+    const steps = [25, 50, 100, 200, 250, 500, 1000];
+    const m = steps.find(s => s * z >= 70) || 1000, w = m * z, bx = W - 22 - w, by = y + 34;
+    g.strokeStyle = '#101418'; g.lineWidth = 6; g.beginPath(); g.moveTo(bx, by); g.lineTo(bx + w, by); g.stroke();
+    g.strokeStyle = '#f4f1ea'; g.lineWidth = 3; g.stroke();
+    g.font = '700 12px Archivo, sans-serif'; g.textBaseline = 'bottom'; g.lineWidth = 3; g.strokeStyle = 'rgba(16,20,24,.85)';
+    g.strokeText(m >= 1000 ? m / 1000 + ' km' : m + ' m', bx + w / 2, by - 5); g.fillStyle = '#f4f1ea'; g.fillText(m >= 1000 ? m / 1000 + ' km' : m + ' m', bx + w / 2, by - 5);
+  }
+  bmInfo();
+}
+function bmInfo() {
+  let t = '';
+  if (bm.hover) t = bm.hover;
+  else if (waypoint) t = `Waypoint: ${waypoint.name || 'Bergen'}` + (wpGps ? ` · ${fmtDist(routeLen(wpGps))}` : '');
+  else t = isTouch ? 'Tap the map to set a waypoint' : 'Click the map to set a waypoint';
+  if ($('mapinfo').textContent !== t) $('mapinfo').textContent = t;
+  $('mapclear').hidden = !waypoint;
+}
+function wpRoute() {
+  if (!waypoint) { wpGps = null; return; }
+  wpGps = inHouse(player.pos) && Math.hypot(waypoint.x - player.pos.x, waypoint.z - player.pos.z) < 15 ? null : route(player.pos.x, player.pos.z, waypoint.x, waypoint.z);
+  if (wpGps) wpGps.unshift([player.pos.x, player.pos.z]);
+}
+function setWaypoint(x, z, name) {
+  x = clamp(x, MAP.x0, MAP.x1); z = clamp(z, MAP.z0, MAP.z1);
+  waypoint = { x, z, name: name || streetName(x, z) || (city.terrain.height(x, z) < 0.2 ? 'Vågen' : null) };
+  wpRoute();
+}
+function clearWaypoint() { waypoint = null; wpGps = null; }
+// what's under the pointer: a labelled blip, else the street
+function bmPick(sx, sy) {
+  let best = null, bd = 16;
+  for (const b of bm.blips) {
+    if (!b.label) continue;
+    const [x, y] = bmToScreen(b.x, b.z), d = Math.hypot(x - sx, y - sy);
+    if (d < bd) { bd = d; best = b; }
+  }
+  return best;
+}
+function bmTap(sx, sy) {
+  if (waypoint) {
+    const [x, y] = bmToScreen(waypoint.x, waypoint.z);
+    if (Math.hypot(x - sx, y - sy) < 16 || Math.hypot(x - sx, y - 24 - sy) < 14) { clearWaypoint(); bmDraw(); return; }
+  }
+  const b = bmPick(sx, sy);
+  if (b) setWaypoint(b.x, b.z, b.label);
+  else { const [x, z] = bmToWorld(sx, sy); setWaypoint(x, z); }
+  bmDraw();
+}
+function openMap() {
+  if (state.mode !== 'play' && state.mode !== 'pause') return;
+  if (state.mode === 'play') { audio.pauseRadio(true); if (audio.ctx) audio.ctx.suspend(); }
+  $('pause').hidden = true;
+  if (wheelOpen) { wheelOpen = false; $('switch').hidden = true; }
+  state.mode = 'map';
+  $('bigmap').hidden = false;
+  $('maptitle').textContent = inHouse(player.pos) ? 'Cappes vei 6' : (streetName(player.pos.x, player.pos.z) || 'Bergen');
+  if (!isTouch && document.pointerLockElement) document.exitPointerLock();
+  bm.cx = player.pos.x; bm.cz = player.pos.z; bm.zoom = Math.max(bm.zoom, bmFit()); bm.hover = null; bm.ptrs.clear(); bm.drag = bm.pinch = null;
+  bmClamp();
+  drawBigMap();
+}
+function closeMap() {
+  if (state.mode !== 'map') return;
+  $('bigmap').hidden = true;
+  state.mode = 'play';
+  if (audio.ctx) audio.ctx.resume();
+  audio.pauseRadio(false);
+  for (const k in keys) keys[k] = false;
+  requestLock();
+  last = performance.now();
+  gpsT = 0;
+}
+bm.cv.addEventListener('pointerdown', e => {
+  bm.cv.setPointerCapture(e.pointerId);
+  bm.ptrs.set(e.pointerId, [e.clientX, e.clientY]);
+  if (bm.ptrs.size === 1) bm.drag = { x: e.clientX, y: e.clientY, cx: bm.cx, cz: bm.cz, moved: false, button: e.button };
+  else if (bm.ptrs.size === 2) {
+    const [[ax, ay], [bx, by]] = [...bm.ptrs.values()];
+    const mx = (ax + bx) / 2, my = (ay + by) / 2;
+    bm.pinch = { d: Math.hypot(ax - bx, ay - by) || 1, zoom: bm.zoom, w: bmToWorld(mx, my) };
+    if (bm.drag) bm.drag.moved = true;
+  }
+});
+bm.cv.addEventListener('pointermove', e => {
+  if (!bm.ptrs.has(e.pointerId)) {
+    if (e.pointerType === 'mouse') {
+      const b = bmPick(e.clientX, e.clientY), [x, z] = bmToWorld(e.clientX, e.clientY);
+      bm.hover = b ? b.label : streetName(x, z);
+      bmInfo();
+    }
+    return;
+  }
+  bm.ptrs.set(e.pointerId, [e.clientX, e.clientY]);
+  if (bm.pinch && bm.ptrs.size >= 2) {
+    const [[ax, ay], [bx, by]] = [...bm.ptrs.values()];
+    const mx = (ax + bx) / 2, my = (ay + by) / 2;
+    bm.zoom = clamp(bm.pinch.zoom * Math.hypot(ax - bx, ay - by) / bm.pinch.d, bmFit(), bmMax);
+    bm.cx = bm.pinch.w[0] - (mx - innerWidth / 2) / bm.zoom; bm.cz = bm.pinch.w[1] - (my - innerHeight / 2) / bm.zoom;
+  } else if (bm.drag) {
+    const dx = e.clientX - bm.drag.x, dy = e.clientY - bm.drag.y;
+    if (Math.hypot(dx, dy) > 6) { bm.drag.moved = true; bm.cv.classList.add('drag'); }
+    if (bm.drag.moved) { bm.cx = bm.drag.cx - dx / bm.zoom; bm.cz = bm.drag.cz - dy / bm.zoom; }
+  }
+  bmClamp(); bmDraw();
+});
+const bmUp = e => {
+  if (!bm.ptrs.has(e.pointerId)) return;
+  bm.ptrs.delete(e.pointerId);
+  bm.cv.classList.remove('drag');
+  if (bm.ptrs.size < 2) bm.pinch = null;
+  if (bm.ptrs.size === 1) { const [[x, y]] = [...bm.ptrs.values()]; bm.drag = { x, y, cx: bm.cx, cz: bm.cz, moved: true }; return; }
+  const d = bm.drag; bm.drag = null;
+  if (e.type !== 'pointerup' || !d || d.moved) return;
+  if (d.button === 2) { clearWaypoint(); bmDraw(); return; }
+  if (d.button === 0) bmTap(e.clientX, e.clientY);
+};
+bm.cv.addEventListener('pointerup', bmUp);
+bm.cv.addEventListener('pointercancel', bmUp);
+bm.cv.addEventListener('contextmenu', e => e.preventDefault());
+bm.cv.addEventListener('wheel', e => {
+  e.preventDefault();
+  const [wx, wz] = bmToWorld(e.clientX, e.clientY);
+  bm.zoom = clamp(bm.zoom * Math.exp(-e.deltaY * (e.deltaMode ? 0.05 : 0.0018)), bmFit(), bmMax);
+  bm.cx = wx - (e.clientX - innerWidth / 2) / bm.zoom; bm.cz = wz - (e.clientY - innerHeight / 2) / bm.zoom;
+  bmClamp(); bmDraw();
+}, { passive: false });
+bm.cv.addEventListener('pointerleave', () => { if (bm.hover) { bm.hover = null; bmInfo(); } });
+addEventListener('resize', () => { if (state.mode === 'map') { bmClamp(); bmDraw(); } });
+$('mapclose').addEventListener('click', closeMap);
+$('mapcentre').addEventListener('click', () => { bm.cx = player.pos.x; bm.cz = player.pos.z; bmClamp(); bmDraw(); });
+$('mapclear').addEventListener('click', () => { clearWaypoint(); bmDraw(); });
+$('mapwrap').addEventListener('click', () => { if (state.mode === 'play') openMap(); });
+$('pausemap').addEventListener('click', openMap);
+if (isTouch) $('maphint').textContent = 'Tap to set a waypoint · tap it again to remove · drag to move · pinch to zoom';
 
 // ------------------------------------------------------------------ doors
 function updateDoors(dt) {
@@ -2945,6 +3202,7 @@ function frame(now) {
   let dt = clamp((now - last) / 1000, 0, 0.05);
   last = now;
   time += dt;
+  if (state.mode === 'map') { pressed.jump = pressed.punch = pressed.use = pressed.radio = pressed.gun = pressed.trick = false; audio.skid(0); return; }
   if (state.mode === 'pause') { pressed.jump = pressed.punch = pressed.use = pressed.radio = pressed.gun = pressed.trick = false; audio.skid(0); renderer.render(scene, camera); return; }
 
   updateWeather(dt);
@@ -2979,12 +3237,24 @@ function frame(now) {
     if (mission && mission.blips) blips.push(...mission.blips);
     if (!mission || mission.def.id === 'scooter') for (const s of scooters) if (s !== player.riding) blips.push({ x: s.pos.x, z: s.pos.z, c: '#2bb673', r: 5 });
     for (const a of gulls) if (['orbit', 'dive', 'climb', 'carry'].includes(a.state)) blips.push({ x: a.pos.x, z: a.pos.z, c: a.state === 'carry' ? '#f2c12e' : '#d2301f', r: 4 });
-    { const [hx, hz] = L2W(4, 4.2); blips.push({ x: hx, z: hz, c: '#f4f1ea', r: 6, edge: true }); }
+    { const [hx, hz] = L2W(4, 4.2); blips.push({ x: hx, z: hz, c: '#f4f1ea', r: 6, edge: true, home: true }); }
     for (const pl of PLACES) blips.push({ x: pl.x, z: pl.z, c: pl.st.bg, r: 7, label: pl.n, edge: pl.k === 'food' });
     blips.push({ x: JUMP.x, z: JUMP.z, c: '#e2231a', r: 6, label: 'Skydive' });
     blips.push({ x: funiStop[0].x, z: funiStop[0].z, c: '#2f6db5', r: 5, label: 'Fløibanen' });
     for (const lm of map.landmarks || []) if (lm.n !== 'Fløyen') blips.push({ x: lm.x, z: lm.z, c: '#cfd6dc', r: 4, label: lm.n });
     for (const sec of tram.sections) if (sec.g.visible) blips.push({ x: sec.x, z: sec.z, c: '#f07c1a', r: 4 });
+    bm.blips = blips.map(b => b.home ? { ...b, label: 'Cappes vei 6' } : b);
+    // the waypoint: reached when you get there
+    if (waypoint) {
+      const d = Math.hypot(waypoint.x - player.pos.x, waypoint.z - player.pos.z);
+      if (d < 10 && state.mode === 'play') { toast(`You have arrived${waypoint.name ? ': ' + waypoint.name : ''}`, 2.2); clearWaypoint(); }
+      else blips.push({ x: waypoint.x, z: waypoint.z, c: WP_COL, r: 8, edge: true, shape: 'wp' });
+    }
+    wpMarker.visible = !!waypoint && state.mode !== 'switch';
+    if (waypoint) {
+      wpMarker.position.set(waypoint.x, city.terrain.height(waypoint.x, waypoint.z), waypoint.z);
+      wpMarker.userData.beam.material.opacity = 0.18 + Math.sin(time * 1.3) * 0.05;
+    }
     // GPS route to the current target, recomputed now and then
     gpsT -= dt;
     if (gpsT <= 0) {
@@ -2992,6 +3262,9 @@ function frame(now) {
       const tgt = (mission && mission.target) || startPoint();
       gps = tgt && !inHouse(player.pos) && Math.hypot(tgt.x - player.pos.x, tgt.z - player.pos.z) > 15 ? route(player.pos.x, player.pos.z, tgt.x, tgt.z) : null;
       if (gps) gps.unshift([player.pos.x, player.pos.z]);
+      wpRoute();
+      const wt = waypoint ? (wpGps ? fmtDist(routeLen(wpGps)) : fmtDist(Math.hypot(waypoint.x - player.pos.x, waypoint.z - player.pos.z))) + (waypoint.name ? ' · ' + waypoint.name : '') : '';
+      $('wpinfo').hidden = !wt; if ($('wpinfo').textContent !== wt) $('wpinfo').textContent = wt;
       const sn = inHouse(player.pos) ? 'Cappes vei 6' : streetName(player.pos.x, player.pos.z);
       if (sn !== hud.street.textContent) hud.street.textContent = sn || '';
     }
@@ -3081,4 +3354,4 @@ $('play').disabled = false;
 $('play').textContent = save.mission > 0 ? (save.mission >= MISSIONS.length ? 'Free roam' : 'Continue') : 'Play';
 
 // debug hooks for testing
-window.__gt = { gameTime: () => time, places, street, tram, dive, funiState, funiStop, funiCarHere, startSkydive, JUMP, gun, shoot, toggleGun, brolly, cycleHand, npcs, turbo, clock, dayState, nightPeople, lampLights, audio, switchTo, swapTo, mates: () => housemates, active: () => active, OUT_SPOTS, offer: () => offer, acceptOffer, declineOffer, makeOffer, scene, renderer, camera, player, cam, world, state, startMission, save, weather, scooters, gulls, mission: () => mission, startGame, raiseAlarm, ending, L2V, L2W, W2L, H, house, city, route, BAKERY, CHECKPOINTS: () => CHECKPOINTS, inHouse, housemates, PLACES, hitPlayer, dropBolle, bolle: () => ({ drop: bolleDrop, carrying: !!player.carrying }) };
+window.__gt = { openMap, closeMap, setWaypoint, clearWaypoint, waypoint: () => waypoint, wpGps: () => wpGps, bm, gameTime: () => time, places, street, tram, dive, funiState, funiStop, funiCarHere, startSkydive, JUMP, gun, shoot, toggleGun, brolly, cycleHand, npcs, turbo, clock, dayState, nightPeople, lampLights, audio, switchTo, swapTo, mates: () => housemates, active: () => active, OUT_SPOTS, offer: () => offer, acceptOffer, declineOffer, makeOffer, scene, renderer, camera, player, cam, world, state, startMission, save, weather, scooters, gulls, mission: () => mission, startGame, raiseAlarm, ending, L2V, L2W, W2L, H, house, city, route, BAKERY, CHECKPOINTS: () => CHECKPOINTS, inHouse, housemates, PLACES, hitPlayer, dropBolle, bolle: () => ({ drop: bolleDrop, carrying: !!player.carrying }) };
