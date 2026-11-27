@@ -448,7 +448,9 @@ addEventListener('mousemove', e => {
   if (!locked || state.mode !== 'play') return;
   cam.yaw -= e.movementX * 0.0024;
   cam.pitch = clamp(cam.pitch + e.movementY * 0.002, -0.45, 1.25);
-  cam.lastLook = performance.now();
+  // a mouse under pointer lock reports tiny movements all the time, even at rest: only a real
+  // movement counts as looking around (and keeps the camera from swinging back behind you)
+  if (Math.abs(e.movementX) + Math.abs(e.movementY) > 2) cam.lastLook = performance.now();
 });
 function requestLock() {
   if (isTouch) return;
@@ -1799,25 +1801,30 @@ function updateSkydive(dt, inp) {
     audio.wind(Math.min(1, -v.y / 45));
   } else {
     dive.open = Math.min(1, dive.open + dt * 1.6);
-    player.heading -= inp.x * 1.15 * dt;
+    // steer with A/D, or with the mouse: look where you want to go and the canopy turns that way
+    const h0 = player.heading, looking = performance.now() - cam.lastLook < 700;
+    if (Math.abs(inp.x) > 0.1) player.heading -= inp.x * 1.15 * dt;
+    else if (looking) player.heading += clamp(angDiff(player.heading, cam.yaw + Math.PI) * 1.5 * dt, -1.15 * dt, 1.15 * dt);
+    dive.turn = damp(dive.turn || 0, angDiff(h0, player.heading) / Math.max(dt, 1e-3) / 1.15, 6, dt);
     const fwd = inp.y > 0.3 ? 12.5 : inp.y < -0.3 ? 5 : 9, sink = inp.y > 0.3 ? 6.8 : inp.y < -0.3 ? 2.6 : 4.4;
     v.x = damp(v.x, Math.sin(player.heading) * fwd, 2.2, dt); v.z = damp(v.z, Math.cos(player.heading) * fwd, 2.2, dt);
     v.y = damp(v.y, -sink, 2.5 * (0.4 + dive.open), dt);
-    audio.wind(0.25 + Math.abs(inp.x) * 0.1);
-    // the camera swings round behind you as you turn
-    if (performance.now() - cam.lastLook > 900) cam.yaw += angDiff(cam.yaw, player.heading + Math.PI) * Math.min(1, dt * 1.5);
+    audio.wind(0.25 + Math.abs(dive.turn || 0) * 0.1);
+    // the camera swings round behind you as you turn (unless you're looking around)
+    if (!looking) cam.yaw += angDiff(cam.yaw, player.heading + Math.PI) * Math.min(1, dt * 2.2);
   }
   p.addScaledVector(v, dt);
   p.x = clamp(p.x, AX0, AX1); p.z = clamp(p.z, AZ0, AZ1);
   // the figure: belly down in free fall, hanging in the harness under the canopy
-  const tilt = dive.phase === 'free' ? 1.25 : 0.05 + inp.x * 0.15;
+  const tilt = 1.25;
   player.fig.animate(dt, 0, 'jump', false);
   player.fig.root.position.copy(p);
-  player.fig.root.rotation.set(dive.phase === 'free' ? tilt : 0, player.heading, dive.phase === 'free' ? 0 : -inp.x * 0.25, 'YXZ');
+  const roll = dive.phase === 'free' ? 0 : -(dive.turn || 0) * 0.25;
+  player.fig.root.rotation.set(dive.phase === 'free' ? tilt : 0, player.heading, roll, 'YXZ');
   if (chute.visible) {
     const k = dive.open;
     chute.position.set(p.x, p.y + 1.6 + 4.3 * (0.4 + 0.6 * k), p.z);
-    chute.rotation.set(0.12, player.heading, -inp.x * 0.2, 'YXZ');
+    chute.rotation.set(0.12, player.heading, roll * 0.8, 'YXZ');
     chute.scale.set(0.3 + 0.7 * k, 0.6 + 0.4 * k, 0.4 + 0.6 * k);
   }
   // landing: in the sea, on the ground (or a roof), gently or not
