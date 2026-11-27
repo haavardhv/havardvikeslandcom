@@ -1808,7 +1808,7 @@ function frame(now) {
   } else {
     if (state.mode === 'play' || state.mode === 'dead' || state.mode === 'cut') {
       if (state.mode === 'play') updatePlayer(dt);
-      else player.fig.animate(dt, 0, state.mode === 'dead' ? 'down' : 'walk');
+      else if (!window.__director) player.fig.animate(dt, 0, state.mode === 'dead' ? 'down' : 'walk');
       for (const s of scooters) if (s !== player.riding) updateScooter(s, dt, { x: 0, y: 0 });
       updateDoors(dt);
       updateAlarm(dt);
@@ -1866,6 +1866,8 @@ function frame(now) {
   sun.position.copy(focus).addScaledVector(sunOffset, 100);
   sun.target.position.copy(focus);
 
+  // a scripted camera and actors (used to record the trailer)
+  if (window.__director) window.__director(dt, time);
   // the sun's shadow map is re-rendered every other frame (the world is static; only people move)
   frameNo++;
   renderer.shadowMap.needsUpdate = frameNo % 2 === 0 || frameNo < 4;
