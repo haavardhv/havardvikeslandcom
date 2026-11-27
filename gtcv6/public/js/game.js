@@ -6,6 +6,7 @@ import { buildHouse6 } from './house6.js';
 import { Physics } from './physics.js';
 import { Humanoid, Gull, makeScooter, makeItem, makeMarker, makeArrow, makePistol, PEOPLE, SCOOTER_LAMP } from './actors.js';
 import { Audio } from './audio.js';
+import { stylePlaceBuildings, buildPlaces } from './places.js';
 
 const $ = id => document.getElementById(id);
 const params = new URLSearchParams(location.search);
@@ -157,6 +158,7 @@ scene.environmentIntensity = 0.75;
 // ------------------------------------------------------------------ world
 const T = buildTextures();
 const map = await loadMapData();
+const placeBuildings = stylePlaceBuildings(map);
 const H = map.house6;
 const [OX, OZ] = H.origin, [HUX, HUZ] = H.u, [HVX, HVZ] = H.v;
 // house-local (u along the street, v into the house) <-> world
@@ -208,6 +210,12 @@ function nearestNode(x, z, maxD = 80) {
   }
   return best;
 }
+// Guangdong House, Rema 1000, Johnny's and the Trekroneren kiosk, dressed after photos
+const places = buildPlaces(scene, map, placeBuildings, {
+  terrain: city.terrain, onRoad: city.onRoad, polys: city.polys,
+  // which way the street is from a point: towards the nearest node of the walking graph
+  streetDir: (x, z) => { const i = nearestNode(x, z, 30); if (i < 0) return null; const dx = gx(i) - x, dz = gz(i) - z, d = Math.hypot(dx, dz); return d > 0.3 ? [dx / d, dz / d] : null; },
+});
 // A* over the street graph
 function route(ax, az, bx, bz) {
   const s = nearestNode(ax, az, 120), t = nearestNode(bx, bz, 120);
@@ -376,7 +384,7 @@ function updateCamera(dt) {
 // ------------------------------------------------------------------ input
 const keys = {};
 const pressed = { jump: false, punch: false, use: false, radio: false, gun: false, trick: false };
-const touch = { mx: 0, my: 0, run: false, jumpHeld: false, stickId: null, lookId: null, sx: 0, sy: 0, lx: 0, ly: 0 };
+const touch = { mx: 0, my: 0, run: false, driftHeld: false, stickId: null, lookId: null, sx: 0, sy: 0, lx: 0, ly: 0 };
 let locked = false;
 addEventListener('keydown', e => {
   if (e.repeat) { if (['Space', 'ArrowUp', 'ArrowDown'].includes(e.code)) e.preventDefault(); return; }
@@ -399,15 +407,17 @@ addEventListener('keydown', e => {
   else if ((e.code === 'Escape' || e.code === 'KeyP') && state.mode === 'play') pauseGame();
 });
 addEventListener('keyup', e => { keys[e.code] = false; });
-addEventListener('blur', () => { for (const k in keys) keys[k] = false; });
+addEventListener('blur', () => { for (const k in keys) keys[k] = false; mouseRight = false; });
+let mouseRight = false;      // held: drift on a scooter
 canvas.addEventListener('mousedown', e => {
   if (isTouch) return;
   if (state.mode === 'play') {
     if (!locked) { requestLock(); return; }
     if (e.button === 0) pressed.punch = true;
-    if (e.button === 2) pressed.trick = true;
+    if (e.button === 2) mouseRight = true;
   }
 });
+addEventListener('mouseup', e => { if (e.button === 2) mouseRight = false; });
 canvas.addEventListener('contextmenu', e => e.preventDefault());
 addEventListener('mousemove', e => {
   if (!locked || state.mode !== 'play') return;
@@ -464,15 +474,15 @@ for (const b of document.querySelectorAll('#touch button')) {
   b.addEventListener('touchstart', e => {
     e.preventDefault();
     const k = b.dataset.k;
-    if (k === 'jump') touch.jumpHeld = true;
+    if (k === 'trick') { touch.driftHeld = true; return; }      // the Drift button: hold it
     if (k === 'run') { touch.run = !touch.run; b.classList.toggle('on', touch.run); }
     else if (k === 'switch') openWheel(!wheelOpen);
     else pressed[k] = true;
   }, { passive: false });
 }
 {
-  const jb = document.querySelector('#touch [data-k="jump"]');
-  for (const ev of ['touchend', 'touchcancel']) jb.addEventListener(ev, () => { touch.jumpHeld = false; });
+  const db = document.querySelector('#touch [data-k="trick"]');
+  for (const ev of ['touchend', 'touchcancel']) db.addEventListener(ev, () => { touch.driftHeld = false; });
 }
 $('pausebtn').addEventListener('click', () => pauseGame());
 
@@ -485,8 +495,8 @@ function moveInput() {
   x += touch.mx; y += touch.my;
   const l = Math.hypot(x, y);
   if (l > 1) { x /= l; y /= l; }
-  // on a scooter: Shift (Run) boosts, Space (Jump) held drifts
-  return { x, y, run: keys.ShiftLeft || keys.ShiftRight || touch.run, drift: keys.Space || touch.jumpHeld };
+  // on a scooter: Shift (Run) boosts, the right mouse button held drifts
+  return { x, y, run: keys.ShiftLeft || keys.ShiftRight || touch.run, drift: mouseRight || touch.driftHeld };
 }
 
 // ------------------------------------------------------------------ HUD
@@ -852,6 +862,7 @@ function updateDayNight(dt) {
   rainU.color.value.setHex(0xb8c6d2).multiplyScalar(lerp(0.28, 1, k));
   lampHalos.material.color.setRGB(1, 0.85, 0.6).multiplyScalar(0.9 * lamp);
   updateLampLights(dt, lamp);
+  places.update(dt, lamp);
 }
 // the scooter's headlight: one spot light, on the scooter you ride, at night
 const headlight = new THREE.SpotLight(0xfff0d8, 0, 34, 0.42, 0.55, 1.1);
@@ -1746,7 +1757,7 @@ function updatePlayer(dt) {
 
   if (player.riding) {
     const s = player.riding;
-    if (pressed.trick) startTrick(s, inp);
+    if (pressed.trick || pressed.jump) startTrick(s, inp);      // Space (or T) on a scooter: a trick
     const crashed = updateScooter(s, dt, inp);
     player.pos.copy(s.pos);
     player.heading = s.heading;
@@ -2671,7 +2682,7 @@ function frame(now) {
     let prompt = '';
     if (state.mode === 'play' && !player.riding) { const s = nearestScooter(1.7); if (s) prompt = `<kbd>${isTouch ? 'E' : 'E'}</kbd>${s.stolen ? 'Ride e-scooter' : 'Steal e-scooter'}`; }
     else if (state.mode === 'play' && player.riding && Math.abs(player.riding.speed) < 1) prompt = '<kbd>E</kbd>Get off';
-    else if (state.mode === 'play' && player.riding && player.riding.speed > 4 && !save.rideHint) prompt = isTouch ? '<kbd>Jump</kbd>hold to drift <kbd>Run</kbd>boost <kbd>Trick</kbd>' : '<kbd>Space</kbd>drift <kbd>Shift</kbd>boost <kbd>Right-click</kbd>trick';
+    else if (state.mode === 'play' && player.riding && player.riding.speed > 4 && !save.rideHint) prompt = isTouch ? '<kbd>Jump</kbd>trick <kbd>Run</kbd>boost <kbd>Drift</kbd>hold to drift' : '<kbd>Space</kbd>trick <kbd>Shift</kbd>boost <kbd>Right mouse</kbd>hold to drift';
     if (player.riding && (player.riding.driftT > 1 || player.riding.trick) && !save.rideHint) { save.rideHint = true; persist(); }
     if (!prompt && brolly.shelterT > 0.3) prompt = `Sheltering under the umbrella… ${Math.ceil(SHELTER_T - brolly.shelterT)}`;
     hud.prompt.hidden = !prompt;
@@ -2756,4 +2767,4 @@ $('play').disabled = false;
 $('play').textContent = save.mission > 0 ? (save.mission >= MISSIONS.length ? 'Free roam' : 'Continue') : 'Play';
 
 // debug hooks for testing
-window.__gt = { gameTime: () => time, gun, shoot, toggleGun, brolly, cycleHand, npcs, turbo, clock, dayState, nightPeople, lampLights, audio, switchTo, swapTo, mates: () => housemates, active: () => active, OUT_SPOTS, offer: () => offer, acceptOffer, declineOffer, makeOffer, scene, renderer, camera, player, cam, world, state, startMission, save, weather, scooters, gulls, mission: () => mission, startGame, raiseAlarm, ending, L2V, L2W, W2L, H, house, city, route, BAKERY, CHECKPOINTS: () => CHECKPOINTS, inHouse, housemates, PLACES, hitPlayer, dropBolle, bolle: () => ({ drop: bolleDrop, carrying: !!player.carrying }) };
+window.__gt = { gameTime: () => time, places, gun, shoot, toggleGun, brolly, cycleHand, npcs, turbo, clock, dayState, nightPeople, lampLights, audio, switchTo, swapTo, mates: () => housemates, active: () => active, OUT_SPOTS, offer: () => offer, acceptOffer, declineOffer, makeOffer, scene, renderer, camera, player, cam, world, state, startMission, save, weather, scooters, gulls, mission: () => mission, startGame, raiseAlarm, ending, L2V, L2W, W2L, H, house, city, route, BAKERY, CHECKPOINTS: () => CHECKPOINTS, inHouse, housemates, PLACES, hitPlayer, dropBolle, bolle: () => ({ drop: bolleDrop, carrying: !!player.carrying }) };

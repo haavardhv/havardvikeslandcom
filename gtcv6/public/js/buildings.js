@@ -349,6 +349,7 @@ export function buildBuildings(scene, map, terrain, polys, T, opts) {
   const ROOF_LIFT = 0.15;       // roof thickness above the soffit
 
   for (const b of map.buildings) {
+    if (b.skip) continue;              // replaced by a model of its own (the Trekroneren kiosk)
     const rings = ringsOf(b);
     const outer = rings[0], n = outer.length;
     if (n < 3) continue;
