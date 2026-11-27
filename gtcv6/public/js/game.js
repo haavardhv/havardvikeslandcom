@@ -287,10 +287,20 @@ function updateRain(dt) {
 
 // ------------------------------------------------------------------ audio
 const audio = new Audio();
+// the scooter radio's station and song, shown at the top of the screen like a car radio
+let radioT = 0;
+audio.onSong = (station, title) => {
+  const el = $('radio');
+  el.querySelector('b').textContent = station;
+  el.querySelector('span').textContent = title;
+  el.hidden = false;
+  el.style.animation = 'none'; void el.offsetWidth; el.style.animation = '';
+  radioT = 4;
+};
 
 // ------------------------------------------------------------------ save
 const SAVE_KEY = 'gtcv6-save-v1';
-const save = { mission: 0, money: 0, umbrellas: [], done: false };
+const save = { mission: 0, money: 0, umbrellas: [], done: false, radio: true };
 try { Object.assign(save, JSON.parse(localStorage.getItem(SAVE_KEY) || '{}')); } catch (e) { /* no storage */ }
 const persist = () => { try { localStorage.setItem(SAVE_KEY, JSON.stringify(save)); } catch (e) { /* ignore */ } };
 
@@ -349,7 +359,7 @@ function updateCamera(dt) {
 
 // ------------------------------------------------------------------ input
 const keys = {};
-const pressed = { jump: false, punch: false, use: false };
+const pressed = { jump: false, punch: false, use: false, radio: false };
 const touch = { mx: 0, my: 0, run: false, stickId: null, lookId: null, sx: 0, sy: 0, lx: 0, ly: 0 };
 let locked = false;
 addEventListener('keydown', e => {
@@ -359,6 +369,7 @@ addEventListener('keydown', e => {
     if (e.code === 'Space') { pressed.jump = true; e.preventDefault(); }
     if (e.code === 'KeyE' || e.code === 'Enter') pressed.use = true;
     if (e.code === 'KeyF') pressed.punch = true;
+    if (e.code === 'KeyR') pressed.radio = true;
   }
   if (e.code === 'KeyM') toggleSound();
   if (e.code === 'Escape' && state.mode === 'pause' && !locked) resumeGame();
@@ -1764,12 +1775,14 @@ function pauseGame() {
   $('pausestats').textContent = `kr ${save.money.toLocaleString('nb-NO')} · umbrellas ${save.umbrellas.length}/${UMBRELLAS.length}`;
   $('restart').hidden = !mission;
   $('fact').innerHTML = '<b>Bergen fact</b>' + FACTS[factIdx++ % FACTS.length];
+  audio.pauseRadio(true);
   if (audio.ctx) audio.ctx.suspend();
 }
 function resumeGame() {
   $('pause').hidden = true;
   state.mode = 'play';
   if (audio.ctx) audio.ctx.resume();
+  audio.pauseRadio(false);
   requestLock();
   last = performance.now();
 }
@@ -1799,7 +1812,7 @@ function frame(now) {
   let dt = Math.min(0.05, (now - last) / 1000);
   last = now;
   time += dt;
-  if (state.mode === 'pause') { pressed.jump = pressed.punch = pressed.use = false; renderer.render(scene, camera); return; }
+  if (state.mode === 'pause') { pressed.jump = pressed.punch = pressed.use = pressed.radio = false; renderer.render(scene, camera); return; }
 
   updateWeather(dt);
   skyU.time.value = time;
@@ -1846,8 +1859,15 @@ function frame(now) {
     hud.prompt.hidden = !prompt;
     if (prompt && hud.prompt.innerHTML !== prompt) hud.prompt.innerHTML = prompt;
     audio.update(weather.rain, inHouse(camera.position), player.riding ? Math.abs(player.riding.speed) : 0);
+    // the radio plays while you ride; R turns it off and on
+    if (pressed.radio && player.riding && state.mode === 'play') {
+      save.radio = !save.radio; persist();
+      if (!save.radio) { toast('Radio off', 1.2); $('radio').hidden = true; }
+    }
+    audio.setRadio(state.mode === 'play' && !!player.riding && save.radio !== false);
+    if (radioT > 0) { radioT -= dt; if (radioT <= 0 || !player.riding) { $('radio').hidden = true; radioT = 0; } }
   }
-  pressed.jump = pressed.punch = pressed.use = false;
+  pressed.jump = pressed.punch = pressed.use = pressed.radio = false;
 
   updateNpcs(dt);
   updateGulls(dt);
@@ -1893,4 +1913,4 @@ $('play').disabled = false;
 $('play').textContent = save.mission > 0 ? (save.mission >= MISSIONS.length ? 'Free roam' : 'Continue') : 'Play';
 
 // debug hooks for testing
-window.__gt = { scene, renderer, camera, player, cam, world, state, startMission, save, weather, scooters, gulls, mission: () => mission, startGame, raiseAlarm, ending, L2V, L2W, W2L, H, house, city, route, BAKERY, CHECKPOINTS: () => CHECKPOINTS, inHouse, housemates, PLACES, hitPlayer, dropBolle, bolle: () => ({ drop: bolleDrop, carrying: !!player.carrying }) };
+window.__gt = { audio, scene, renderer, camera, player, cam, world, state, startMission, save, weather, scooters, gulls, mission: () => mission, startGame, raiseAlarm, ending, L2V, L2W, W2L, H, house, city, route, BAKERY, CHECKPOINTS: () => CHECKPOINTS, inHouse, housemates, PLACES, hitPlayer, dropBolle, bolle: () => ({ drop: bolleDrop, carrying: !!player.carrying }) };

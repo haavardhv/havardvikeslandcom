@@ -103,6 +103,14 @@ body {
   animation: pop 0.2s ease-out;
 }
 
+#radio {
+  position: absolute; left: 50%; top: 9%; transform: translateX(-50%);
+  text-align: center; text-shadow: var(--shadow); pointer-events: none;
+  animation: pop 0.3s ease-out;
+}
+#radio b { display: block; font: 900 clamp(20px, 3vw, 30px)/1 var(--cond); letter-spacing: 0.04em; text-transform: uppercase; color: #f2c12e; }
+#radio span { display: block; margin-top: 4px; font: 700 clamp(13px, 1.6vw, 16px)/1.2 var(--cond); color: #f4f1ea; }
+
 #banner {
   position: absolute; left: 0; right: 0; top: 34%;
   text-align: center; text-shadow: var(--shadow);
