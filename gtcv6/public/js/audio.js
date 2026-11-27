@@ -128,16 +128,29 @@ export class Audio {
       return el;
     });
     this.radioEl = this.radioEls[0];
+    this.blobs = new Map();          // segment src -> object URL (or the download in progress)
     this.radioT0 = performance.now() - Math.random() * LOOP * 1000;   // tune in somewhere in the broadcast
     this.radioOn = false;
     this.segIdx = -1;
   }
+  // Each segment is also downloaded whole, once, and played from memory after that: a stream can
+  // only be seeked if the server answers range requests, and without seeking, getting back on a
+  // scooter would start the song again from the top instead of where the broadcast is.
+  _blobUrl(src) { const v = this.blobs.get(src); return typeof v === 'string' ? v : null; }
+  _fetchBlob(src) {
+    if (this.blobs.has(src)) return;
+    this.blobs.set(src, fetch(src).then(r => r.ok ? r.blob() : Promise.reject(r.status))
+      .then(b => { this.blobs.set(src, URL.createObjectURL(b)); }, () => { this.blobs.set(src, null); }));   // null: stream it
+  }
   _load(el, seg) {
-    if (el.dataset.src === seg.src) return;
+    const blob = this._blobUrl(seg.src);
+    if (el.dataset.src === seg.src && (el.dataset.blob === '1' || !blob)) return;
     el.dataset.src = seg.src;
+    el.dataset.blob = blob ? '1' : '';
     el.preload = 'auto';
-    el.src = seg.src;
+    el.src = blob || seg.src;
     el.load();
+    if (!blob) this._fetchBlob(seg.src);
   }
   // have the segment after `i` ready in the other player
   _preloadAfter(i) {
@@ -160,6 +173,13 @@ export class Audio {
       if (!this.radioOn || el !== this.radioEl) return;
       // where the broadcast is now, the loading time included
       const at = Math.min(t + (performance.now() - asked) / 1000, (el.duration || seg.dur) - 0.3);
+      // can't seek that far into the stream yet: wait for the whole file (a moment of tuning in)
+      const sk = el.seekable, canSeek = sk.length && sk.end(sk.length - 1) >= at - 0.5;
+      const pending = this.blobs.get(seg.src);
+      if (at > 1 && !canSeek && pending && typeof pending.then === 'function') {
+        pending.then(() => { if (this.radioOn && el === this.radioEl && this.segIdx === i) this._tune(); });
+        return;
+      }
       try { if (Math.abs(el.currentTime - at) > 0.5) el.currentTime = at; } catch (e) { /* plays from where it is */ }
       el.play().catch(() => {});
     };

@@ -1,4 +1,8 @@
 {
+ "chat_gulls": 31.63,
+ "chat_party": 30.56,
+ "chat_steep": 27.48,
+ "chat_weather": 37.88,
  "id_01": 3.81,
  "id_02": 4.47,
  "id_03": 3.11,
@@ -13,5 +17,9 @@
  "news_traffic": 15.26,
  "outro_01": 3.42,
  "outro_02": 3.74,
- "outro_03": 3.66
+ "outro_03": 3.66,
+ "over_bolle": 12.23,
+ "over_fortyone": 12.62,
+ "over_sunglasses": 11.96,
+ "over_umbrella": 14.32
 }
