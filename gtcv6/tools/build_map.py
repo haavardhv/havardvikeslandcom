@@ -162,6 +162,14 @@ for w in ways.values():
     r = {'p': flat(c), 'w': round(wdt, 1), 'k': k}
     if sl or sr: r['sw'] = [int(sl), int(sr)]
     if t.get('name'): r['n'] = t['name']
+    # for the traffic: one-way (1 along the way, -1 against it), closed to cars, open to buses
+    ow = t.get('oneway')
+    if ow in ('yes', 'true', '1') or (t.get('junction') in ('roundabout', 'circular') and ow != 'no'): r['o'] = 1
+    elif ow == '-1': r['o'] = -1
+    if r.get('o') and (t.get('oneway:bus') == 'no' or t.get('oneway:psv') == 'no'): r['ob'] = 1
+    if any(t.get(a) in ('no', 'private') for a in ('access', 'vehicle', 'motor_vehicle', 'motorcar')): r['nc'] = 1
+    if t.get('bus') in ('yes', 'designated') or t.get('psv') in ('yes', 'designated'): r['bus'] = 1
+    if hw == 'service': r['sv'] = 1
     bridge = t.get('bridge') not in (None, 'no')
     if bridge: r['br'] = 1
     roads.append(r)
@@ -959,6 +967,15 @@ for w in ways.values():
     pools.append(flat(c[:-1]))
 print('outdoor pools', len(pools))
 
+# Traffic lights (highway=traffic_signals on the street nodes)
+signals = []
+for n in nodes.values():
+    t = n.get('tags', {})
+    if t.get('highway') != 'traffic_signals': continue
+    x, z = P(n)
+    if X0 - 20 < x < X1 + 20 and Z0 - 20 < z < Z1 + 20: signals.append([r1(x), r1(z)])
+print('traffic signals', len(signals))
+
 # Piers and pontoons (man_made=pier): the floating ones in the marinas on Vågen and Store
 # Lungegårdsvann get boats moored along them in the game. Lines are walkways of their width,
 # areas are drawn as they are.
@@ -1075,7 +1092,7 @@ out = {
     'lamps': lamps,
     'parking': parking,
     'waters': waters,
-    'kerbs': kerbs, 'marks': marks, 'crossings': crossings, 'coast': coast, 'art': art, 'shops': shops, 'stops': stops, 'bikes': bikes, 'trolley': trolley, 'pools': pools, 'piers': piers,
+    'kerbs': kerbs, 'marks': marks, 'crossings': crossings, 'coast': coast, 'art': art, 'shops': shops, 'stops': stops, 'bikes': bikes, 'trolley': trolley, 'pools': pools, 'piers': piers, 'signals': signals,
     'roadmask': {'x0': FX0, 'z0': FZ0, 'res': MRES, 'w': MW, 'h': MH},
 }
 json.dump(out, open(os.path.join(OUT, 'map.json'), 'w'), separators=(',', ':'))
