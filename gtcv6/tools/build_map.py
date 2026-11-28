@@ -959,6 +959,21 @@ for w in ways.values():
     pools.append(flat(c[:-1]))
 print('outdoor pools', len(pools))
 
+# Piers and pontoons (man_made=pier): the floating ones in the marinas on Vågen and Store
+# Lungegårdsvann get boats moored along them in the game. Lines are walkways of their width,
+# areas are drawn as they are.
+piers = []
+for w in ways.values():
+    t = w.get('tags', {})
+    if t.get('man_made') != 'pier': continue
+    c = coords(w)
+    if len(c) < 2 or not in_area(c): continue
+    area = c[0] == c[-1] and len(c) >= 4 and t.get('area') == 'yes'
+    try: wd = float(t.get('width', '0').split()[0])
+    except ValueError: wd = 0
+    piers.append({'p': flat(c[:-1] if area else c), 'a': 1 if area else 0, 'f': 1 if t.get('floating') == 'yes' else 0, 'w': round(wd or (2.4 if t.get('floating') == 'yes' else 3.0), 1)})
+print('piers', len(piers), 'floating', sum(p['f'] for p in piers))
+
 # Quays: OpenStreetMap's coastline (land on the left of each way) is where the harbour's quay
 # walls stand. The 2.5 m terrain grid would draw the shore as a sawtooth, so the ground on the
 # water side of the line is dug out under the sea; the game stands a stone wall on the line.
@@ -1060,7 +1075,7 @@ out = {
     'lamps': lamps,
     'parking': parking,
     'waters': waters,
-    'kerbs': kerbs, 'marks': marks, 'crossings': crossings, 'coast': coast, 'art': art, 'shops': shops, 'stops': stops, 'bikes': bikes, 'trolley': trolley, 'pools': pools,
+    'kerbs': kerbs, 'marks': marks, 'crossings': crossings, 'coast': coast, 'art': art, 'shops': shops, 'stops': stops, 'bikes': bikes, 'trolley': trolley, 'pools': pools, 'piers': piers,
     'roadmask': {'x0': FX0, 'z0': FZ0, 'res': MRES, 'w': MW, 'h': MH},
 }
 json.dump(out, open(os.path.join(OUT, 'map.json'), 'w'), separators=(',', ':'))

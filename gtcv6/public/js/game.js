@@ -11,6 +11,7 @@ import { stylePlaceBuildings, buildPlaces } from './places.js';
 import { prepareLandmarks, buildLandmarks } from './landmarks.js';
 import { buildShopSigns } from './signs.js';
 import { prepareStreet, buildStreet } from './street.js';
+import { buildHarbour } from './harbour.js';
 import { buildTram } from './tram.js';
 
 const $ = id => document.getElementById(id);
@@ -381,6 +382,7 @@ const FUNI_DOOR = (() => {
 const shopSigns = buildShopSigns(scene, map, { terrain: city.terrain, polys: city.polys, onRoad: city.onRoad });
 // the kiosks, bus stops and city-bike stations
 const streetFurniture = buildStreet(scene, map, streetThings, { terrain: city.terrain, polys: city.polys, onRoad: city.onRoad });
+const harbour = buildHarbour(scene, map, { terrain: city.terrain, polys: city.polys });
 // Bybanen: the rails, the platforms at Byparken and Kaigaten, and the tram
 const tram = buildTram(scene, map.tram, { terrain: city.terrain, polys: city.polys });
 function updateTram(dt) {
@@ -1387,6 +1389,7 @@ function updateDayNight(dt) {
   landmarks.update(dt, lamp, time);
   shopSigns.update(lamp);
   streetFurniture.update(lamp);
+  harbour.update(time);
 }
 // the scooter's headlight: one spot light, on the scooter you ride, at night
 const headlight = new THREE.SpotLight(0xfff0d8, 0, 34, 0.42, 0.55, 1.1);
@@ -3613,4 +3616,4 @@ $('play').disabled = false;
 $('play').textContent = save.mission > 0 ? (save.mission >= MISSIONS.length ? 'Free roam' : 'Continue') : 'Play';
 
 // debug hooks for testing
-window.__gt = { landmarks, shopSigns, openMap, closeMap, setWaypoint, clearWaypoint, waypoint: () => waypoint, wpGps: () => wpGps, bm, gameTime: () => time, nightPassenger, tryPickup, quietHere, places, street, tram, dive, funiState, FUNI_DOOR, funiHere, takeFuni, startSkydive, JUMP, gun, shoot, toggleGun, brolly, cycleHand, npcs, turbo, clock, dayState, nightPeople, lampLights, audio, switchTo, swapTo, mates: () => housemates, active: () => active, OUT_SPOTS, offer: () => offer, acceptOffer, declineOffer, makeOffer, scene, renderer, camera, player, cam, world, state, startMission, save, weather, scooters, gulls, mission: () => mission, startGame, raiseAlarm, ending, L2V, L2W, W2L, H, house, city, route, BAKERY, CHECKPOINTS: () => CHECKPOINTS, inHouse, housemates, PLACES, hitPlayer, dropBolle, bolle: () => ({ drop: bolleDrop, carrying: !!player.carrying }) };
+window.__gt = { landmarks, shopSigns, harbour, openMap, closeMap, setWaypoint, clearWaypoint, waypoint: () => waypoint, wpGps: () => wpGps, bm, gameTime: () => time, nightPassenger, tryPickup, quietHere, places, street, tram, dive, funiState, FUNI_DOOR, funiHere, takeFuni, startSkydive, JUMP, gun, shoot, toggleGun, brolly, cycleHand, npcs, turbo, clock, dayState, nightPeople, lampLights, audio, switchTo, swapTo, mates: () => housemates, active: () => active, OUT_SPOTS, offer: () => offer, acceptOffer, declineOffer, makeOffer, scene, renderer, camera, player, cam, world, state, startMission, save, weather, scooters, gulls, mission: () => mission, startGame, raiseAlarm, ending, L2V, L2W, W2L, H, house, city, route, BAKERY, CHECKPOINTS: () => CHECKPOINTS, inHouse, housemates, PLACES, hitPlayer, dropBolle, bolle: () => ({ drop: bolleDrop, carrying: !!player.carrying }) };
