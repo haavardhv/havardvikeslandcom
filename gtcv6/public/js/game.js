@@ -385,7 +385,7 @@ const shopSigns = buildShopSigns(scene, map, { terrain: city.terrain, polys: cit
 const streetFurniture = buildStreet(scene, map, streetThings, { terrain: city.terrain, polys: city.polys, onRoad: city.onRoad });
 const harbour = buildHarbour(scene, map, { terrain: city.terrain, polys: city.polys });
 // traffic: Skyss buses (line 6 trolleybuses under the wires, diesel buses between stops) and cars
-const traffic = buildTraffic(scene, map, { terrain: city.terrain, cars: 36 });
+const traffic = buildTraffic(scene, map, { terrain: city.terrain, polys: city.polys, cars: 36 });
 function updateTraffic(dt) {
   const here = state.mode === 'play' && !dive.on ? { x: player.pos.x, z: player.pos.z } : null;
   traffic.update(dt, here, player.pos);
