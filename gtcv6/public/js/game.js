@@ -14,6 +14,13 @@ import { prepareStreet, buildStreet } from './street.js';
 import { buildHarbour } from './harbour.js';
 import { buildTraffic } from './traffic.js';
 import { buildTram } from './tram.js';
+import { buildPub, pubFrame, PUB } from './pub.js';
+import { ActUI } from './activity.js';
+import { PoolGame } from './pool.js';
+import { DartsGame } from './darts.js';
+import { ShuffleGame } from './shuffleboard.js';
+import { BocciaGame, buildCourt, BC } from './boccia.js';
+import { SvartePerGame } from './svarteper.js';
 
 const $ = id => document.getElementById(id);
 const params = new URLSearchParams(location.search);
@@ -174,6 +181,20 @@ const [OX, OZ] = H.origin, [HUX, HUZ] = H.u, [HVX, HVZ] = H.v;
 const L2W = (u, v) => [OX + HUX * u + HVX * v, OZ + HUZ * u + HVZ * v];
 const W2L = (x, z) => { const dx = x - OX, dz = z - OZ; return [dx * HUX + dz * HUZ, dx * HVX + dz * HVZ]; };
 const L2V = (u, y, v) => { const [x, z] = L2W(u, v); return new THREE.Vector3(x, y, z); };
+// the boccia court in the courtyard of Danckert Krohns Hus (St. Jørgens hospital, Kong Oscars gate
+// 54): the courtyard's corners from OSM, open to the street at A-D; the court runs from the open
+// side towards the back wing
+const COURT = (() => {
+  const A = [-40.6, 97.5], Bc = [-28.6, 87.3], D = [-33.5, 105.5];
+  const la = Math.hypot(Bc[0] - A[0], Bc[1] - A[1]), ux = (Bc[0] - A[0]) / la, uz = (Bc[1] - A[1]) / la;
+  const ld = Math.hypot(D[0] - A[0], D[1] - A[1]), nx = (D[0] - A[0]) / ld, nz = (D[1] - A[1]) / ld;
+  const ox = A[0] + ux * 1.8 + nx * 5.15, oz = A[1] + uz * 1.8 + nz * 5.15;
+  // court (x along, z across) -> world; the court's +z is (-uz, ux)
+  const C2W = (x, z) => [ox + ux * x - uz * z, oz + uz * x + ux * z];
+  const W2C = (x, z) => { const dx = x - ox, dz = z - oz; return [dx * ux + dz * uz, -dx * uz + dz * ux]; };
+  return { ox, oz, ux, uz, theta: Math.atan2(-uz, ux), C2W, W2C };
+})();
+const onCourt = (x, z, m = 0) => { const [cx, cz] = COURT.W2C(x, z); return cx > -0.8 - m && cx < BC.L + 0.3 + m && cz > -BC.W / 2 - 0.3 - m && cz < BC.W / 2 + 1.2 + m; };
 const cityMats = {
   stone: new THREE.MeshStandardMaterial({ color: 0xb9b4a6, roughness: 0.9 }),
   copper: new THREE.MeshStandardMaterial({ color: 0x4f7a68, roughness: 0.6 }),
@@ -184,7 +205,7 @@ const city = buildCity(scene, map, T, {
   // them; everywhere else, the street in front of the door included, it keeps its real height
   hole: { o: [OX, OZ], u: [HUX, HUZ], v: [HVX, HVZ], r: [-1.3, 8.05, 0.02, H.D + 0.05] },
   // no trees round the house, nor on Fløyen's terrace and the plaza by the restaurant
-  keepClear: (x, z) => { const [u, v] = W2L(x, z); if (u > -4 && u < 12 && v > -4 && v < 14) return true; const f = map.funicular, n = f.length; return Math.hypot(x - f[n - 2], z - f[n - 1]) < 45; },
+  keepClear: (x, z) => { const [u, v] = W2L(x, z); if (u > -4 && u < 12 && v > -4 && v < 14) return true; if (onCourt(x, z, 1.5)) return true; const f = map.funicular, n = f.length; return Math.hypot(x - f[n - 2], z - f[n - 1]) < 45; },
 });
 // the house, its side passage and the terrace replace the ground there
 city.terrain.masks.push((x, z) => { const [u, v] = W2L(x, z); return u > -1.3 && u < 8.05 && v > -0.3 && v < H.D + 3.95; });
@@ -223,23 +244,59 @@ officeGroup.updateMatrixWorld(true);
 phys.addLocal(office.world, OF.ox, OF.oz, OF.ux, OF.uz);
 for (const d of office.doors) d.pos = OL2V(d.local.x, d.local.y, d.local.z);
 const inOffice = p => { const [x, z] = OW2L(p.x, p.z); return office.inside(x, p.y, z); };
-const isIndoors = p => inHouse(p) || inOffice(p);
-// inside the office, the building's own outline doesn't block you or the camera; the office's walls do
-city.polys.hollowAt = (x, y, z) => { const [lx, lz] = OW2L(x, z); return office.inside(lx, y, lz); };
-{
-  const [x, z] = OL2W(2, 0);
+
+// Kong Oscar, the pub on Veversmauet: a ground-floor room inside its OSM building, its floor
+// level with the highest ground under it
+const PF = pubFrame();
+const PL2W = (x, z) => [PF.ox + PF.ux * x - PF.uz * z, PF.oz + PF.uz * x + PF.ux * z];
+const PW2L = (x, z) => { const dx = x - PF.ox, dz = z - PF.oz; return [dx * PF.ux + dz * PF.uz, -dx * PF.uz + dz * PF.ux]; };
+const PP2V = (x, y, h = 0) => { const [wx, wz] = PL2W(x, -y); return new THREE.Vector3(wx, PUB_FLOOR + h, wz); };   // plan (x, y) and height
+const PUB_FLOOR = (() => {
+  let m = -Infinity;
+  for (let x = PUB.x0; x <= PUB.x1 + 1e-6; x += 0.5) for (let y = PUB.y0; y <= PUB.y1 + 1e-6; y += 0.5) { const [wx, wz] = PL2W(x, -y); m = Math.max(m, city.terrain.height(wx, wz)); }
+  return m + 0.06;
+})();
+const pubGroup = new THREE.Group();
+pubGroup.position.set(PF.ox, 0, PF.oz);
+pubGroup.rotation.y = PF.theta;
+scene.add(pubGroup);
+const pub = buildPub(pubGroup, T, PUB_FLOOR);
+pubGroup.updateMatrixWorld(true);
+phys.addLocal(pub.world, PF.ox, PF.oz, PF.ux, PF.uz);
+const inPub = p => { const [x, z] = PW2L(p.x, p.z); return pub.inside(x, p.y, z); };
+const PUB_CENTRE = pubGroup.localToWorld(new THREE.Vector3(...pub.centre));
+const isIndoors = p => inHouse(p) || inOffice(p) || inPub(p);
+// inside the office or the pub, the building's own outline doesn't block you or the camera; the room's walls do
+city.polys.hollowAt = (x, y, z) => { const [lx, lz] = OW2L(x, z); if (office.inside(lx, y, lz)) return true; const [px, pz] = PW2L(x, z); return pub.inside(px, y, pz); };
+for (const [x, z] of [OL2W(2, 0), PL2W(5, -5)]) {
   for (const it of city.polys.query(x - 1, z - 1, x + 1, z + 1)) if (it.kind && PolyWorld.insideItem(it, x, z)) it.hollow = true;
 }
+
+// the boccia court, level on the sloping courtyard
+const COURT_Y = (() => {
+  let hi = -Infinity, lo = Infinity;
+  for (let x = -0.6; x <= BC.L + 0.2; x += 0.5) for (let z = -BC.W / 2 - 0.1; z <= BC.W / 2 + 1.0; z += 0.3) { const [wx, wz] = COURT.C2W(x, z); const h = city.terrain.height(wx, wz); hi = Math.max(hi, h); lo = Math.min(lo, h); }
+  return { y: hi + 0.06, base: hi + 0.06 - lo };
+})();
+const courtGroup = new THREE.Group();
+courtGroup.position.set(COURT.ox, COURT_Y.y, COURT.oz);
+courtGroup.rotation.y = COURT.theta;
+scene.add(courtGroup);
+const court = buildCourt(courtGroup, COURT_Y.base, COURT_Y.y);
+courtGroup.updateMatrixWorld(true);
+phys.addLocal(court.world, COURT.ox, COURT.oz, COURT.ux, COURT.uz);
 const OFFICE_CENTRE = OL2V(...office.centre);
 // the three interior lights hang wherever you are: in no. 6, or at the office
 let lightsAt = 'house';
 function updateInteriorLights() {
   officeGroup.visible = camera.position.distanceTo(OFFICE_CENTRE) < 70;
-  const want = inOffice(player.pos) || inOffice(camera.position) ? 'office' : 'house';
+  pubGroup.visible = camera.position.distanceTo(PUB_CENTRE) < 70;
+  const want = inOffice(player.pos) || inOffice(camera.position) ? 'office' : inPub(player.pos) || inPub(camera.position) ? 'pub' : 'house';
   if (want === lightsAt) return;
   lightsAt = want;
   interiorLights.forEach((l, i) => {
     if (want === 'office') { l.position.copy(OL2V(...office.lights[i])); l.distance = 12; l.intensity = 7; }
+    else if (want === 'pub') { l.position.copy(pubGroup.localToWorld(new THREE.Vector3(...pub.lights[i]))); l.distance = 11; l.intensity = 6; }
     else { l.position.copy(L2V(...house.lights[i])); l.distance = 9; l.intensity = 5; }
   });
 }
@@ -300,6 +357,64 @@ function takeStairs(dir) {
     player.vel.set(0, 0, 0); player.heading = h;
     cam.yaw = h + Math.PI; cam.pitch = 0.3; cam.cur = cam.dist = up ? 2.5 : 4.4;
     toast(up ? 'Myreze, 4th floor' : 'Halfdan Kjerulfs gate', 2);
+  });
+}
+// Kong Oscar's door on Veversmauet, its sign, and the way in and out (E, like the stairs to Myreze)
+const PUB_DOOR_X = (PUB.door[0] + PUB.door[1]) / 2;
+const PUB_STREET = (() => {
+  const [dx, dz] = PL2W(PUB_DOOR_X, 0), nx = -PF.uz, nz = PF.ux;         // out of the facade: plan -y
+  const x = dx + nx * 1.3, z = dz + nz * 1.3;
+  return { doorX: dx, doorZ: dz, nx, nz, x, z, y: city.terrain.height(x, z), heading: Math.atan2(nx, nz) };
+})();
+const PUB_ENTRY = pubGroup.localToWorld(new THREE.Vector3(...pub.entry));
+const PUB_EXIT = pubGroup.localToWorld(new THREE.Vector3(...pub.exitDoor));
+{
+  const S = PUB_STREET, tx = -S.nz, tz = S.nx, g0 = city.terrain.height(S.doorX + S.nx, S.doorZ + S.nz);
+  // the door: dark wood, glazed, in a white frame, a step below it
+  const door = new THREE.Group();
+  const wood = new THREE.MeshStandardMaterial({ color: 0x2b1b12, roughness: 0.5 });
+  const leaf = new THREE.Mesh(new THREE.BoxGeometry(1.0, 2.25, 0.06), wood);
+  leaf.position.y = 1.125;
+  const pane = new THREE.Mesh(new THREE.PlaneGeometry(0.62, 0.95), new THREE.MeshStandardMaterial({ color: 0xffc98a, emissive: 0xffb060, emissiveIntensity: 0.6, roughness: 0.2 }));
+  pane.position.set(0, 1.55, 0.035);
+  const frame = new THREE.Mesh(new THREE.BoxGeometry(1.2, 2.4, 0.04), new THREE.MeshStandardMaterial({ color: 0xf0ebe0, roughness: 0.7 }));
+  frame.position.set(0, 1.2, -0.01);
+  const step = new THREE.Mesh(new THREE.BoxGeometry(1.4, 0.18, 0.45), new THREE.MeshStandardMaterial({ color: 0x8c8c86, roughness: 0.9 }));
+  step.position.set(0, 0.0, 0.2);
+  door.add(frame, leaf, pane, step);
+  door.position.set(S.doorX + S.nx * 0.06, Math.max(g0, PUB_FLOOR - 0.5), S.doorZ + S.nz * 0.06);
+  door.rotation.y = S.heading;
+  scene.add(door);
+  // the hanging sign over the street, and the opening hours by the door
+  const signTex = textTexture(['KONG', 'OSCAR'], { w: 384, h: 256, bg: '#1d3d2a', fg: '#f2d27a', font: '900 92px "Archivo", sans-serif', radius: 22, border: '#c9a23a' });
+  const sign = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.62, 0.92), [new THREE.MeshStandardMaterial({ map: signTex, roughness: 0.5 }), new THREE.MeshStandardMaterial({ map: signTex, roughness: 0.5 }), ...Array(4).fill(new THREE.MeshStandardMaterial({ color: 0x1d3d2a }))]);
+  sign.position.set(S.doorX + S.nx * 0.65 + tx * 0.9, g0 + 3.1, S.doorZ + S.nz * 0.65 + tz * 0.9);
+  sign.rotation.y = S.heading;
+  const arm = new THREE.Mesh(new THREE.BoxGeometry(0.04, 0.04, 1.1), new THREE.MeshStandardMaterial({ color: 0x151515, metalness: 0.6, roughness: 0.4 }));
+  arm.position.set(S.doorX + S.nx * 0.55 + tx * 0.9, g0 + 3.45, S.doorZ + S.nz * 0.55 + tz * 0.9);
+  arm.rotation.y = S.heading;
+  scene.add(sign, arm);
+  const plate = new THREE.Mesh(new THREE.PlaneGeometry(0.5, 0.36), new THREE.MeshStandardMaterial({ roughness: 0.4, map: textTexture(['Biljard · Dart', 'Shuffleboard'], { w: 280, h: 200, bg: '#16181b', fg: '#f3f2ee', font: '700 34px "Archivo", sans-serif', radius: 10, border: '#c9a23a' }) }));
+  plate.position.set(S.doorX - tx * 0.9 + S.nx * 0.07, g0 + 1.5, S.doorZ - tz * 0.9 + S.nz * 0.07);
+  plate.rotation.y = S.heading;
+  scene.add(plate);
+}
+function pubHere() {
+  if (state.mode !== 'play' || player.riding || dive.on || player.knockT > 0) return null;
+  const p = player.pos;
+  if (inPub(p)) return Math.hypot(p.x - PUB_EXIT.x, p.z - PUB_EXIT.z) < 1.2 ? 'out' : null;
+  return Math.hypot(p.x - PUB_STREET.doorX, p.z - PUB_STREET.doorZ) < 2.2 && Math.abs(p.y - PUB_STREET.y) < 2 ? 'in' : null;
+}
+function takePubDoor(dir) {
+  audio.door();
+  fadeThen(() => {
+    const into = dir === 'in';
+    const h = into ? Math.atan2(PF.uz, -PF.ux) : PUB_STREET.heading;     // in: facing plan +y, into the room
+    if (into) player.pos.set(PUB_ENTRY.x, PUB_FLOOR + 0.02, PUB_ENTRY.z);
+    else player.pos.set(PUB_STREET.x, world.floorAt(PUB_STREET.x, PUB_STREET.z, PUB_STREET.y + 1), PUB_STREET.z);
+    player.vel.set(0, 0, 0); player.heading = h;
+    cam.yaw = h + Math.PI; cam.pitch = 0.3; cam.cur = cam.dist = into ? 2.6 : 4.4;
+    toast(into ? 'Kong Oscar · pool, darts and shuffleboard' : 'Veversmauet', 2.2);
   });
 }
 // 'up' at the station house at the bottom, 'down' at Fløyen, or null
@@ -489,11 +604,11 @@ const rainGeo = new THREE.BufferGeometry();
   rainGeo.setAttribute('seed', new THREE.BufferAttribute(seed, 4));
   rainGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(RAIN_N * 2 * 3), 3));
 }
-const rainU = { time: { value: 0 }, cam: { value: new THREE.Vector3() }, house: { value: new THREE.Vector4(OX, OZ, HUX, HUZ) }, houseTop: { value: H.FU + 6 }, office: { value: new THREE.Vector4(OF.ox, OF.oz, OF.ux, OF.uz) }, officeTop: { value: (officeBld ? officeBld.t : OFFICE_FLOOR + 6) + 1 }, color: { value: new THREE.Color(0xb8c6d2) } };
+const rainU = { time: { value: 0 }, cam: { value: new THREE.Vector3() }, house: { value: new THREE.Vector4(OX, OZ, HUX, HUZ) }, houseTop: { value: H.FU + 6 }, office: { value: new THREE.Vector4(OF.ox, OF.oz, OF.ux, OF.uz) }, officeTop: { value: (officeBld ? officeBld.t : OFFICE_FLOOR + 6) + 1 }, pubF: { value: new THREE.Vector4(PF.ox, PF.oz, PF.ux, PF.uz) }, pubTop: { value: PUB_FLOOR + PUB.CH + 0.4 }, color: { value: new THREE.Color(0xb8c6d2) } };
 const rain = new THREE.LineSegments(rainGeo, new THREE.ShaderMaterial({
   uniforms: rainU, transparent: true, depthWrite: false, fog: false,
   vertexShader: `
-    attribute vec4 seed; uniform float time; uniform vec3 cam; uniform vec4 house; uniform float houseTop; uniform vec4 office; uniform float officeTop;
+    attribute vec4 seed; uniform float time; uniform vec3 cam; uniform vec4 house; uniform float houseTop; uniform vec4 office; uniform float officeTop; uniform vec4 pubF; uniform float pubTop;
     varying float vA;
     void main() {
       float end = floor(seed.w * 0.5), spd = 11.0 + fract(seed.w) * 5.0, wind = 1.8;
@@ -507,6 +622,9 @@ const rain = new THREE.LineSegments(rainGeo, new THREE.ShaderMaterial({
       float ox = x - office.x, oz = z - office.y;
       float ou = ox * office.z + oz * office.w, ov = ox * -office.w + oz * office.z;
       if (ou > -4.6 && ou < 8.4 && ov > -11.5 && ov < 6.0 && y < officeTop) y = -1e5;
+      float px = x - pubF.x, pz = z - pubF.y;
+      float pu = px * pubF.z + pz * pubF.w, pv = px * -pubF.w + pz * pubF.z;
+      if (pu > 0.1 && pu < 10.2 && pv > -9.6 && pv < -0.2 && y < pubTop) y = -1e5;
       vA = 0.42;
       gl_Position = projectionMatrix * viewMatrix * vec4(x, y, z, 1.0);
     }`,
@@ -619,6 +737,11 @@ let locked = false;
 addEventListener('keydown', e => {
   if (e.repeat) { if (['Space', 'ArrowUp', 'ArrowDown'].includes(e.code)) e.preventDefault(); return; }
   keys[e.code] = true;
+  if (state.mode === 'activity') {
+    if (e.code === 'Escape') leaveActivity();
+    else if (act && act.game && !act.over) { act.game.key(e.code, true); if (e.code === 'Space') e.preventDefault(); }
+    return;
+  }
   if (state.mode === 'play' || state.mode === 'cut') {
     if (e.code === 'Space') { pressed.jump = true; e.preventDefault(); }
     if (e.code === 'KeyE' || e.code === 'Enter') pressed.use = true;
@@ -637,7 +760,13 @@ addEventListener('keydown', e => {
   else if (e.code === 'Escape' && state.mode === 'pause' && !locked) resumeGame();
   else if ((e.code === 'Escape' || e.code === 'KeyP') && state.mode === 'play') pauseGame();
 });
-addEventListener('keyup', e => { keys[e.code] = false; });
+addEventListener('keyup', e => { keys[e.code] = false; if (state.mode === 'activity' && act && act.game && !act.over) act.game.key(e.code, false); });
+// the games take the pointer as it is: no pointer lock while you play
+const actNdc = e => ({ x: e.clientX / innerWidth * 2 - 1, y: -(e.clientY / innerHeight) * 2 + 1 });
+const actPointer = kind => e => { if (state.mode === 'activity' && act && act.game && !act.over && !actUI.resultEl) act.game.pointer(kind, actNdc(e), e); };
+canvas.addEventListener('pointerdown', actPointer('down'));
+addEventListener('pointermove', actPointer('move'));
+addEventListener('pointerup', actPointer('up'));
 addEventListener('blur', () => { for (const k in keys) keys[k] = false; mouseRight = false; });
 let mouseRight = false;      // held: drift on a scooter
 canvas.addEventListener('mousedown', e => {
@@ -670,6 +799,7 @@ document.addEventListener('pointerlockchange', () => {
 // touch: left half = stick, right half = look
 const stickEl = $('stick'), stickKnob = stickEl.querySelector('i');
 canvas.addEventListener('touchstart', e => {
+  if (state.mode === 'activity') { e.preventDefault(); return; }
   for (const t of e.changedTouches) {
     if (t.clientX < innerWidth * 0.45 && touch.stickId === null) {
       touch.stickId = t.identifier; touch.sx = t.clientX; touch.sy = t.clientY; touch.mx = touch.my = 0;
@@ -680,6 +810,7 @@ canvas.addEventListener('touchstart', e => {
   e.preventDefault();
 }, { passive: false });
 canvas.addEventListener('touchmove', e => {
+  if (state.mode === 'activity') { e.preventDefault(); return; }
   for (const t of e.changedTouches) {
     if (t.identifier === touch.stickId) {
       let dx = t.clientX - touch.sx, dy = t.clientY - touch.sy;
@@ -1688,6 +1819,7 @@ function updateNpcs(dt) {
   for (const n of npcs) {
     if (n.active) continue;          // that one is you
     if (n.bubble) { n.bubbleT -= dt; if (n.bubbleT <= 0) { n.fig.root.remove(n.bubble); n.bubble = null; } }
+    if (n.held) continue;            // playing a game with you: the game moves them
     if (n.party) {
       n.fig.animate(dt, 0, n.party);
       n.fig.root.position.copy(n.pos);
@@ -2375,10 +2507,13 @@ const PLACE_STYLE = {
   food: { bg: '#a3121b', fg: '#f6d46b', line: 'Guangdong House. The most important place in Bergen.' },
   pizza: { bg: '#1f6a3a', fg: '#ffffff', line: 'A slice at Johnny’s. Health restored.' },
   office: { bg: '#2c6fb5', fg: '#ffffff', line: 'Myreze, Halfdan Kjerulfs gate 4. The office is up on the 4th floor.' },
+  pub: { bg: '#1d3d2a', fg: '#f2d27a', line: 'Kong Oscar on Veversmauet: pool, darts and shuffleboard. E at the door.' },
+  senior: { bg: '#5b7a9a', fg: '#ffffff', line: 'Danckert Krohns Hus. The seniors play boccia in the courtyard: up for a game?' },
 };
 const PLACE_PRICE = { hotdog: 50 };
 save.places = save.places || [];
-const PLACES = [...(map.places || []), { n: 'Myreze', k: 'office', x: OFFICE_STREET.x, z: OFFICE_STREET.z }].map(pl => {
+const PLACES = [...(map.places || []), { n: 'Myreze', k: 'office', x: OFFICE_STREET.x, z: OFFICE_STREET.z },
+  { n: 'Kong Oscar', k: 'pub', x: PUB_STREET.x, z: PUB_STREET.z }, { n: 'Danckert Krohns Hus', k: 'senior', ...(([x, z]) => ({ x, z }))(COURT.C2W(-1.6, 0)) }].map(pl => {
   const st = PLACE_STYLE[pl.k];
   const y = world.floorAt(pl.x, pl.z, 300);
   const sign = new THREE.Sprite(new THREE.SpriteMaterial({ map: textTexture([pl.n], { w: 640, h: 128, bg: st.bg, fg: st.fg, font: '800 64px "Archivo", sans-serif', radius: 24, border: st.fg }), fog: false }));
@@ -2834,6 +2969,8 @@ function updatePlayer(dt) {
   // use: Fløibanen, the stairs at Halfdan Kjerulfs gate 4, get on / off scooters, or jump from Fløyen
   if (pressed.use && funiHere()) { pressed.use = false; takeFuni(funiHere()); }
   if (pressed.use && stairsHere()) { pressed.use = false; takeStairs(stairsHere()); }
+  if (pressed.use && pubHere()) { pressed.use = false; takePubDoor(pubHere()); }
+  if (pressed.use && actHere()) { pressed.use = false; startActivity(actHere()); }
   if (pressed.use && player.knockT <= 0 && !player.riding && !player.carrying && Math.hypot(player.pos.x - JUMP.x, player.pos.z - JUMP.z) < 3.5 && Math.abs(player.pos.y - JUMP.y) < 3) { pressed.use = false; startSkydive(); }
   if (pressed.use && player.knockT <= 0 && player.riding && tryPickup()) pressed.use = false;
   if (pressed.use && player.knockT <= 0) {
@@ -3593,6 +3730,143 @@ function updateSwitch(dt) {
   scene.fog.near += alt; scene.fog.far += alt * 1.6;
 }
 
+// ------------------------------------------------------------------ games around town
+// Svarteper with the boys round the coffee table at home; pool, darts and shuffleboard with the
+// regulars at Kong Oscar; boccia with the seniors in the courtyard of Danckert Krohns Hus. E starts
+// one where you stand; the game takes over the camera and the pointer until you leave (Esc).
+const actUI = new ActUI();
+actUI.leave.addEventListener('click', () => leaveActivity());
+const LOCALS = {};
+function addLocal(id, name, look, pos, face, party = 'idle') {
+  const fig = new Humanoid(look);
+  scene.add(fig.root);
+  const n = { fig, id, name, pos: pos.clone(), heading: Math.atan2(face.x - pos.x, face.z - pos.z), party, downT: 0, fall: 0, placed: true, talkT: 0, mate: false, active: false, held: false };
+  fig.root.position.copy(n.pos); fig.root.rotation.y = n.heading;
+  npcs.push(n); LOCALS[id] = n;
+  return n;
+}
+const PV = a => pubGroup.localToWorld(new THREE.Vector3(...a));
+const CV = (x, z, h = 0) => courtGroup.localToWorld(new THREE.Vector3(x, h, z));
+addLocal('rune', 'Rune', { jacket: 0x2f3a2a, pants: 0x2b2f36, hair: 0x6a6a66, hat: null, skin: 0xe2b49a }, PV(pub.regulars.pool), PP2V(PUB.pool.x, PUB.pool.y));
+addLocal('bente', 'Bente', { jacket: 0x7a2b3a, pants: 0x1f2330, hair: 0xb0643a, hat: null, skin: 0xeac0a8, longHair: true }, PV(pub.regulars.darts), PP2V(PUB.darts.x, PUB.darts.y));
+addLocal('kjellarne', 'Kjell-Arne', { jacket: 0xc8232c, pants: 0x30343c, hair: 0x9a8a78, hat: null }, PV(pub.regulars.shuffle), PP2V(PUB.shuffle.x, PUB.shuffle.y + 1.5));
+addLocal('sissel', 'Sissel', { jacket: 0x141414, pants: 0x141414, hair: 0x2a1c14, hat: null, longHair: true }, PV(pub.regulars.bar), PP2V(7.6, 7.0));
+addLocal('gunvor', 'Gunvor', { jacket: 0x5b7a9a, pants: 0x3b3b40, hair: 0xe4e0d8, hat: null, skin: 0xe8c0a8 }, CV(-0.7, -1.2), CV(5, 0));
+addLocal('arne', 'Arne', { jacket: 0x6b5a44, pants: 0x34322e, hair: 0xd8d8d8, hat: 0x3a3a3a }, CV(...court.bench.filter((_, i) => i !== 1)), CV(2.2, 0), 'sit');
+const ACTS = {
+  svarteper: { label: 'Gather the boys for a round of Svarteper', p: L2V(5.0, H.FU, 6.35), r: 1.5 },
+  pool: { label: 'Play pool with Rune · eight-ball', p: PP2V(PUB.pool.x, PUB.pool.y), r: 1.9 },
+  darts: { label: 'Play darts with Bente · 301', p: PP2V(PUB.darts.x + 2.37, PUB.darts.y), r: 1.2 },
+  shuffle: { label: 'Play shuffleboard with Kjell-Arne', p: PP2V(PUB.shuffle.x, PUB.shuffle.y - 0.4), r: 1.1 },
+  boccia: { label: 'Play boccia with Gunvor', p: CV(-0.5, 0), r: 2.2 },
+};
+function actHere() {
+  if (state.mode !== 'play' || player.riding || dive.on || player.knockT > 0) return null;
+  for (const k in ACTS) { const a = ACTS[k]; if (Math.hypot(player.pos.x - a.p.x, player.pos.z - a.p.z) < a.r && Math.abs(player.pos.y - a.p.y) < 1.2) return k; }
+  return null;
+}
+// Svarteper: you on a pouf at the end of the coffee table, the others on the two sofas, round
+// the table in the order the cards go (house-local u, v and heading)
+const SP_SEATS = [[4.85, 6.35, Math.PI / 2], [5.45, 7.62, Math.PI], [6.25, 7.62, Math.PI], [7.12, 6.75, -Math.PI / 2], [7.12, 5.95, -Math.PI / 2]];
+const pouf = new THREE.Mesh(new THREE.CylinderGeometry(0.26, 0.24, 0.42, 18), new THREE.MeshStandardMaterial({ color: 0x8b8f86, roughness: 1 }));
+pouf.position.set(SP_SEATS[0][0] - 0.05, H.FU + 0.21, SP_SEATS[0][1]); pouf.castShadow = true; pouf.visible = false;
+houseGroup.add(pouf);
+let act = null;
+function sayFig(fig, text) { const n = npcs.find(m => m.fig === fig && !m.active); if (n) say(n, text); }
+function startActivity(kind) {
+  const why = mission ? 'Finish the mission first' : player.carrying ? 'Put that down first' : state.alarm > 0 ? 'Lose the gulls first' : null;
+  if (why) { toast(why, 1.8); return; }
+  if (gun.drawn) toggleGun(false);
+  if (brolly.up) setBrolly(false);
+  act = { kind, game: null, from: player.pos.clone(), heading: player.heading };
+  state.mode = 'activity';
+  if (document.pointerLockElement) document.exitPointerLock();
+  player.vel.set(0, 0, 0);
+  fadeThen(() => { if (!act) return; document.body.classList.add('in-act'); beginGame(); });
+}
+// a frame for a game in the pub, at plan (x, y) with its +x along plan direction dir
+function pubFrameGroup(f) {
+  const g = new THREE.Group();
+  g.position.set(f.x, PUB_FLOOR + f.h, -f.y);
+  g.rotation.y = Math.atan2(f.dir[1], f.dir[0]);
+  pubGroup.add(g); g.updateMatrixWorld(true);
+  return g;
+}
+function beginGame() {
+  const k = act.kind;
+  act.over = false;
+  const local = id => { const n = LOCALS[id]; n.held = true; if (n.bubble) { n.fig.root.remove(n.bubble); n.bubble = null; } return { name: n.name, fig: n.fig }; };
+  const env = { ui: actUI, audio, camera, touch: isTouch, me: { name: PEOPLE[active].name, fig: player.fig }, say: sayFig, finish: finishGame };
+  if (act.frame) { act.frame.removeFromParent(); act.frame = null; }
+  if (k === 'svarteper') {
+    for (const id of CHAR_IDS) housemates[id].fig.soot(false);
+    const ring = [active, ...CHAR_IDS.filter(id => id !== active)];
+    const centre = L2V(5.8, H.FU + 0.45, 6.35);
+    ring.forEach((id, i) => {
+      if (i === 0) return;
+      const [u, v, h] = SP_SEATS[i], n = housemates[id];
+      n.pos.copy(L2V(u, H.FU, v)); n.heading = h + H.theta; n.party = 'sit'; n.left = true; n.tag.visible = false;
+      n.downT = 0; n.fall = 0; n.fig.body.rotation.x = 0;
+    });
+    pouf.visible = true;
+    env.players = ring.map((id, i) => ({ id, name: PEOPLE[id].name, face: `/img/people/${id}-face.jpg`, col: CHAR_COL[id], fig: i === 0 ? null : housemates[id].fig, spot: L2V(SP_SEATS[i][0], H.FU + 0.85, SP_SEATS[i][1]).lerp(centre, 0.2) }));
+    env.centre = centre;
+    env.view = dt => {
+      camera.position.copy(L2V(4.3, H.FU + 2.2, 6.35));
+      camera.lookAt(L2V(6.45, H.FU + 0.35, 6.55));
+      player.fig.root.visible = false;                 // you see the table through your own eyes
+      player.fig.root.position.copy(L2V(SP_SEATS[0][0], H.FU, SP_SEATS[0][1]));
+      player.fig.root.rotation.set(0, SP_SEATS[0][2] + H.theta, 0);
+      player.fig.animate(dt, 0, 'sit');
+    };
+    act.game = new SvartePerGame(env);
+  } else if (k === 'boccia') {
+    env.group = courtGroup;
+    env.opp = local('gunvor'); env.extra = local('arne');
+    act.game = new BocciaGame(env);
+  } else {
+    const f = pub.frames[k];
+    env.group = act.frame = pubFrameGroup(f);
+    env.surf = f.surf;
+    env.opp = local({ pool: 'rune', darts: 'bente', shuffle: 'kjellarne' }[k]);
+    act.game = new ({ pool: PoolGame, darts: DartsGame, shuffle: ShuffleGame }[k])(env);
+  }
+}
+function finishGame(r) {
+  if (!act || act.over) return;
+  act.over = true;
+  if (r.kr) { save.money += r.kr; persist(); }
+  if (r.loser && housemates[r.loser]) housemates[r.loser].fig.soot(true);
+  later('actResult', 1.5, () => {
+    if (!act || !act.over || act.leaving) return;
+    if (r.win) audio.jingle(); else audio.fail();
+    if (r.kr) audio.coin();
+    actUI.result(r, () => { if (!act || act.leaving) return; act.game.dispose(); actUI.clearResult(); beginGame(); }, () => leaveActivity());
+  });
+}
+function leaveActivity() {
+  if (!act || act.leaving) return;
+  act.leaving = true;
+  fadeThen(() => {
+    if (act.game) act.game.dispose();
+    if (act.frame) act.frame.removeFromParent();
+    for (const id in LOCALS) LOCALS[id].held = false;
+    for (const id of CHAR_IDS) housemates[id].tag.visible = !housemates[id].active;
+    pouf.visible = false;
+    actUI.close();
+    document.body.classList.remove('in-act');
+    resize();
+    player.fig.root.visible = true;
+    player.pos.copy(act.from); player.vel.set(0, 0, 0); player.heading = act.heading; player.onGround = true;
+    player.fig.root.position.copy(player.pos); player.fig.root.rotation.set(0, player.heading, 0);
+    cam.yaw = act.heading + Math.PI; cam.pitch = 0.3; cam.cur = cam.dist = isIndoors(player.pos) ? 2.6 : 4.4;
+    act = null;
+    state.mode = 'play';
+    last = performance.now();
+    requestLock();
+  });
+}
+
 // ------------------------------------------------------------------ death, water, respawn
 function placePlayer(sp) {
   const [x, y, z, h] = sp;
@@ -3804,8 +4078,9 @@ function frame(now) {
   if (state.mode === 'title') {
     updateTitleCam(time);
   } else {
-    if (state.mode === 'play' || state.mode === 'dead' || state.mode === 'cut' || state.mode === 'switch') {
+    if (state.mode === 'play' || state.mode === 'dead' || state.mode === 'cut' || state.mode === 'switch' || state.mode === 'activity') {
       if (state.mode === 'play') { updateGun(dt); updatePlayer(dt); updateBrolly(dt); }
+      else if (state.mode === 'activity') { if (act && act.game) act.game.update(dt); actUI.update(dt); }
       else if (!window.__director) player.fig.animate(dt, 0, state.mode === 'dead' ? 'down' : state.mode === 'switch' ? 'idle' : 'walk');
       for (const s of scooters) if (s !== player.riding) updateScooter(s, dt, { x: 0, y: 0 });
       updateHeadlight();
@@ -3816,7 +4091,7 @@ function frame(now) {
       if (state.mode === 'play') updateMission(dt);
       updateUmbrellas(dt, time);
       updatePlaces(dt, time);
-      if (state.mode === 'cut') updateCut(dt); else if (state.mode === 'switch') updateSwitch(dt); else updateCamera(dt);
+      if (state.mode === 'cut') updateCut(dt); else if (state.mode === 'switch') updateSwitch(dt); else if (state.mode !== 'activity') updateCamera(dt);
     }
     updateHud(dt);
     const blips = [];
@@ -3870,8 +4145,11 @@ function frame(now) {
     if (!prompt && funiHere()) prompt = funiHere() === 'up' ? '<kbd>E</kbd>Take Fløibanen up to Fløyen' : '<kbd>E</kbd>Take Fløibanen down to town';
     if (state.mode === 'play' && !player.riding && !dive.on && !prompt && Math.hypot(player.pos.x - JUMP.x, player.pos.z - JUMP.z) < 3.5 && Math.abs(player.pos.y - JUMP.y) < 3) prompt = '<kbd>E</kbd>Skydive from 450 m';
     if (!prompt && stairsHere()) prompt = stairsHere() === 'up' ? '<kbd>E</kbd>Take the stairs up to Myreze, 4th floor' : '<kbd>E</kbd>Take the stairs down to Halfdan Kjerulfs gate';
+    if (!prompt && pubHere()) prompt = pubHere() === 'in' ? '<kbd>E</kbd>Go into Kong Oscar' : '<kbd>E</kbd>Go out to Veversmauet';
+    if (!prompt && actHere()) prompt = '<kbd>E</kbd>' + ACTS[actHere()].label;
     if (dive.on && state.mode === 'play') prompt = `Altitude ${Math.max(0, Math.round(skyAlt))} m · ` + (dive.phase === 'free' ? (isTouch ? '<kbd>Jump</kbd>open the parachute' : '<kbd>Space</kbd>open the parachute') : 'A/D steer · W dive · S flare');
     if (!prompt && brolly.shelterT > 0.3) prompt = `Sheltering under the umbrella… ${Math.ceil(SHELTER_T - brolly.shelterT)}`;
+    if (state.mode === 'activity') prompt = null;
     hud.prompt.hidden = !prompt;
     if (prompt && hud.prompt.innerHTML !== prompt) hud.prompt.innerHTML = prompt;
     audio.update(weather.rain, isIndoors(camera.position), player.riding ? Math.abs(player.riding.speed) : 0, player.riding && turbo.on ? 1 : 0);
@@ -3953,4 +4231,4 @@ $('play').disabled = false;
 $('play').textContent = save.mission > 0 ? (save.mission >= MISSIONS.length ? 'Free roam' : 'Continue') : 'Play';
 
 // debug hooks for testing
-window.__gt = { combo, landmarks, shopSigns, harbour, traffic, openMap, closeMap, setWaypoint, clearWaypoint, waypoint: () => waypoint, wpGps: () => wpGps, bm, gameTime: () => time, nightPassenger, tryPickup, quietHere, places, street, tram, dive, funiState, FUNI_DOOR, funiHere, takeFuni, startSkydive, JUMP, gun, shoot, toggleGun, brolly, cycleHand, npcs, turbo, clock, dayState, nightPeople, lampLights, audio, switchTo, swapTo, mates: () => housemates, active: () => active, OUT_SPOTS, offer: () => offer, acceptOffer, declineOffer, makeOffer, scene, renderer, camera, player, cam, world, state, startMission, save, weather, scooters, gulls, mission: () => mission, startGame, raiseAlarm, ending, L2V, L2W, W2L, H, house, city, route, BAKERY, CHECKPOINTS: () => CHECKPOINTS, inHouse, housemates, PLACES, hitPlayer, dropBolle, bolle: () => ({ drop: bolleDrop, carrying: !!player.carrying }) };
+window.__gt = { startActivity, leaveActivity, act: () => act, ACTS, LOCALS, pub, pubGroup, PUB_STREET, PUB_FLOOR, takePubDoor, inPub, COURT, COURT_Y, courtGroup, PP2V, CV, combo, landmarks, shopSigns, harbour, traffic, openMap, closeMap, setWaypoint, clearWaypoint, waypoint: () => waypoint, wpGps: () => wpGps, bm, gameTime: () => time, nightPassenger, tryPickup, quietHere, places, street, tram, dive, funiState, FUNI_DOOR, funiHere, takeFuni, startSkydive, JUMP, gun, shoot, toggleGun, brolly, cycleHand, npcs, turbo, clock, dayState, nightPeople, lampLights, audio, switchTo, swapTo, mates: () => housemates, active: () => active, OUT_SPOTS, offer: () => offer, acceptOffer, declineOffer, makeOffer, scene, renderer, camera, player, cam, world, state, startMission, save, weather, scooters, gulls, mission: () => mission, startGame, raiseAlarm, ending, L2V, L2W, W2L, H, house, city, route, BAKERY, CHECKPOINTS: () => CHECKPOINTS, inHouse, housemates, PLACES, hitPlayer, dropBolle, bolle: () => ({ drop: bolleDrop, carrying: !!player.carrying }) };

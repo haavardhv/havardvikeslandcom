@@ -433,6 +433,24 @@ export class Audio {
   door() { if (!this.ctx) return; this._noise(0.25, 'bandpass', 300, 3, 0.08); this._tone('sine', 90, 70, 0.15, 0.06, 0.15); }
   crash() { if (!this.ctx) return; this._noise(0.4, 'lowpass', 2000, 0.6, 0.35); this._tone('square', 120, 40, 0.3, 0.08); }
   bump() { if (!this.ctx) return; this._noise(0.06, 'lowpass', 400, 1, 0.12); }
+  // the games: pool balls, darts, shuffleboard weights, boccia balls and cards
+  cueHit(k = 0.5) { if (!this.ctx) return; this._tone('sine', 1900, 1500, 0.05, 0.05 + k * 0.08); this._noise(0.03, 'bandpass', 2600, 2, 0.05 + k * 0.08); }
+  ballClick(v = 1) {
+    if (!this.ctx) return;
+    const now = this.ctx.currentTime;
+    if (this._clickT && now - this._clickT < 0.025) return;
+    this._clickT = now;
+    const g = Math.min(0.22, 0.03 + v * 0.06);
+    this._tone('sine', 3300 + Math.random() * 400, 2900, 0.035, g); this._noise(0.02, 'highpass', 4000, 1, g * 0.6);
+  }
+  cushion(v = 1) { if (this.ctx && v > 0.15) this._noise(0.06, 'lowpass', 500, 1, Math.min(0.15, v * 0.05)); }
+  pocket() { if (!this.ctx) return; this._tone('sine', 220, 140, 0.12, 0.12); this._noise(0.1, 'lowpass', 700, 1, 0.12, 0.02); this._tone('sine', 160, 120, 0.08, 0.06, 0.12); }
+  foul() { if (!this.ctx) return; this._tone('triangle', 330, 300, 0.18, 0.08); this._tone('triangle', 247, 240, 0.25, 0.08, 0.15); }
+  dartHit(miss = false) { if (!this.ctx) return; if (miss) this._noise(0.08, 'lowpass', 600, 1, 0.12); else { this._noise(0.05, 'bandpass', 900, 2, 0.2); this._tone('sine', 180, 120, 0.06, 0.1); } }
+  puckSlide(k = 0.7) { if (!this.ctx) return; this._sweep(1.4 + k, 1400, 600, 0.03 + k * 0.02, 0.8); }
+  puckClack(v = 1) { if (!this.ctx) return; this._tone('sine', 2200, 1800, 0.05, Math.min(0.2, 0.05 + v * 0.1)); this._noise(0.03, 'bandpass', 3000, 2, Math.min(0.15, v * 0.1)); }
+  bocciaClack(v = 1) { if (!this.ctx) return; this._tone('sine', 1500 + Math.random() * 200, 1200, 0.07, Math.min(0.25, 0.06 + v * 0.12)); this._noise(0.04, 'bandpass', 2000, 2, Math.min(0.2, v * 0.1)); }
+  card() { if (!this.ctx) return; this._noise(0.05, 'highpass', 2500, 0.8, 0.08); }
   fail() { if (!this.ctx) return; [392, 330, 262].forEach((f, i) => this._tone('triangle', f, f * 0.97, 0.35, 0.12, i * 0.22)); }
   jingle() {
     if (!this.ctx) return;

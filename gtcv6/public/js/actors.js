@@ -67,6 +67,7 @@ function makeAtlas(look, person) {
   const tex = new THREE.CanvasTexture(c);
   tex.colorSpace = THREE.SRGBColorSpace;
   tex.anisotropy = 4;
+  tex.userData.g = g;
   if (person) {
     Promise.all([loadImg(`/img/people/${person}-face.jpg`), loadImg(`/img/people/${person}-shirt.jpg`)]).then(([face, shirt]) => {
       if (face) g.drawImage(face, FACE.x, FACE.y, FACE.w, FACE.h);
@@ -218,6 +219,7 @@ export class Humanoid {
     geo.setAttribute('skinWeight', new THREE.Float32BufferAttribute(swt, 4));
     geo.computeBoundingSphere();
     const atlasTex = makeAtlas(look, person);
+    this.atlas = atlasTex;
     // the women on the corners glow a little, so their outfits read in the dark under the lamps
     const material = new THREE.MeshStandardMaterial(look.night
       ? { map: atlasTex, roughness: 0.6, emissive: 0xffffff, emissiveMap: atlasTex, emissiveIntensity: 0.5 }
@@ -334,6 +336,27 @@ export class Humanoid {
     this.body.rotation.x = Lp(this.body.rotation.x, lean);
     this.body.position.y = state === 'sit' ? -0.45 : state === 'down' ? 0.16 : bob;
     this.head.rotation.y = Math.sin(this.phase * 0.21) * 0.12;
+  }
+  // Svarteper: the loser gets a smudge of soot from a burnt cork on the nose and cheeks (and it
+  // washes off again with on = false)
+  soot(on) {
+    const g = this.atlas.userData.g;
+    if (on && !this._clean) {
+      this._clean = g.getImageData(FACE.x, FACE.y, FACE.w, FACE.h);
+      const dab = (x, y, r, a) => {
+        const gr = g.createRadialGradient(x, y, 0, x, y, r);
+        gr.addColorStop(0, `rgba(12,10,9,${a})`); gr.addColorStop(0.6, `rgba(12,10,9,${a * 0.7})`); gr.addColorStop(1, 'rgba(12,10,9,0)');
+        g.fillStyle = gr; g.beginPath(); g.arc(x, y, r, 0, Math.PI * 2); g.fill();
+      };
+      const cx = FACE.x + FACE.w / 2, cy = FACE.y + FACE.h * 0.6;
+      dab(cx, cy, 22, 0.95);
+      for (const s of [-1, 1]) { dab(cx + s * 52, cy + 6, 16, 0.75); dab(cx + s * 66, cy + 2, 12, 0.6); }
+      this.atlas.needsUpdate = true;
+    } else if (!on && this._clean) {
+      g.putImageData(this._clean, FACE.x, FACE.y);
+      this._clean = null;
+      this.atlas.needsUpdate = true;
+    }
   }
   punch() { this.punchT = 0.28; }
   recoil() { this.recoilT = 0.12; }

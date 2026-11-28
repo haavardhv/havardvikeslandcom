@@ -317,3 +317,110 @@ body.touch .keys { display: none; }
   .titlebox { padding-left: 0; }
   .keys { grid-template-columns: repeat(2, auto); }
 }
+
+/* ---------------------------------------------------------------- the games (pool, darts, shuffleboard, boccia, Svarteper) */
+body.in-act #hud > :not(#stats) { display: none !important; }
+body.in-act #stats > :not(#money) { display: none !important; }
+body.in-act #touch { display: none !important; }
+#act { position: fixed; inset: 0; pointer-events: none; z-index: 5; }
+#act button { pointer-events: auto; }
+.act-top {
+  position: absolute; left: 50%; top: max(14px, env(safe-area-inset-top)); transform: translateX(-50%);
+  display: flex; flex-direction: column; align-items: center; gap: 8px; width: min(640px, calc(100vw - 32px));
+  text-shadow: var(--shadow);
+}
+.act-title { font: 900 clamp(15px, 1.9vw, 19px)/1 var(--cond); letter-spacing: 0.14em; text-transform: uppercase; color: var(--rain); }
+.act-score { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; }
+.act-side {
+  display: grid; grid-template-columns: auto auto; align-items: baseline; column-gap: 12px; row-gap: 2px;
+  min-width: 132px; padding: 7px 12px 8px; border-radius: 8px; background: rgba(16, 20, 24, 0.72);
+  box-shadow: inset 3px 0 0 var(--c); opacity: 0.75; transition: opacity 0.2s, transform 0.2s;
+}
+.act-side.on { opacity: 1; transform: translateY(1px); box-shadow: inset 3px 0 0 var(--c), 0 0 0 2px var(--c); }
+.act-side span { font: 800 14px/1.1 var(--cond); letter-spacing: 0.03em; }
+.act-side b { font: 900 22px/1 var(--cond); font-variation-settings: "wdth" 75; color: var(--c); text-align: right; }
+.act-side em { grid-column: 1 / -1; font: 600 12px/1.2 "Archivo", sans-serif; font-style: normal; opacity: 0.85; letter-spacing: 0.06em; }
+.act-msg {
+  position: absolute; left: 50%; top: 26%; transform: translateX(-50%); max-width: calc(100vw - 32px); text-align: center;
+  font: 900 clamp(18px, 2.6vw, 30px)/1.15 var(--cond); font-variation-settings: "wdth" 80; text-shadow: var(--shadow);
+  animation: pop 0.25s ease-out;
+}
+.act-msg em { font-style: normal; color: var(--rain); }
+.act-bottom {
+  position: absolute; left: 50%; bottom: max(18px, calc(env(safe-area-inset-bottom) + 10px)); transform: translateX(-50%);
+  width: min(560px, calc(100vw - 32px)); display: flex; flex-direction: column; align-items: center; gap: 10px;
+}
+.act-hint { margin: 0; text-align: center; font: 600 clamp(13px, 1.6vw, 15px)/1.4 "Archivo", sans-serif; text-shadow: var(--shadow); }
+.act-hint kbd, .act-leave kbd { background: var(--paper); color: var(--ink); border-radius: 3px; padding: 0 5px; font: 800 12px/1.4 var(--cond); }
+.act-meter { width: min(320px, 70vw); height: 14px; border-radius: 7px; background: rgba(16, 20, 24, 0.8); box-shadow: 0 0 0 2px rgba(244, 241, 234, 0.4); overflow: hidden; }
+.act-meter i { display: block; height: 100%; width: 0; background: linear-gradient(90deg, #9fe08a, #f2c12e 60%, #d2301f); }
+.act-leave {
+  position: absolute; right: max(16px, env(safe-area-inset-right)); top: max(14px, env(safe-area-inset-top));
+  font: 800 13px/1 var(--cond); letter-spacing: 0.06em; text-transform: uppercase; color: var(--paper);
+  background: rgba(16, 20, 24, 0.72); border: 0; border-radius: 4px; padding: 9px 12px; cursor: pointer;
+  box-shadow: inset 0 0 0 2px rgba(244, 241, 234, 0.35);
+}
+body.touch .act-leave kbd { display: none; }
+#act:not(.cards) .act-top { top: max(14px, env(safe-area-inset-top)); }
+@media (max-width: 640px) { .act-top { top: calc(max(14px, env(safe-area-inset-top)) + 40px); } .act-side { min-width: 110px; } }
+.act-result {
+  position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); pointer-events: auto;
+  width: min(380px, calc(100vw - 32px)); padding: 22px 22px 18px; border-radius: 12px; text-align: center;
+  background: rgba(16, 20, 24, 0.9); box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5); animation: pop 0.3s ease-out;
+}
+.act-result b { display: block; font: 900 clamp(30px, 5vw, 44px)/0.95 var(--cond); font-variation-settings: "wdth" 70; text-transform: uppercase; color: #9fe08a; }
+.act-result.lose b { color: var(--red); }
+.act-result p { margin: 10px 0 0; font: 500 15px/1.4 "Archivo", sans-serif; }
+.act-result em { display: block; margin-top: 8px; font: 900 22px/1 var(--cond); font-style: normal; color: #9fe08a; }
+.act-result div { display: flex; gap: 10px; margin-top: 16px; }
+.act-result button {
+  flex: 1; font: 900 16px/1 var(--cond); letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink); background: var(--rain);
+  border: 0; border-radius: 4px; padding: 13px 10px; cursor: pointer; box-shadow: 0 3px 0 #7a5a07;
+}
+.act-result button.ghost { background: transparent; color: var(--paper); box-shadow: inset 0 0 0 2px rgba(244, 241, 234, 0.4); }
+
+/* Svarteper: the hands over the living room */
+.sp { position: absolute; inset: 0; }
+.sp-hand { position: absolute; display: flex; flex-direction: column; align-items: center; gap: 4px; transform: translate(-50%, -100%); transition: opacity 0.3s; }
+.sp-me { left: 50%; bottom: max(64px, calc(env(safe-area-inset-bottom) + 56px)); transform: translateX(-50%); flex-direction: column-reverse; }
+.sp-name { display: flex; align-items: center; gap: 6px; padding: 3px 9px 3px 3px; border-radius: 20px; background: rgba(16, 20, 24, 0.75); font: 800 13px/1 var(--cond); text-shadow: none; white-space: nowrap; }
+.sp-name img { width: 24px; height: 24px; border-radius: 50%; object-fit: cover; border: 2px solid var(--c); }
+.sp-name em { font-style: normal; color: var(--rain); min-width: 1ch; }
+.sp-hand.turn .sp-name { box-shadow: 0 0 0 2px var(--c); }
+.sp-hand.out { opacity: 0.45; }
+.sp-hand.loser .sp-name { background: #000; box-shadow: 0 0 0 2px var(--red); }
+.sp-cards { display: flex; justify-content: center; min-height: 20px; }
+.card {
+  --w: clamp(46px, 6vw, 66px);
+  position: relative; width: var(--w); height: calc(var(--w) * 1.42); border-radius: 6px; flex: none;
+  background: #fbf8f0; color: #16181b; box-shadow: 0 2px 6px rgba(0, 0, 0, 0.45), inset 0 0 0 1px rgba(0, 0, 0, 0.15);
+  display: grid; place-items: center; font-family: var(--cond);
+}
+.sp-cards .card + .card { margin-left: calc(var(--w) * -0.55); }
+.card.red { color: #c8232c; }
+.card b { position: absolute; left: 5px; top: 4px; font: 900 calc(var(--w) * 0.26)/1 var(--cond); }
+.card b span { display: block; margin-top: 1px; font-size: 0.8em; text-align: center; }
+.card b.bot { left: auto; top: auto; right: 5px; bottom: 4px; transform: rotate(180deg); }
+.card i { font-style: normal; font-size: calc(var(--w) * 0.5); line-height: 1; }
+.card small { position: absolute; bottom: 14%; font: 900 calc(var(--w) * 0.12)/1 var(--cond); letter-spacing: 0.04em; text-transform: uppercase; }
+.card.peter { background: linear-gradient(#fbf8f0, #e5ddd0); }
+.card.peter i::after { content: "🎩"; position: absolute; left: 50%; top: 14%; transform: translateX(-50%); font-size: calc(var(--w) * 0.3); }
+.card.back {
+  background: repeating-linear-gradient(45deg, #1f4fb4 0 5px, #2a5fc8 5px 10px); border: 3px solid #fbf8f0;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.45);
+}
+.sp-opp .card { --w: clamp(30px, 3.6vw, 42px); }
+.sp-opp .card + .card { margin-left: calc(var(--w) * -0.7); }
+.sp-hand.from .card.back { cursor: pointer; pointer-events: auto; transition: transform 0.15s; }
+.sp-hand.from .card.back:hover { transform: translateY(-8px); box-shadow: 0 0 0 2px var(--rain), 0 6px 12px rgba(0, 0, 0, 0.5); }
+.sp-hand.from .sp-cards { filter: drop-shadow(0 0 8px rgba(242, 193, 46, 0.7)); }
+.card.lift { transform: translateY(-14px) !important; }
+.sp-me .card.lift { transform: translateY(-22px) !important; }
+.card.fresh { animation: fresh 0.6s ease-out; }
+@keyframes fresh { from { transform: translateY(-24px); box-shadow: 0 0 0 3px var(--rain); } }
+.card.fly { position: fixed; z-index: 10; pointer-events: none; margin: 0 !important; }
+.card.fly.small { --w: clamp(30px, 3.6vw, 42px); }
+.sp-pile { position: absolute; width: 0; height: 0; }
+.sp-pair { position: absolute; left: 0; top: 0; display: flex; transform: translate(-50%, -50%) rotate(var(--r)); animation: pop 0.25s ease-out; }
+.sp-pair .card { --w: clamp(32px, 3.8vw, 44px); }
+.sp-pair .card + .card { margin-left: calc(var(--w) * -0.45); }
