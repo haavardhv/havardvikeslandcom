@@ -130,6 +130,17 @@ body.touch #ammo { top: calc(max(16px, env(safe-area-inset-top)) + 168px); }
   animation: pop 0.2s ease-out;
 }
 
+/* a combo of tricks on the scooter, building up under the toast */
+#combo {
+  position: absolute; left: 50%; top: 31%; transform: translateX(-50%); max-width: calc(100vw - 32px);
+  display: flex; flex-direction: column; align-items: center; gap: 3px; text-align: center; text-shadow: var(--shadow);
+}
+#combo b { font: 800 clamp(14px, 1.7vw, 18px)/1.2 var(--cond); color: var(--paper); }
+#combo span { font: 800 clamp(18px, 2.4vw, 26px)/1 var(--cond); color: var(--rain); }
+#combo em { font-style: normal; color: #6cc2ff; }
+#combo.pop span { animation: comboPop 0.25s ease-out; }
+@keyframes comboPop { from { transform: scale(1.35); } }
+
 #phone .offer { display: flex; gap: 8px; margin-top: 10px; }
 #phone .offer button { flex: 1; border: 0; border-radius: 8px; padding: 7px 8px; font: 800 13px/1 var(--cond); letter-spacing: 0.04em; text-transform: uppercase; cursor: pointer; background: #101418; color: #f4f1ea; pointer-events: auto; }
 #phone .offer button[data-a="no"] { background: rgba(16, 20, 24, 0.12); color: #101418; }

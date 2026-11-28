@@ -218,7 +218,8 @@ export function buildTraffic(scene, map, { terrain, cars: NC = 36 }) {
         if (!pts) continue;
         const r = makeRoute(pts);
         if (r.len > d * 1.8) continue;               // not a long way round
-        add(r, { line, dests: [c.n, a.n], artic: false, trolley: false, start: R() });
+        const plain = (n) => n.replace(/\s*\([A-Z0-9]{1,2}\)$/, '').replace(/\s+[A-Z]$/, '');     // no platform letters
+        add(r, { line, dests: [plain(c.n), plain(a.n)], artic: false, trolley: false, start: R() });
         break;
       }
     }
