@@ -247,6 +247,35 @@ function detailTexture(size, seed, base, amp) {
 }
 
 
+// A small hatchback or saloon: the side profile extruded across the car, a band of glass a
+// hair wider than the body, and four wheels; body vertices white so each instance takes its
+// colour, glass and tyres dark whatever the colour. The parked cars and the traffic share it.
+export function carGeometry() {
+  const carG = new THREE.BufferGeometry();
+  const prof = (pts) => { const sh = new THREE.Shape(); sh.moveTo(pts[0][0], pts[0][1]); for (const p of pts.slice(1)) sh.lineTo(p[0], p[1]); return sh; };
+  const extrude = (pts, w) => { const g = new THREE.ExtrudeGeometry(prof(pts), { depth: w, bevelEnabled: false }); g.translate(0, 0, -w / 2); g.rotateY(Math.PI / 2); return g.toNonIndexed(); };
+  const bodyG = extrude([[-2.12, 0.32], [2.1, 0.32], [2.14, 0.62], [2.0, 0.86], [1.05, 0.98], [0.5, 1.42], [-0.95, 1.45], [-1.55, 1.0], [-2.08, 0.92], [-2.14, 0.6]], 1.72);
+  const glassG = extrude([[0.95, 1.0], [0.48, 1.36], [-0.9, 1.39], [-1.42, 1.02]], 1.74);
+  const parts = [[bodyG, [1, 1, 1]], [glassG, [0.14, 0.17, 0.2]]];
+  for (const [x, z] of [[-0.78, 1.35], [0.78, 1.35], [-0.78, -1.3], [0.78, -1.3]]) {
+    const w = new THREE.CylinderGeometry(0.32, 0.32, 0.22, 12); w.rotateZ(Math.PI / 2); w.translate(x, 0.32, z);
+    parts.push([w.toNonIndexed(), [0.09, 0.09, 0.1]]);
+  }
+  // lights: white at the front, red at the back
+  const lamp = (z, c) => { const g = new THREE.BoxGeometry(1.5, 0.12, 0.04); g.translate(0, 0.74, z); return [g.toNonIndexed(), c]; };
+  parts.push(lamp(-2.16, [1.6, 1.6, 1.5]), lamp(2.15, [0.8, 0.08, 0.06]));     // the bonnet is at -z
+  const pos = [], nrm = [], col = [];
+  for (const [g, c] of parts) {
+    g.computeVertexNormals();
+    pos.push(...g.attributes.position.array); nrm.push(...g.attributes.normal.array);
+    for (let k = 0; k < g.attributes.position.count; k++) col.push(...c);
+  }
+  carG.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  carG.setAttribute('normal', new THREE.Float32BufferAttribute(nrm, 3));
+  carG.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
+  return carG;
+}
+
 // ---------------------------------------------------------------------------
 export function buildCity(scene, map, T, opts) {
   const terrain = new Terrain(map);
@@ -936,33 +965,7 @@ export function buildCity(scene, map, T, opts) {
         }
       }
     }
-    // a small hatchback or saloon: the side profile extruded across the car, a band of glass a
-    // hair wider than the body, and four wheels; body vertices white so each instance takes its
-    // colour, glass and tyres dark whatever the colour
-    const carG = new THREE.BufferGeometry();
-    {
-      const prof = (pts) => { const sh = new THREE.Shape(); sh.moveTo(pts[0][0], pts[0][1]); for (const p of pts.slice(1)) sh.lineTo(p[0], p[1]); return sh; };
-      const extrude = (pts, w) => { const g = new THREE.ExtrudeGeometry(prof(pts), { depth: w, bevelEnabled: false }); g.translate(0, 0, -w / 2); g.rotateY(Math.PI / 2); return g.toNonIndexed(); };
-      const bodyG = extrude([[-2.12, 0.32], [2.1, 0.32], [2.14, 0.62], [2.0, 0.86], [1.05, 0.98], [0.5, 1.42], [-0.95, 1.45], [-1.55, 1.0], [-2.08, 0.92], [-2.14, 0.6]], 1.72);
-      const glassG = extrude([[0.95, 1.0], [0.48, 1.36], [-0.9, 1.39], [-1.42, 1.02]], 1.74);
-      const parts = [[bodyG, [1, 1, 1]], [glassG, [0.14, 0.17, 0.2]]];
-      for (const [x, z] of [[-0.78, 1.35], [0.78, 1.35], [-0.78, -1.3], [0.78, -1.3]]) {
-        const w = new THREE.CylinderGeometry(0.32, 0.32, 0.22, 12); w.rotateZ(Math.PI / 2); w.translate(x, 0.32, z);
-        parts.push([w.toNonIndexed(), [0.09, 0.09, 0.1]]);
-      }
-      // lights: white at the front, red at the back
-      const lamp = (z, c) => { const g = new THREE.BoxGeometry(1.5, 0.12, 0.04); g.translate(0, 0.74, z); return [g.toNonIndexed(), c]; };
-      parts.push(lamp(2.06, [1.6, 1.6, 1.5]), lamp(-2.13, [0.8, 0.08, 0.06]));
-      const pos = [], nrm = [], col = [];
-      for (const [g, c] of parts) {
-        g.computeVertexNormals();
-        pos.push(...g.attributes.position.array); nrm.push(...g.attributes.normal.array);
-        for (let k = 0; k < g.attributes.position.count; k++) col.push(...c);
-      }
-      carG.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
-      carG.setAttribute('normal', new THREE.Float32BufferAttribute(nrm, 3));
-      carG.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
-    }
+    const carG = carGeometry();
     const cars2 = new THREE.InstancedMesh(carG, new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.35, metalness: 0.3 }), Math.max(1, carSpots.length));
     const carCols = [0xe8e8e8, 0x1d1f22, 0x8c9196, 0x2c4c7a, 0x7a2e28, 0xc9c9c4, 0x3f5d48, 0x30343a];
     const q4 = new THREE.Quaternion(), s4 = new THREE.Vector3(1, 1, 1), p4 = new THREE.Vector3();

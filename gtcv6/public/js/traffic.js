@@ -1,9 +1,12 @@
-// Skyss buses that drive. A street graph is made from the asphalt roads in OpenStreetMap; the
-// line 2 trolleybuses run the length of the overhead wires (the route keeps under them), and a
-// few diesel buses run between bus stops far apart along the wide streets. Each goes from one
-// end of its route to the other and back, in the right-hand lane, slowing for corners, stopping
-// at the bus stops it passes, waiting behind the bus in front, and braking for you.
+// Traffic: Skyss buses and cars. A street graph is made from the roads in OpenStreetMap; the
+// line 6 trolleybuses (Lyngbø - Birkelundstoppen, Bergen's one trolleybus line, called line 2
+// until 2021) run the length of the overhead wires (the route keeps under them), and a few diesel
+// buses run between bus stops far apart along the wide streets. Each bus goes from one end of its
+// route to the other and back, stopping at the bus stops it passes. Cars drive around wherever
+// you are, choosing a way at each junction. Everything keeps to the right-hand lane (leaving
+// room for the parked cars), slows for corners, waits behind what is in front, and brakes for you.
 import * as THREE from '../vendor/three.module.min.js';
+import { carGeometry } from './city.js';
 
 function tex(w, h, draw) {
   const c = document.createElement('canvas'); c.width = w; c.height = h;
@@ -37,7 +40,7 @@ function streetGraph(map) {
       const a = node(p[i], p[i + 1]), b = node(p[i + 2], p[i + 3]);
       if (a === b) continue;
       const L = Math.hypot(X[b] - X[a], Z[b] - Z[a]), wire = underWires((X[a] + X[b]) / 2, (Z[a] + Z[b]) / 2);
-      adj[a].push({ to: b, L, w: r.w, wire }); adj[b].push({ to: a, L, w: r.w, wire });
+      adj[a].push({ to: b, L, w: r.w, wire, k: r.k }); adj[b].push({ to: a, L, w: r.w, wire, k: r.k });
     }
   }
   return { X, Z, adj, underWires };
@@ -70,6 +73,10 @@ function biggestPart(G) {
   let best = 0; for (let c = 1; c < sizes.length; c++) if (sizes[c] > sizes[best]) best = c;
   return (i) => comp[i] === best;
 }
+
+// How far right of the middle of a street of width w to drive, for a vehicle of half-width hw:
+// on streets up to 9 m wide there are cars parked along the kerb (city.js), so keep clear of them
+function laneFor(w, hw) { return w > 9 ? Math.min(1.8, w / 4) : Math.max(0, Math.min(w / 4, w / 2 - 2.1 - hw - 0.1)); }
 
 // A route: a polyline with its lengths, and the lane to keep to on each segment
 function makeRoute(pts) {
@@ -105,7 +112,7 @@ function makeRoute(pts) {
 }
 
 // ---------------------------------------------------------------------------- the buses
-export function buildBuses(scene, map, { terrain }) {
+export function buildTraffic(scene, map, { terrain, cars: NC = 36 }) {
   const ground = (x, z) => terrain.height(x, z);
   const std = (o) => new THREE.MeshStandardMaterial({ roughness: 0.6, ...o });
   // Skyss livery, after photos: white sides, an orange roof line and front, a black window band
@@ -134,7 +141,7 @@ export function buildBuses(scene, map, { terrain }) {
   const section = (len, frontM, back) => {
     const g = new THREE.Group();
     const body = new THREE.Mesh(new THREE.BoxGeometry(W, 2.85, len), [sideM, sideM, orangeM, darkM, frontM || darkM, back ? rearM : darkM]);
-    body.position.y = 0.35 + 1.42; body.castShadow = true; g.add(body);
+    body.position.y = 0.35 + 1.42; body.castShadow = true; g.add(body); g.userData.body = body;
     for (const z of [len / 2 - 2.2, -len / 2 + 2.6]) for (const x of [-1, 1]) {
       const wh = new THREE.Mesh(new THREE.CylinderGeometry(0.5, 0.5, 0.3, 12), darkM); wh.rotation.z = Math.PI / 2; wh.position.set(x * (W / 2 - 0.12), 0.5, z); g.add(wh);
     }
@@ -147,8 +154,9 @@ export function buildBuses(scene, map, { terrain }) {
   const buses = [];
   const add = (route, opts) => {
     if (!route || route.len < 150) return;
-    const fm = std({ map: frontT(opts.line, opts.dest), emissive: 0xffffff, emissiveMap: null, emissiveIntensity: 0.1 });
-    fm.emissiveMap = fm.map; glow.push([fm, 0.1, 0.8]);
+    // the destination on the front: the end it is driving to
+    const fronts = opts.dests.map(d => { const m = std({ map: frontT(opts.line, d), emissive: 0xffffff, emissiveIntensity: 0.1 }); m.emissiveMap = m.map; glow.push([m, 0.1, 0.8]); return m; });
+    const fm = fronts[opts.start > 0.5 ? 1 : 0];
     const secs = opts.artic
       ? [{ g: section(11, fm, false), len: 11, off: 0 }, { g: section(7, null, true), len: 7, off: -9.9 }]
       : [{ g: section(12, fm, true), len: 12, off: 0 }];
@@ -170,13 +178,13 @@ export function buildBuses(scene, map, { terrain }) {
       if (bs > 20 && bs < route.len - 20 && !stops.some(s => Math.abs(s.s - bs) < 40)) stops.push({ s: bs, n: st.n });
     }
     stops.sort((a, b) => a.s - b.s);
-    const b = { route, secs, stops, d: opts.start * route.len, dir: opts.start > 0.5 ? -1 : 1, v: 0, wait: 2, lastStop: null, opts, x: 0, z: 0, h: 0, tmp };
+    const b = { route, secs, stops, fronts, d: opts.start * route.len, dir: opts.start > 0.5 ? -1 : 1, v: 0, wait: 2, lastStop: null, opts, x: 0, z: 0, h: 0, tmp };
     buses.push(b);
   };
 
   const [AX0, AZ0, AX1, AZ1] = map.area || [-1e9, -1e9, 1e9, 1e9];
   const inside = (x, z, m = 0) => x > AX0 + m && x < AX1 - m && z > AZ0 + m && z < AZ1 - m;
-  // line 2: from one end of the wires to the other, keeping under them
+  // line 6: from one end of the wires to the other, keeping under them
   {
     // the points of the wires inside the map that reach the rest of the streets
     const cand = [];
@@ -189,17 +197,19 @@ export function buildBuses(scene, map, { terrain }) {
       if (pts) {
         const r = makeRoute(pts);
         { let u = 0, t = {}; for (let d = 0; d < r.len; d += 10) { r.at(d, t); if (G.underWires(t.x, t.z)) u += 10; } r.wireFrac = u / r.len; }
-        add(r, { line: 2, dest: 'Sentrum', artic: true, trolley: true, start: 0.15 });
-        add(r, { line: 2, dest: 'Sentrum', artic: true, trolley: true, start: 0.7 });
+        // west to Lyngbø on Laksevåg, south-east to Birkelundstoppen
+        const dests = G.X[B] < G.X[A] ? ['Lyngbø', 'Birkelundstoppen'] : ['Birkelundstoppen', 'Lyngbø'];
+        add(r, { line: 6, dests, artic: true, trolley: true, start: 0.15 });
+        add(r, { line: 6, dests, artic: true, trolley: true, start: 0.7 });
       }
     }
   }
   // diesel buses between stops far apart, along the wide streets
   {
-    const R = rnd(11), stops = (map.stops || []).map(s => [s, nearestNode(s.x, s.z, 20)]).filter(([, i]) => i >= 0);
-    const LINES = [[3, 'Sentrum'], [6, 'Lønborglien'], [5, 'Sentrum'], [12, 'Bystasjonen']];
+    const R = rnd(11), stops = (map.stops || []).filter(s => (s.n || '').length > 3).map(s => [s, nearestNode(s.x, s.z, 20)]).filter(([, i]) => i >= 0);
+    const LINES = [3, 4, 5, 12];            // not 1 and 2 (Bybanen) or 6 (the trolleybus)
     let tries = 0;
-    for (const [line, dest] of LINES) {
+    for (const line of LINES) {
       while (tries++ < 60) {
         const [a, ia] = stops[Math.floor(R() * stops.length)], [c, ic] = stops[Math.floor(R() * stops.length)];
         const d = Math.hypot(a.x - c.x, a.z - c.z);
@@ -208,7 +218,7 @@ export function buildBuses(scene, map, { terrain }) {
         if (!pts) continue;
         const r = makeRoute(pts);
         if (r.len > d * 1.8) continue;               // not a long way round
-        add(r, { line, dest, artic: false, trolley: false, start: R() });
+        add(r, { line, dests: [c.n, a.n], artic: false, trolley: false, start: R() });
         break;
       }
     }
@@ -221,7 +231,7 @@ export function buildBuses(scene, map, { terrain }) {
       const d = b.d + sec.off * b.dir;
       r.at(d, t);
       const fx = t.dx * b.dir, fz = t.dz * b.dir;        // heading of travel
-      const lane = Math.min(1.5, t.w / 4);              // keep right, clear of the parked cars
+      const lane = laneFor(t.w, W / 2);
       const x = t.x - fz * lane, z = t.z + fx * lane;   // right of (fx, fz) is (-fz, fx)
       const y0 = ground(x + fx * sec.len / 2, z + fz * sec.len / 2), y1 = ground(x - fx * sec.len / 2, z - fz * sec.len / 2);
       sec.x = x; sec.z = z; sec.h = Math.atan2(fx, fz);
@@ -237,16 +247,100 @@ export function buildBuses(scene, map, { terrain }) {
     b.x = b.secs[0].x; b.z = b.secs[0].z; b.h = b.secs[0].h;
   };
   for (const b of buses) place(b);
+
+  // ------------------------------------------------ cars
+  const carOK = (e) => (e.k === 'road' && e.w >= 4) || (e.k === 'sett' && e.w >= 6);
+  const carNodes = [];
+  for (let i = 0; i < G.X.length; i++) if (main(i) && inside(G.X[i], G.Z[i], 30) && G.adj[i].some(carOK)) carNodes.push(i);
+  const carMesh = new THREE.InstancedMesh(carGeometry(), new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.35, metalness: 0.3 }), Math.max(1, NC));
+  carMesh.castShadow = true; carMesh.receiveShadow = true; carMesh.frustumCulled = false;
+  scene.add(carMesh);
+  const COLS = [0xe8e8e8, 0x1d1f22, 0x8c9196, 0x2c4c7a, 0x7a2e28, 0xc9c9c4, 0x3f5d48, 0x30343a, 0xd8d4c8, 0x9a2a22];
+  const Rc = rnd(5), colr = new THREE.Color();
+  // the way on at a junction: not back the way it came, not off the map; wide streets and
+  // going straight on are likelier
+  const pickNext = (from, at, e0) => {
+    const dx0 = G.X[at] - G.X[from], dz0 = G.Z[at] - G.Z[from], l0 = Math.hypot(dx0, dz0) || 1;
+    const opts = G.adj[at].filter(e => carOK(e) && e.to !== from && inside(G.X[e.to], G.Z[e.to], 20));
+    if (!opts.length) return G.adj[at].find(e => e.to === from) || null;          // a dead end: turn round
+    let tot = 0;
+    const wts = opts.map(e => { const c = ((G.X[e.to] - G.X[at]) * dx0 + (G.Z[e.to] - G.Z[at]) * dz0) / (e.L * l0); const wgt = e.w * (0.4 + Math.max(0, c) * 2); tot += wgt; return wgt; });
+    let r = Rc() * tot;
+    for (let i = 0; i < opts.length; i++) { r -= wts[i]; if (r <= 0) return opts[i]; }
+    return opts[opts.length - 1];
+  };
+  const cars = [];
+  for (let i = 0; i < NC; i++) carMesh.setMatrixAt(i, new THREE.Matrix4().makeScale(0, 0, 0));
+  for (let i = 0; i < NC; i++) cars.push({ i, a: -1, e: null, next: null, t: 0, v: 0, x: 1e9, z: 1e9, h: 0, ox: 0, oz: 0, stuck: 0, ghost: 0, len: 4.3, W: 1.8, on: false });
+  const spawn = (c, cx, cz, near) => {
+    for (let k = 0; k < 40; k++) {
+      const a = carNodes[Math.floor(Rc() * carNodes.length)], d = Math.hypot(G.X[a] - cx, G.Z[a] - cz);
+      if (d < (near ? 0 : 90) || d > 260) continue;
+      const es = G.adj[a].filter(carOK); if (!es.length) continue;
+      const e = es[Math.floor(Rc() * es.length)];
+      // not on top of another car
+      if (cars.some(o => o.on && Math.hypot(o.x - G.X[a], o.z - G.Z[a]) < 12)) continue;
+      Object.assign(c, { a, e, t: 0, v: 5, next: pickNext(a, e.to), stuck: 0, ghost: 0, on: true });
+      const dx = (G.X[e.to] - G.X[a]) / e.L, dz = (G.Z[e.to] - G.Z[a]) / e.L, lane = laneFor(e.w, c.W / 2);
+      c.h = Math.atan2(dx, dz); c.ox = -dz * lane; c.oz = dx * lane; c.x = G.X[a] + c.ox; c.z = G.Z[a] + c.oz;
+      carMesh.setColorAt(c.i, colr.set(COLS[Math.floor(Rc() * COLS.length)]));
+      if (carMesh.instanceColor) carMesh.instanceColor.needsUpdate = true;
+      return true;
+    }
+    c.on = false; return false;
+  };
+  const m4 = new THREE.Matrix4(), q4 = new THREE.Quaternion(), e4 = new THREE.Euler(0, 0, 0, 'YXZ'), p4 = new THREE.Vector3(), s4 = new THREE.Vector3(1, 1, 1), hide = new THREE.Matrix4().makeScale(0, 0, 0);
+  const placeCar = (c, dt) => {
+    const e = c.e, ax = G.X[c.a], az = G.Z[c.a], dx = (G.X[e.to] - ax) / e.L, dz = (G.Z[e.to] - az) / e.L;
+    const lane = laneFor(e.w, c.W / 2), k = Math.min(1, dt * 5);
+    // the lane offset and the heading follow the street smoothly round the corners
+    c.ox += (-dz * lane - c.ox) * k; c.oz += (dx * lane - c.oz) * k;
+    let dh = Math.atan2(dx, dz) - c.h; dh = Math.atan2(Math.sin(dh), Math.cos(dh)); c.h += dh * Math.min(1, dt * 7);
+    c.x = ax + dx * c.t + c.ox; c.z = az + dz * c.t + c.oz;
+    const fx = Math.sin(c.h), fz = Math.cos(c.h), yf = ground(c.x + fx * 1.6, c.z + fz * 1.6), yb = ground(c.x - fx * 1.6, c.z - fz * 1.6);
+    e4.set(Math.atan2(yf - yb, 3.2), c.h + Math.PI, 0);              // the bonnet is at the model's -z
+    m4.compose(p4.set(c.x, (yf + yb) / 2, c.z), q4.setFromEuler(e4), s4);
+    carMesh.setMatrixAt(c.i, m4);
+  };
+  // what is in the way of something at (x, z) heading (fx, fz): returns the speed it may go
+  const room = (self, x, z, fx, fz, hl, hw, others, player, vt) => {
+    for (const o of others) {
+      if (o === self || !o.on) continue;
+      const dx = o.x - x, dz = o.z - z;
+      if (Math.abs(dx) > 40 || Math.abs(dz) > 40) continue;
+      const along = dx * fx + dz * fz, across = Math.abs(-dx * fz + dz * fx), c = Math.cos(o.h - Math.atan2(fx, fz));
+      if (along <= 0 || along > 30) continue;
+      if (c > 0.3) { if (across > hw + 1.0) continue; }                       // the one in front, going the same way
+      else if (c > -0.5) { if (along > 10 || across > hw + 0.8) continue; }   // crossing right in front
+      else continue;                                                          // oncoming: it passes
+      const gap = along - hl - o.len / 2 - 1.5;
+      vt = Math.min(vt, gap <= 0 ? 0 : Math.sqrt(2 * 3 * gap));
+    }
+    if (player) {
+      const dx = player.x - x, dz = player.z - z, along = dx * fx + dz * fz, across = Math.abs(-dx * fz + dz * fx);
+      if (along > 0 && along < 25 && across < hw + 1.2) { const gap = along - hl - 2.5; vt = Math.min(vt, gap <= 0 ? 0 : Math.sqrt(2 * 3.5 * gap)); }
+    }
+    return vt;
+  };
+  // the bus sections and cars, as things that are in the way and that you can be hit by
+  const bodies = () => {
+    const out = [];
+    for (const b of buses) for (const sec of b.secs) out.push({ x: sec.x, z: sec.z, h: sec.h, len: sec.len, W, v: b.v, on: true, bus: b });
+    for (const c of cars) if (c.on) out.push(c);
+    return out;
+  };
+
   return {
-    buses, count: buses.length, W,
-    // player: {x, z} to brake for
-    update(dt, player) {
+    buses, cars, count: buses.length, W, bodies,
+    // player: {x, z} to brake for, or null; centre: where the cars are kept around
+    update(dt, player, centre) {
+      const all = bodies();
       for (const b of buses) {
         if (b.wait > 0) { b.wait -= dt; b.v = 0; place(b); continue; }
         const r = b.route;
         // the end of the line: wait, then go back
         const toEnd = b.dir > 0 ? r.len - b.d : b.d;
-        if (toEnd < 0.5) { b.dir = -b.dir; b.wait = 14; b.lastStop = null; continue; }
+        if (toEnd < 0.5) { b.dir = -b.dir; b.wait = 14; b.lastStop = null; b.secs[0].g.userData.body.material[4] = b.fronts[b.dir > 0 ? 0 : 1]; continue; }
         let vt = Math.min(r.limit(b.d, b.dir), Math.sqrt(2 * 1.2 * toEnd) + 0.3);
         // the next stop ahead
         for (const st of b.stops) {
@@ -255,21 +349,42 @@ export function buildBuses(scene, map, { terrain }) {
           if (ahead < 0.6) { b.lastStop = st; b.wait = 7; b.v = 0; vt = 0; break; }
           if (ahead < 60) vt = Math.min(vt, Math.sqrt(2 * 1.2 * ahead) + 0.2);
         }
-        // the bus in front, and you
-        const fx = Math.sin(b.h), fz = Math.cos(b.h);
-        const blockers = buses.filter(o => o !== b).map(o => [o.secs[o.secs.length - 1].x, o.secs[o.secs.length - 1].z, o.h]);
-        if (player) blockers.push([player.x, player.z, null]);
-        for (const [ox, oz, oh] of blockers) {
-          const dx = ox - b.x, dz = oz - b.z, along = dx * fx + dz * fz, across = Math.abs(-dx * fz + dz * fx);
-          if (along < 0 || along > 30 || across > 2.2) continue;
-          if (oh !== null && Math.cos(oh - b.h) < 0.3) continue;
-          const room = along - (oh === null ? 7.5 : 14);
-          vt = Math.min(vt, room <= 0 ? 0 : Math.sqrt(2 * 2.5 * room));
-        }
+        // what is in front, and you
+        const hl = b.secs[0].len / 2;
+        vt = room(null, b.x, b.z, Math.sin(b.h), Math.cos(b.h), hl, W / 2, all.filter(o => o.bus !== b), player, vt);
         b.v = vt < b.v ? Math.max(vt, b.v - 3.5 * dt) : Math.min(vt, b.v + 1.0 * dt);
         b.d += b.v * b.dir * dt;
         place(b);
       }
+      for (const c of cars) {
+        if (centre && (!c.on || Math.hypot(c.x - centre.x, c.z - centre.z) > 330)) { if (!spawn(c, centre.x, centre.z, !c.e)) { carMesh.setMatrixAt(c.i, hide); continue; } }
+        if (!c.on) continue;
+        const e = c.e, left = e.L - c.t;
+        const lim = e.w >= 8 ? 11 : e.w >= 5.5 ? 8.5 : 6;
+        // slow for the corner at the end of this stretch
+        let vturn = lim;
+        if (c.next) {
+          const ex = (G.X[e.to] - G.X[c.a]) / e.L, ez = (G.Z[e.to] - G.Z[c.a]) / e.L, nx = (G.X[c.next.to] - G.X[e.to]) / c.next.L, nz = (G.Z[c.next.to] - G.Z[e.to]) / c.next.L;
+          vturn = Math.max(c.next.to === c.a ? 1.5 : 2.5, lim - Math.acos(Math.max(-1, Math.min(1, ex * nx + ez * nz))) * 7);
+        }
+        let vt = Math.min(lim, Math.sqrt(vturn * vturn + 2 * 1.8 * left));
+        if (c.ghost > 0) c.ghost -= dt;
+        else vt = room(c, c.x, c.z, Math.sin(c.h), Math.cos(c.h), c.len / 2, c.W / 2, all, player, vt);
+        // stuck nose to nose at a junction for a while: squeeze past
+        c.stuck = c.v < 0.2 && vt < 0.2 ? c.stuck + dt : 0;
+        if (c.stuck > 5 && !(player && Math.hypot(player.x - c.x, player.z - c.z) < 8)) { c.ghost = 3; c.stuck = 0; }
+        c.v = vt < c.v ? Math.max(vt, c.v - 5 * dt) : Math.min(vt, c.v + 2.2 * dt);
+        c.t += c.v * dt;
+        while (c.e && c.t >= c.e.L) {
+          c.t -= c.e.L;
+          const from = c.a; c.a = c.e.to; c.e = c.next || pickNext(from, c.a);
+          if (!c.e) { c.on = false; break; }
+          c.next = pickNext(c.a, c.e.to);
+        }
+        if (!c.on) { carMesh.setMatrixAt(c.i, hide); continue; }
+        placeCar(c, dt);
+      }
+      carMesh.instanceMatrix.needsUpdate = true;
     },
     glow(lamp) { for (const [m, d, n] of glow) m.emissiveIntensity = d + (n - d) * lamp; },
   };
