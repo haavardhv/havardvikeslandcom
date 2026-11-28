@@ -1,5 +1,5 @@
 // The town's landmarks, modelled after photographs, on their OpenStreetMap outlines: the
-// churches (Domkirken, Korskirken, Mariakirken, Johanneskirken), Bergenhus (Håkonshallen and
+// churches (Domkirken, Korskirken, Nykirken, Mariakirken, Johanneskirken), Bergenhus (Håkonshallen and
 // Rosenkrantztårnet), the railway station, the city hall, Mathallen and the fish market,
 // Den blå steinen, the bandstand in Byparken, the Seamen's monument on Torgallmenningen, the
 // statues, the fountain in Lille Lungegårdsvann and the fire station tower on Skansen.
@@ -53,6 +53,7 @@ export function prepareLandmarks(map) {
   const take = (key, b) => { if (b) { b.skip = true; L[key] = b; } };
   take('dom', byName(map, 'Bergen domkirke'));
   take('kors', byName(map, 'Korskirken'));
+  take('nykirken', byName(map, 'Nykirken'));
   take('maria', byName(map, 'Mariakirken'));
   take('pavilion', byName(map, 'Musikkpaviljongen'));
   take('seamen', byName(map, 'Sjømannsmonumentet'));
@@ -226,25 +227,33 @@ function decalMaterials() {
 // A body over a footprint with walls rising to a roof made of gable "arms": each arm a gable
 // along its own axis (cx, cz, ux, uz, hl, hw, rise). Where arms cross (a cruciform church)
 // the roof is the higher of them, with valleys where they meet. Walls stop at the roof line,
-// so gables are always closed.
+// so gables are always closed. An arm with `hip` is hipped at both ends instead of gabled,
+// at the same pitch as its sides.
 function roofedBody(G, ring, base, top, arms, wallMat, roofMat, opts = {}) {
   const A = arms.map(a => ({ ...a, vx: -a.uz, vz: a.ux }));
   const F = (x, z) => {
     let h = top;
     for (const a of A) {
       const u = (x - a.cx) * a.ux + (z - a.cz) * a.uz, v = (x - a.cx) * a.vx + (z - a.cz) * a.vz;
-      if (Math.abs(u) <= a.hl + 0.01 && Math.abs(v) <= a.hw + 0.01) h = Math.max(h, top + a.rise * (1 - Math.abs(v) / a.hw));
+      if (Math.abs(u) <= a.hl + 0.01 && Math.abs(v) <= a.hw + 0.01) h = Math.max(h, top + a.rise * Math.min(1 - Math.abs(v) / a.hw, a.hip ? (a.hl - Math.abs(u)) / a.hw : 1));
     }
     return h;
   };
   const lines = [];
   const L = (au, av, c, a) => { const Ax = au * a.ux + av * a.vx, Az = au * a.uz + av * a.vz; lines.push([Ax, Az, c - Ax * a.cx - Az * a.cz]); };
   for (const a of A) { L(0, 1, 0, a); L(1, 0, -a.hl, a); L(1, 0, a.hl, a); L(0, 1, -a.hw, a); L(0, 1, a.hw, a); }
-  for (let i = 0; i < A.length; i++) for (let j = i + 1; j < A.length; j++) for (const si of [1, -1]) for (const sj of [1, -1]) {
-    const a = A[i], b = A[j], ka = a.rise * si / a.hw, kb = b.rise * sj / b.hw;
-    const Ax = -ka * a.vx + kb * b.vx, Az = -ka * a.vz + kb * b.vz;
-    const C = a.rise - b.rise + ka * (a.cx * a.vx + a.cz * a.vz) - kb * (b.cx * b.vx + b.cz * b.vz);
-    if (Math.hypot(Ax, Az) > 1e-6) lines.push([Ax, Az, C]);
+  // every roof plane as h = top + c + gx x + gz z; the roof creases where two of them meet
+  const planes = [];
+  for (const a of A) {
+    const k = a.rise / a.hw;
+    for (const s of [1, -1]) {
+      planes.push([-k * s * a.vx, -k * s * a.vz, a.rise + k * s * (a.cx * a.vx + a.cz * a.vz)]);
+      if (a.hip) planes.push([-k * s * a.ux, -k * s * a.uz, k * a.hl + k * s * (a.cx * a.ux + a.cz * a.uz)]);
+    }
+  }
+  for (let i = 0; i < planes.length; i++) for (let j = i + 1; j < planes.length; j++) {
+    const p = planes[i], q = planes[j], Ax = p[0] - q[0], Az = p[1] - q[1];
+    if (Math.hypot(Ax, Az) > 1e-6) lines.push([Ax, Az, p[2] - q[2]]);
   }
   const lift = opts.lift ?? 0;
   for (let i = 0; i < ring.length; i++) {
@@ -439,6 +448,110 @@ export function buildLandmarks(scene, map, L, { terrain, polys, onRoad }) {
     collide(b, wallTop, hwN * 1.1);
     collideBox(tx, tz, tw, tw, ang, gy - 3, tTop + 6);
     out.spots.push({ n: 'Korskirken', x: tx, z: tz });
+  }
+
+  // ------------------------------------------------ Nykirken on Nordnes
+  // After photos: a white plastered hall church (1756-63) under a hipped roof of near-black
+  // tiles, with a hipped cross-arm to the north-east, tall round-arched windows with small panes,
+  // two tiers of small arched windows in the middle bay, and J.J. Reichborn's tower in the middle
+  // of the other long wall: square and white with corner pilasters, then a green copper bell
+  // with round dormers, an open octagonal lantern, an onion, a tall spire, a ball and a cross.
+  if (L.nykirken) {
+    const b = L.nykirken, ring = ringOf(b.p), [lo, hi] = groundUnder(ring), G = geoOf();
+    const F = frameOf(b.p), uv = ring.map(([x, z]) => [(x - F.cx) * F.ux + (z - F.cz) * F.uz, (x - F.cx) * F.vx + (z - F.cz) * F.vz]);
+    // the hall is as wide as the outline is at its ends; the bays standing out of it on either side
+    // are the cross-arm (the wider one) and the tower (the narrower)
+    const hwN = Math.max(...uv.filter(([u]) => Math.abs(u) > F.hl * 0.6).map(([, v]) => Math.abs(v)));
+    const cv = F.cx * F.vx + F.cz * F.vz, cu = F.cx * F.ux + F.cz * F.uz;
+    const bay = (sg) => { const q = uv.filter(([, v]) => v * sg > hwN + 1); if (q.length < 2) return null; const us = q.map(([u]) => u); return { u0: Math.min(...us), u1: Math.max(...us), d: Math.max(...q.map(([, v]) => v * sg)) - hwN, sg }; };
+    const bays = [bay(1), bay(-1)].filter(Boolean).sort((a, c) => (a.u1 - a.u0) - (c.u1 - c.u0));
+    const tb = bays[0] || { u0: -5.3, u1: 5.3, d: 0, sg: -1 }, cb = bays[1] || null;
+    const wallTop = hi + 10, slope = 0.8, rise = hwN * slope;
+    const blackTile = new THREE.MeshStandardMaterial({ map: canvasTex(256, (g, S) => { g.fillStyle = '#2f3034'; g.fillRect(0, 0, S, S); for (let j = 0; j < 12; j++) for (let x = (j % 2) * 10; x < S; x += 21) { g.fillStyle = 'rgba(255,255,255,0.07)'; g.fillRect(x, j * S / 12, 19, S / 12 - 3); g.fillStyle = 'rgba(0,0,0,0.4)'; g.fillRect(x, j * S / 12 + S / 12 - 3, 21, 3); } }, 1.6), roughness: 0.45 });
+    const arms = [{ cx: F.cx, cz: F.cz, ux: F.ux, uz: F.uz, hl: F.hl, hw: hwN, rise, hip: true }];
+    const mid = cb || tb, hwT = (mid.u1 - mid.u0) / 2, [mx, mz] = F.at((mid.u0 + mid.u1) / 2, 0);
+    arms.push({ cx: mx, cz: mz, ux: F.vx, uz: F.vz, hl: hwN + Math.max(tb.d, cb ? cb.d : 0), hw: hwT, rise: hwT * slope, hip: true });
+    roofedBody(G, ring, lo - 3, wallTop, arms, M.plasterW, blackTile);
+    // a grey plinth round the foot of the walls
+    const swell = ring.map(([x, z]) => { const d = Math.hypot(x - F.cx, z - F.cz) || 1; return [x + (x - F.cx) / d * 0.1, z + (z - F.cz) / d * 0.1]; });
+    roofedBody(G, swell, lo - 3, lo + 0.9, [], M.graniteDark, M.graniteDark);
+    // the tower, flush with the outer face of its bay
+    const tw = Math.min(11, tb.u1 - tb.u0 + 0.1), tvc = tb.sg * (hwN + tb.d - tw / 2 + 0.05);
+    const [tx, tz] = F.at((tb.u0 + tb.u1) / 2, tvc), gy = ground(tx, tz), ang = F.ang;
+    const tTop = wallTop + rise + 8.5;
+    boxAt(G, M.plasterW, tx, gy - 3, tz, tw, tTop - gy + 3, tw, ang);
+    for (const [a, c] of [[1, 1], [1, -1], [-1, 1], [-1, -1]]) { const [qx, qz] = F.at((tb.u0 + tb.u1) / 2 + a * (tw / 2 - 0.35), tvc + c * (tw / 2 - 0.35)); boxAt(G, M.white, qx, gy - 1, qz, 0.95, tTop - gy + 1, 0.95, ang); }
+    boxAt(G, M.white, tx, tTop - 0.55, tz, tw + 0.5, 0.55, tw + 0.5, ang);
+    // the bell roof: flared at the eaves, swelling to a neck
+    lathe(G, M.copper, tx, tTop, tz, [[tw / 2 + 0.55, 0], [tw / 2 + 0.25, 0.35], [tw / 2 - 0.2, 0.9], [tw / 2 - 0.45, 1.6], [tw / 2 - 0.6, 2.4], [tw / 2 - 1.0, 3.3], [tw / 2 - 1.8, 4.1], [3.6, 4.7], [3.0, 5.1], [2.9, 5.3]].map(([r, y]) => [r * Math.SQRT2, y]), 4, ang + Math.PI / 4);
+    // round dormers in the bell, one on each face
+    for (const [du, dv] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+      const nx = F.ux * du + F.vx * dv, nz = F.uz * du + F.vz * dv, r0 = tw / 2 - 0.45, ox = tx + nx * r0, oz = tz + nz * r0, oy = tTop + 2.0;
+      const m4 = new THREE.Matrix4().makeRotationY(Math.atan2(nx, nz)).premultiply(new THREE.Matrix4().makeTranslation(ox, oy, oz));
+      G.geom(M.copper, new THREE.TorusGeometry(0.8, 0.2, 6, 16), m4);
+      const face = new THREE.CircleGeometry(0.8, 16); face.translate(0, 0, -0.06); G.geom(M.dark, face, m4);
+      const cap = new THREE.CylinderGeometry(1.05, 1.05, 0.7, 12, 1, false, -Math.PI / 2, Math.PI); cap.rotateZ(Math.PI / 2); cap.rotateY(Math.PI / 2); cap.scale(1, 0.45, 1); cap.translate(0, 0.95, -0.2);
+      G.geom(M.copper, cap, m4);
+    }
+    // the lantern: eight posts round open arches, a cornice, the onion, the spire, ball and cross
+    const lb = tTop + 5.3, lh = 5.4, lr = 2.7;
+    cyl(G, M.copper, tx, lb, tz, lr + 0.25, lr + 0.25, 0.6, 8);
+    for (let k = 0; k < 8; k++) {
+      const a = ang + Math.PI / 8 + k * Math.PI / 4;
+      G.obox(M.copper, tx + Math.sin(a) * lr, lb + 0.6 + lh / 2, tz + Math.cos(a) * lr, 0.75, lh, 0.5, 0, a, 0);
+      const a2 = a + Math.PI / 8, ax = tx + Math.sin(a2) * lr * 0.93, az = tz + Math.cos(a2) * lr * 0.93;
+      G.obox(M.copper, ax, lb + 0.6 + lh - 0.55, az, 1.5, 1.1, 0.35, 0, a2, 0);
+    }
+    cyl(G, M.dark, tx, lb + 0.6, tz, lr - 0.6, lr - 0.6, lh - 0.4, 8);
+    const lt = lb + 0.6 + lh;
+    cyl(G, M.copper, tx, lt, tz, lr + 0.35, lr + 0.45, 0.5, 8);
+    lathe(G, M.copper, tx, lt + 0.5, tz, [[lr + 0.3, 0], [lr + 0.15, 0.6], [2.4, 1.5], [1.2, 2.7], [0.55, 3.4], [0.5, 3.6], [0.85, 3.9], [0.4, 4.4]], 8);
+    cone(G, M.copper, tx, lt + 4.9, tz, 0.75, 8.5, 8);
+    const st = lt + 13.4;
+    sphere(G, M.gold, tx, st + 0.4, tz, 0.45);
+    cyl(G, M.gold, tx, st + 0.8, tz, 0.07, 0.07, 2.2, 4);
+    G.obox(M.gold, tx, st + 2.3, tz, 1.1, 0.14, 0.14, 0, ang + Math.PI / 2, 0);
+    // the tower's faces: an arched window high up, a clock under it, and the door at the foot
+    for (const [du, dv] of [[1, 0], [-1, 0], [0, tb.sg]]) {
+      const nx = F.ux * du + F.vx * dv, nz = F.uz * du + F.vz * dv, fx = tx + nx * tw / 2, fz = tz + nz * tw / 2;
+      decal(G, D.round, fx, fz, nx, nz, tTop - 4.2, 1.3, 2.4);
+      decal(G, D.clock, fx, fz, nx, nz, tTop - 7.6, 2.4, 2.4, 0.06);
+      if (dv) { decal(G, D.door, fx, fz, nx, nz, gy + 0.05, 2.3, 4.0); decal(G, D.round, fx, fz, nx, nz, gy + 6, 1.6, 3.6); }
+    }
+    // the windows: tall and round-arched with small panes, and two tiers of small ones in the middle bay
+    const pane = new THREE.MeshStandardMaterial({ map: decalTex((g, w, h) => {
+      g.clearRect(0, 0, w, h);
+      const arch = (i) => { g.beginPath(); g.moveTo(i, h); g.lineTo(i, w / 2); g.arc(w / 2, w / 2, w / 2 - i, Math.PI, 0); g.lineTo(w - i, h); g.closePath(); };
+      g.fillStyle = '#dcd8cc'; arch(0); g.fill();
+      const gr = g.createLinearGradient(0, 0, w * 0.5, h); gr.addColorStop(0, '#7d8c99'); gr.addColorStop(1, '#2a3038'); g.fillStyle = gr; arch(12); g.fill();
+      g.save(); arch(12); g.clip(); g.strokeStyle = 'rgba(235,235,228,0.85)'; g.lineWidth = 2.5;
+      for (let x = 12 + (w - 24) / 6; x < w - 12; x += (w - 24) / 6) { g.beginPath(); g.moveTo(x, 0); g.lineTo(x, h); g.stroke(); }
+      for (let y = 18; y < h; y += 17) { g.beginPath(); g.moveTo(0, y); g.lineTo(w, y); g.stroke(); }
+      g.restore();
+    }), emissive: 0xffffff, emissiveIntensity: 0, roughness: 0.35, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -2, transparent: true, alphaTest: 0.5 });
+    pane.emissiveMap = pane.map; glowMats.push([pane, 0, 0.5]);
+    const midU = (mid.u0 + mid.u1) / 2;
+    for (let i = 0; i < ring.length; i++) {
+      const [ax, az] = ring[i], [bx, bz] = ring[(i + 1) % ring.length], len = Math.hypot(bx - ax, bz - az);
+      if (len < 4) continue;
+      let nx = (bz - az) / len, nz = -(bx - ax) / len;
+      if (insideRings([ring], (ax + bx) / 2 + nx * 0.05, (az + bz) / 2 + nz * 0.05)) { nx = -nx; nz = -nz; }
+      const n = Math.max(1, Math.floor((len - 1) / 4.6));
+      for (let k = 0; k < n; k++) {
+        const t = (k + 0.5) / n, x = ax + (bx - ax) * t, z = az + (bz - az) * t;
+        if (Math.hypot(x - tx, z - tz) < tw * 0.75) continue;
+        const u = x * F.ux + z * F.uz - cu, gyw = Math.max(lo, ground(x, z));
+        if (cb && Math.abs(u - midU) < hwT + 0.3) {
+          const k2 = Math.max(2, Math.round(len / 3.2));
+          if (k > 0) continue;
+          for (let j = 0; j < k2; j++) { const t2 = (j + 0.5) / k2, x2 = ax + (bx - ax) * t2, z2 = az + (bz - az) * t2; decal(G, pane, x2, z2, nx, nz, gyw + 2.2, 1.2, 2.2); decal(G, pane, x2, z2, nx, nz, gyw + 5.8, 1.2, 2.2); }
+        } else decal(G, pane, x, z, nx, nz, gyw + 2.6, 1.9, 5.4);
+      }
+    }
+    finish(G, 'Nykirken');
+    collide(b, wallTop, rise);
+    collideBox(tx, tz, tw, tw, ang, gy - 3, tTop + 5);
+    out.spots.push({ n: 'Nykirken', x: tx, z: tz });
   }
 
   // ------------------------------------------------ Mariakirken (12th century)
