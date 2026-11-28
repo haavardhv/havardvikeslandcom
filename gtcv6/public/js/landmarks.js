@@ -1,5 +1,5 @@
 // The town's landmarks, modelled after photographs, on their OpenStreetMap outlines: the
-// churches (Domkirken, Korskirken, Mariakirken, Johanneskirken), Bergenhus (Håkonshallen and
+// churches (Domkirken, Korskirken, Nykirken, Mariakirken, Johanneskirken), Bergenhus (Håkonshallen and
 // Rosenkrantztårnet), the railway station, the city hall, Mathallen and the fish market,
 // Den blå steinen, the bandstand in Byparken, the Seamen's monument on Torgallmenningen, the
 // statues, the fountain in Lille Lungegårdsvann and the fire station tower on Skansen.
@@ -53,6 +53,7 @@ export function prepareLandmarks(map) {
   const take = (key, b) => { if (b) { b.skip = true; L[key] = b; } };
   take('dom', byName(map, 'Bergen domkirke'));
   take('kors', byName(map, 'Korskirken'));
+  take('nykirken', byName(map, 'Nykirken'));
   take('maria', byName(map, 'Mariakirken'));
   take('pavilion', byName(map, 'Musikkpaviljongen'));
   take('seamen', byName(map, 'Sjømannsmonumentet'));
@@ -61,6 +62,7 @@ export function prepareLandmarks(map) {
   take('rosen', byName(map, 'Rosenkrantztårnet'));
   take('johannes', byName(map, 'Johanneskirken') || atPoint(map, -772, 508));
   take('grieg', byName(map, 'Grieghallen'));
+  take('hotelnorge', map.buildings.find(b => (b.n || '').startsWith('Hotel Norge')));
   // Fløyen: OpenStreetMap draws the upper station and Fløien Folkerestaurant as one outline round
   // the end of the track; both are modelled below, with the viewing terrace you step out onto
   { const f = map.funicular; if (f && f.length >= 4) take('floyen', atPoint(map, f[f.length - 2], f[f.length - 1])); }
@@ -226,25 +228,33 @@ function decalMaterials() {
 // A body over a footprint with walls rising to a roof made of gable "arms": each arm a gable
 // along its own axis (cx, cz, ux, uz, hl, hw, rise). Where arms cross (a cruciform church)
 // the roof is the higher of them, with valleys where they meet. Walls stop at the roof line,
-// so gables are always closed.
+// so gables are always closed. An arm with `hip` is hipped at both ends instead of gabled,
+// at the same pitch as its sides.
 function roofedBody(G, ring, base, top, arms, wallMat, roofMat, opts = {}) {
   const A = arms.map(a => ({ ...a, vx: -a.uz, vz: a.ux }));
   const F = (x, z) => {
     let h = top;
     for (const a of A) {
       const u = (x - a.cx) * a.ux + (z - a.cz) * a.uz, v = (x - a.cx) * a.vx + (z - a.cz) * a.vz;
-      if (Math.abs(u) <= a.hl + 0.01 && Math.abs(v) <= a.hw + 0.01) h = Math.max(h, top + a.rise * (1 - Math.abs(v) / a.hw));
+      if (Math.abs(u) <= a.hl + 0.01 && Math.abs(v) <= a.hw + 0.01) h = Math.max(h, top + a.rise * Math.min(1 - Math.abs(v) / a.hw, a.hip ? (a.hl - Math.abs(u)) / a.hw : 1));
     }
     return h;
   };
   const lines = [];
   const L = (au, av, c, a) => { const Ax = au * a.ux + av * a.vx, Az = au * a.uz + av * a.vz; lines.push([Ax, Az, c - Ax * a.cx - Az * a.cz]); };
   for (const a of A) { L(0, 1, 0, a); L(1, 0, -a.hl, a); L(1, 0, a.hl, a); L(0, 1, -a.hw, a); L(0, 1, a.hw, a); }
-  for (let i = 0; i < A.length; i++) for (let j = i + 1; j < A.length; j++) for (const si of [1, -1]) for (const sj of [1, -1]) {
-    const a = A[i], b = A[j], ka = a.rise * si / a.hw, kb = b.rise * sj / b.hw;
-    const Ax = -ka * a.vx + kb * b.vx, Az = -ka * a.vz + kb * b.vz;
-    const C = a.rise - b.rise + ka * (a.cx * a.vx + a.cz * a.vz) - kb * (b.cx * b.vx + b.cz * b.vz);
-    if (Math.hypot(Ax, Az) > 1e-6) lines.push([Ax, Az, C]);
+  // every roof plane as h = top + c + gx x + gz z; the roof creases where two of them meet
+  const planes = [];
+  for (const a of A) {
+    const k = a.rise / a.hw;
+    for (const s of [1, -1]) {
+      planes.push([-k * s * a.vx, -k * s * a.vz, a.rise + k * s * (a.cx * a.vx + a.cz * a.vz)]);
+      if (a.hip) planes.push([-k * s * a.ux, -k * s * a.uz, k * a.hl + k * s * (a.cx * a.ux + a.cz * a.uz)]);
+    }
+  }
+  for (let i = 0; i < planes.length; i++) for (let j = i + 1; j < planes.length; j++) {
+    const p = planes[i], q = planes[j], Ax = p[0] - q[0], Az = p[1] - q[1];
+    if (Math.hypot(Ax, Az) > 1e-6) lines.push([Ax, Az, p[2] - q[2]]);
   }
   const lift = opts.lift ?? 0;
   for (let i = 0; i < ring.length; i++) {
@@ -439,6 +449,110 @@ export function buildLandmarks(scene, map, L, { terrain, polys, onRoad }) {
     collide(b, wallTop, hwN * 1.1);
     collideBox(tx, tz, tw, tw, ang, gy - 3, tTop + 6);
     out.spots.push({ n: 'Korskirken', x: tx, z: tz });
+  }
+
+  // ------------------------------------------------ Nykirken on Nordnes
+  // After photos: a white plastered hall church (1756-63) under a hipped roof of near-black
+  // tiles, with a hipped cross-arm to the north-east, tall round-arched windows with small panes,
+  // two tiers of small arched windows in the middle bay, and J.J. Reichborn's tower in the middle
+  // of the other long wall: square and white with corner pilasters, then a green copper bell
+  // with round dormers, an open octagonal lantern, an onion, a tall spire, a ball and a cross.
+  if (L.nykirken) {
+    const b = L.nykirken, ring = ringOf(b.p), [lo, hi] = groundUnder(ring), G = geoOf();
+    const F = frameOf(b.p), uv = ring.map(([x, z]) => [(x - F.cx) * F.ux + (z - F.cz) * F.uz, (x - F.cx) * F.vx + (z - F.cz) * F.vz]);
+    // the hall is as wide as the outline is at its ends; the bays standing out of it on either side
+    // are the cross-arm (the wider one) and the tower (the narrower)
+    const hwN = Math.max(...uv.filter(([u]) => Math.abs(u) > F.hl * 0.6).map(([, v]) => Math.abs(v)));
+    const cv = F.cx * F.vx + F.cz * F.vz, cu = F.cx * F.ux + F.cz * F.uz;
+    const bay = (sg) => { const q = uv.filter(([, v]) => v * sg > hwN + 1); if (q.length < 2) return null; const us = q.map(([u]) => u); return { u0: Math.min(...us), u1: Math.max(...us), d: Math.max(...q.map(([, v]) => v * sg)) - hwN, sg }; };
+    const bays = [bay(1), bay(-1)].filter(Boolean).sort((a, c) => (a.u1 - a.u0) - (c.u1 - c.u0));
+    const tb = bays[0] || { u0: -5.3, u1: 5.3, d: 0, sg: -1 }, cb = bays[1] || null;
+    const wallTop = hi + 10, slope = 0.8, rise = hwN * slope;
+    const blackTile = new THREE.MeshStandardMaterial({ map: canvasTex(256, (g, S) => { g.fillStyle = '#2f3034'; g.fillRect(0, 0, S, S); for (let j = 0; j < 12; j++) for (let x = (j % 2) * 10; x < S; x += 21) { g.fillStyle = 'rgba(255,255,255,0.07)'; g.fillRect(x, j * S / 12, 19, S / 12 - 3); g.fillStyle = 'rgba(0,0,0,0.4)'; g.fillRect(x, j * S / 12 + S / 12 - 3, 21, 3); } }, 1.6), roughness: 0.45 });
+    const arms = [{ cx: F.cx, cz: F.cz, ux: F.ux, uz: F.uz, hl: F.hl, hw: hwN, rise, hip: true }];
+    const mid = cb || tb, hwT = (mid.u1 - mid.u0) / 2, [mx, mz] = F.at((mid.u0 + mid.u1) / 2, 0);
+    arms.push({ cx: mx, cz: mz, ux: F.vx, uz: F.vz, hl: hwN + Math.max(tb.d, cb ? cb.d : 0), hw: hwT, rise: hwT * slope, hip: true });
+    roofedBody(G, ring, lo - 3, wallTop, arms, M.plasterW, blackTile);
+    // a grey plinth round the foot of the walls
+    const swell = ring.map(([x, z]) => { const d = Math.hypot(x - F.cx, z - F.cz) || 1; return [x + (x - F.cx) / d * 0.1, z + (z - F.cz) / d * 0.1]; });
+    roofedBody(G, swell, lo - 3, lo + 0.9, [], M.graniteDark, M.graniteDark);
+    // the tower, flush with the outer face of its bay
+    const tw = Math.min(11, tb.u1 - tb.u0 + 0.1), tvc = tb.sg * (hwN + tb.d - tw / 2 + 0.05);
+    const [tx, tz] = F.at((tb.u0 + tb.u1) / 2, tvc), gy = ground(tx, tz), ang = F.ang;
+    const tTop = wallTop + rise + 8.5;
+    boxAt(G, M.plasterW, tx, gy - 3, tz, tw, tTop - gy + 3, tw, ang);
+    for (const [a, c] of [[1, 1], [1, -1], [-1, 1], [-1, -1]]) { const [qx, qz] = F.at((tb.u0 + tb.u1) / 2 + a * (tw / 2 - 0.35), tvc + c * (tw / 2 - 0.35)); boxAt(G, M.white, qx, gy - 1, qz, 0.95, tTop - gy + 1, 0.95, ang); }
+    boxAt(G, M.white, tx, tTop - 0.55, tz, tw + 0.5, 0.55, tw + 0.5, ang);
+    // the bell roof: flared at the eaves, swelling to a neck
+    lathe(G, M.copper, tx, tTop, tz, [[tw / 2 + 0.55, 0], [tw / 2 + 0.25, 0.35], [tw / 2 - 0.2, 0.9], [tw / 2 - 0.45, 1.6], [tw / 2 - 0.6, 2.4], [tw / 2 - 1.0, 3.3], [tw / 2 - 1.8, 4.1], [3.6, 4.7], [3.0, 5.1], [2.9, 5.3]].map(([r, y]) => [r * Math.SQRT2, y]), 4, ang + Math.PI / 4);
+    // round dormers in the bell, one on each face
+    for (const [du, dv] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+      const nx = F.ux * du + F.vx * dv, nz = F.uz * du + F.vz * dv, r0 = tw / 2 - 0.45, ox = tx + nx * r0, oz = tz + nz * r0, oy = tTop + 2.0;
+      const m4 = new THREE.Matrix4().makeRotationY(Math.atan2(nx, nz)).premultiply(new THREE.Matrix4().makeTranslation(ox, oy, oz));
+      G.geom(M.copper, new THREE.TorusGeometry(0.8, 0.2, 6, 16), m4);
+      const face = new THREE.CircleGeometry(0.8, 16); face.translate(0, 0, -0.06); G.geom(M.dark, face, m4);
+      const cap = new THREE.CylinderGeometry(1.05, 1.05, 0.7, 12, 1, false, -Math.PI / 2, Math.PI); cap.rotateZ(Math.PI / 2); cap.rotateY(Math.PI / 2); cap.scale(1, 0.45, 1); cap.translate(0, 0.95, -0.2);
+      G.geom(M.copper, cap, m4);
+    }
+    // the lantern: eight posts round open arches, a cornice, the onion, the spire, ball and cross
+    const lb = tTop + 5.3, lh = 5.4, lr = 2.7;
+    cyl(G, M.copper, tx, lb, tz, lr + 0.25, lr + 0.25, 0.6, 8);
+    for (let k = 0; k < 8; k++) {
+      const a = ang + Math.PI / 8 + k * Math.PI / 4;
+      G.obox(M.copper, tx + Math.sin(a) * lr, lb + 0.6 + lh / 2, tz + Math.cos(a) * lr, 0.75, lh, 0.5, 0, a, 0);
+      const a2 = a + Math.PI / 8, ax = tx + Math.sin(a2) * lr * 0.93, az = tz + Math.cos(a2) * lr * 0.93;
+      G.obox(M.copper, ax, lb + 0.6 + lh - 0.55, az, 1.5, 1.1, 0.35, 0, a2, 0);
+    }
+    cyl(G, M.dark, tx, lb + 0.6, tz, lr - 0.6, lr - 0.6, lh - 0.4, 8);
+    const lt = lb + 0.6 + lh;
+    cyl(G, M.copper, tx, lt, tz, lr + 0.35, lr + 0.45, 0.5, 8);
+    lathe(G, M.copper, tx, lt + 0.5, tz, [[lr + 0.3, 0], [lr + 0.15, 0.6], [2.4, 1.5], [1.2, 2.7], [0.55, 3.4], [0.5, 3.6], [0.85, 3.9], [0.4, 4.4]], 8);
+    cone(G, M.copper, tx, lt + 4.9, tz, 0.75, 8.5, 8);
+    const st = lt + 13.4;
+    sphere(G, M.gold, tx, st + 0.4, tz, 0.45);
+    cyl(G, M.gold, tx, st + 0.8, tz, 0.07, 0.07, 2.2, 4);
+    G.obox(M.gold, tx, st + 2.3, tz, 1.1, 0.14, 0.14, 0, ang + Math.PI / 2, 0);
+    // the tower's faces: an arched window high up, a clock under it, and the door at the foot
+    for (const [du, dv] of [[1, 0], [-1, 0], [0, tb.sg]]) {
+      const nx = F.ux * du + F.vx * dv, nz = F.uz * du + F.vz * dv, fx = tx + nx * tw / 2, fz = tz + nz * tw / 2;
+      decal(G, D.round, fx, fz, nx, nz, tTop - 4.2, 1.3, 2.4);
+      decal(G, D.clock, fx, fz, nx, nz, tTop - 7.6, 2.4, 2.4, 0.06);
+      if (dv) { decal(G, D.door, fx, fz, nx, nz, gy + 0.05, 2.3, 4.0); decal(G, D.round, fx, fz, nx, nz, gy + 6, 1.6, 3.6); }
+    }
+    // the windows: tall and round-arched with small panes, and two tiers of small ones in the middle bay
+    const pane = new THREE.MeshStandardMaterial({ map: decalTex((g, w, h) => {
+      g.clearRect(0, 0, w, h);
+      const arch = (i) => { g.beginPath(); g.moveTo(i, h); g.lineTo(i, w / 2); g.arc(w / 2, w / 2, w / 2 - i, Math.PI, 0); g.lineTo(w - i, h); g.closePath(); };
+      g.fillStyle = '#dcd8cc'; arch(0); g.fill();
+      const gr = g.createLinearGradient(0, 0, w * 0.5, h); gr.addColorStop(0, '#7d8c99'); gr.addColorStop(1, '#2a3038'); g.fillStyle = gr; arch(12); g.fill();
+      g.save(); arch(12); g.clip(); g.strokeStyle = 'rgba(235,235,228,0.85)'; g.lineWidth = 2.5;
+      for (let x = 12 + (w - 24) / 6; x < w - 12; x += (w - 24) / 6) { g.beginPath(); g.moveTo(x, 0); g.lineTo(x, h); g.stroke(); }
+      for (let y = 18; y < h; y += 17) { g.beginPath(); g.moveTo(0, y); g.lineTo(w, y); g.stroke(); }
+      g.restore();
+    }), emissive: 0xffffff, emissiveIntensity: 0, roughness: 0.35, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -2, transparent: true, alphaTest: 0.5 });
+    pane.emissiveMap = pane.map; glowMats.push([pane, 0, 0.5]);
+    const midU = (mid.u0 + mid.u1) / 2;
+    for (let i = 0; i < ring.length; i++) {
+      const [ax, az] = ring[i], [bx, bz] = ring[(i + 1) % ring.length], len = Math.hypot(bx - ax, bz - az);
+      if (len < 4) continue;
+      let nx = (bz - az) / len, nz = -(bx - ax) / len;
+      if (insideRings([ring], (ax + bx) / 2 + nx * 0.05, (az + bz) / 2 + nz * 0.05)) { nx = -nx; nz = -nz; }
+      const n = Math.max(1, Math.floor((len - 1) / 4.6));
+      for (let k = 0; k < n; k++) {
+        const t = (k + 0.5) / n, x = ax + (bx - ax) * t, z = az + (bz - az) * t;
+        if (Math.hypot(x - tx, z - tz) < tw * 0.75) continue;
+        const u = x * F.ux + z * F.uz - cu, gyw = Math.max(lo, ground(x, z));
+        if (cb && Math.abs(u - midU) < hwT + 0.3) {
+          const k2 = Math.max(2, Math.round(len / 3.2));
+          if (k > 0) continue;
+          for (let j = 0; j < k2; j++) { const t2 = (j + 0.5) / k2, x2 = ax + (bx - ax) * t2, z2 = az + (bz - az) * t2; decal(G, pane, x2, z2, nx, nz, gyw + 2.2, 1.2, 2.2); decal(G, pane, x2, z2, nx, nz, gyw + 5.8, 1.2, 2.2); }
+        } else decal(G, pane, x, z, nx, nz, gyw + 2.6, 1.9, 5.4);
+      }
+    }
+    finish(G, 'Nykirken');
+    collide(b, wallTop, rise);
+    collideBox(tx, tz, tw, tw, ang, gy - 3, tTop + 5);
+    out.spots.push({ n: 'Nykirken', x: tx, z: tz });
   }
 
   // ------------------------------------------------ Mariakirken (12th century)
@@ -707,6 +821,127 @@ export function buildLandmarks(scene, map, L, { terrain, polys, onRoad }) {
     out.floyenClear = [ex, ez, 45];
     out.floyenJump = (() => { const [x, z] = at(-23, 14.5); return { x, z }; })();     // the skydive starts at the terrace's far corner
     out.spots.push({ n: 'Fløien Folkerestaurant', x: at(17, -8)[0], z: at(17, -8)[1] });
+  }
+
+  // ------------------------------------------------ Hotel Norge on Ole Bulls plass
+  // After photos of the hotel as rebuilt in 2018: nine storeys of big windows framed by cream
+  // slab bands and fins, a glazed ground floor lit warm, and the red-and-white striped canopy
+  // over the entrance on the square, facing Ole Bull and his pond.
+  if (L.hotelnorge) {
+    const b = L.hotelnorge, ring = ringOf(b.p), [lo, hi] = groundUnder(ring), G = geoOf();
+    const top = lo + (b.t ?? 28) - (b.b ?? 0) - 0.5, baseTop = hi + 4.6, ST = 3.25, BAY = 2.7;
+    const NB = 8;                                       // the texture holds 8 x 8 rooms, lit at random
+    const grid = (emit) => { const R = rnd(41); return canvasTex(1024, (g, S0) => {
+      const S = S0 / NB, f = 0.24 * S, slab = 0.26 * S;   // fin and slab widths in each bay
+      if (emit) g.fillStyle = '#000', g.fillRect(0, 0, S0, S0);
+      for (let i = 0; i < NB; i++) for (let j = 0; j < NB; j++) {
+        const x = i * S, y = j * S, r = R();
+        if (emit) {
+          if (r < 0.45) continue;
+          g.fillStyle = r < 0.6 ? '#b98f5c' : r < 0.85 ? '#ffd9a0' : '#ffe9c8'; g.fillRect(x + f / 2, y + slab, S - f, S - slab);
+          g.fillStyle = 'rgba(0,0,0,0.45)'; g.fillRect(x + f / 2, y + slab, S - f, (S - slab) * (0.1 + R() * 0.3));
+          continue;
+        }
+        const gr = g.createLinearGradient(x, y, x + S * 0.6, y + S); gr.addColorStop(0, '#b4c0c8'); gr.addColorStop(0.45, '#75838e'); gr.addColorStop(1, '#3c4650'); g.fillStyle = gr; g.fillRect(x, y, S, S);
+        g.fillStyle = `rgba(230,222,205,${0.1 + r * 0.25})`; g.fillRect(x + f / 2, y + slab, (S - f) * (0.15 + R() * 0.3), S - slab);      // a curtain
+        g.fillStyle = '#ebe4d4'; g.fillRect(x, y, S, slab); g.fillRect(x, y, f / 2, S); g.fillRect(x + S - f / 2, y, f / 2, S);
+        g.fillStyle = 'rgba(0,0,0,0.18)'; g.fillRect(x, y + slab - 3, S, 3); g.fillRect(x + f / 2, y, 2, S); g.fillRect(x + S - f / 2 - 2, y, 2, S);
+      }
+    }, BAY * NB, { metresV: ST * NB }); };
+    const gT = grid(false), gE = grid(true);
+    for (const t of [gT, gE]) t.offset.y = -((baseTop / (ST * NB)) % 1);
+    const gridM = new THREE.MeshStandardMaterial({ map: gT, emissive: 0xffffff, emissiveMap: gE, emissiveIntensity: 0, roughness: 0.35, metalness: 0.1 });
+    glowMats.push([gridM, 0, 0.55]);
+    const shopT = canvasTex(256, (g, S) => {
+      g.fillStyle = '#3a2e26'; g.fillRect(0, 0, S, S);
+      const gr = g.createLinearGradient(0, 0, 0, S); gr.addColorStop(0, '#6b5844'); gr.addColorStop(1, '#2b2a28'); g.fillStyle = gr; g.fillRect(S * 0.06, S * 0.12, S * 0.88, S * 0.88);
+      g.fillStyle = '#e9e2d2'; g.fillRect(0, 0, S, S * 0.12); g.fillRect(0, 0, S * 0.06, S); g.fillRect(S * 0.94, 0, S * 0.06, S);
+      g.fillStyle = 'rgba(25,20,16,0.8)'; g.fillRect(S / 2 - 2, S * 0.12, 4, S);
+    }, 4.4, { metresV: 4.6 });
+    shopT.offset.y = -(((hi) / 4.6) % 1);
+    const shopM = new THREE.MeshStandardMaterial({ map: shopT, emissive: 0xffc68a, emissiveMap: shopT, emissiveIntensity: 0.15, roughness: 0.3 });
+    glowMats.push([shopM, 0.15, 0.9]);
+    const roofM = new THREE.MeshStandardMaterial({ color: 0x4a4b4d, roughness: 0.9 });
+    roofedBody(G, ring, lo - 3, baseTop, [], shopM, roofM);
+    roofedBody(G, ring, baseTop, top, [], gridM, roofM);
+    // a slab edge between the ground floor and the rooms, and a cornice at the top
+    const grow = (d) => { const F2 = frameOf(b.p); return ring.map(([x, z]) => { const l = Math.hypot(x - F2.cx, z - F2.cz) || 1; return [x + (x - F2.cx) / l * d, z + (z - F2.cz) / l * d]; }); };
+    roofedBody(G, grow(0.25), baseTop - 0.05, baseTop + 0.45, [], M.white, M.white);
+    roofedBody(G, grow(0.2), top, top + 0.7, [], M.white, roofM);
+    // plant rooms on the roof
+    { const F2 = frameOf(b.p); boxAt(G, roofM, F2.cx, top, F2.cz, 9, 2.6, 6, F2.ang); }
+    // the striped canopy over the entrance, on the face towards Ole Bull
+    const ob = (map.art || []).filter(a => a.n === 'Ole Bull').sort((a, c) => Math.hypot(a.x - ring[0][0], a.z - ring[0][1]) - Math.hypot(c.x - ring[0][0], c.z - ring[0][1]))[0];
+    if (ob) {
+      let best = null;
+      for (let i = 0; i < ring.length; i++) {
+        const [ax, az] = ring[i], [bx, bz] = ring[(i + 1) % ring.length], len = Math.hypot(bx - ax, bz - az);
+        if (len < 12) continue;
+        const dx = (bx - ax) / len, dz = (bz - az) / len, t = Math.max(6, Math.min(len - 6, (ob.x - ax) * dx + (ob.z - az) * dz));
+        const px = ax + dx * t, pz = az + dz * t, d = Math.hypot(ob.x - px, ob.z - pz);
+        if (!best || d < best.d) { let nx = dz, nz = -dx; if (insideP(b.p, px + nx * 0.3, pz + nz * 0.3)) { nx = -nx; nz = -nz; } best = { d, px, pz, dx, dz, nx, nz }; }
+      }
+      const { px, pz, dx, dz, nx, nz } = best, cy = ground(px + nx * 3, pz + nz * 3) + 4.4, ang = Math.atan2(dx, dz) + Math.PI / 2;
+      const red = new THREE.MeshStandardMaterial({ color: 0xc8402e, roughness: 0.6, emissive: 0xff6a3a, emissiveIntensity: 0 }), whiteS = new THREE.MeshStandardMaterial({ color: 0xf3efe6, roughness: 0.6, emissive: 0xfff0d0, emissiveIntensity: 0 });
+      glowMats.push([red, 0, 0.25], [whiteS, 0, 0.35]);
+      const CW = 12, CD = 6, NS = 24;
+      for (let k = 0; k < NS; k++) {
+        const s0 = -CW / 2 + (k + 0.5) * CW / NS;
+        G.obox(k % 2 ? whiteS : red, px + dx * s0 + nx * CD / 2, cy, pz + dz * s0 + nz * CD / 2, CW / NS * 0.7, 0.7, CD, 0, ang, 0);
+      }
+      G.obox(M.white, px + nx * CD, cy - 0.4, pz + nz * CD, CW + 0.2, 0.14, 0.14, 0, ang, 0);
+      for (const s0 of [-CW / 2 + 0.3, CW / 2 - 0.3]) boxAt(G, M.white, px + dx * s0 + nx * (CD - 0.2), ground(px + nx * CD, pz + nz * CD) - 0.5, pz + dz * s0 + nz * (CD - 0.2), 0.3, cy - ground(px + nx * CD, pz + nz * CD) + 0.5, 0.3, ang);
+      const name = decalTex((g, w, h) => { g.clearRect(0, 0, w, h); g.fillStyle = '#f6f1e4'; g.font = '600 64px Georgia, serif'; g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillText('HOTEL NORGE', w / 2, h / 2 + 4); }, 1024, 112);
+      const nm = new THREE.MeshStandardMaterial({ map: name, transparent: true, alphaTest: 0.4, emissive: 0xffffff, emissiveMap: name, emissiveIntensity: 0.1, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -2 });
+      glowMats.push([nm, 0.1, 0.9]);
+      decal(G, nm, px, pz, nx, nz, cy + 0.75, 6.3, 0.7, 0.06);
+    }
+    finish(G, 'Hotel Norge');
+    collide(b, top + 0.7);
+    out.spots.push({ n: 'Hotel Norge', x: ring[0][0], z: ring[0][1] });
+  }
+
+  // ------------------------------------------------ Bryggen's boardwalk
+  // After photos: a raised walk of grey-brown planks along the shopfronts, a step up from the
+  // street, the length of the row. It runs along each Bryggen house's wall on the harbour side.
+  {
+    const G = geoOf();
+    const plankM = new THREE.MeshStandardMaterial({ roughness: 0.9, map: canvasTex(256, (g, S) => {
+      g.fillStyle = '#6f6253'; g.fillRect(0, 0, S, S);
+      const R = rnd(5);
+      for (let j = 0; j < 8; j++) { g.fillStyle = `rgba(${R() < 0.5 ? '30,24,18' : '200,185,160'},${0.06 + R() * 0.12})`; g.fillRect(0, j * S / 8, S, S / 8); g.fillStyle = 'rgba(20,16,12,0.55)'; g.fillRect(0, j * S / 8, S, 3); for (let x = R() * S; x < S; x += 90 + R() * 80) g.fillRect(x, j * S / 8, 2, S / 8); }
+    }, 1.6) });
+    const W = 2.2, H = 0.28;
+    let n = 0;
+    out.boardwalkAt = [];
+    // the Bryggen houses, and the houses standing in the row between them
+    const bc = map.buildings.filter(b => b.k === 'bryggen').map(b => centroid(b.p));
+    for (const b of map.buildings) {
+      if (b.skip) continue;
+      if (b.k !== 'bryggen') { const [x, z] = centroid(b.p); if (!bc.some(([x2, z2]) => Math.hypot(x - x2, z - z2) < 16)) continue; }
+      const r = ringOf(b.p);
+      for (let i = 0; i < r.length; i++) {
+        const [ax, az] = r[i], [bx, bz] = r[(i + 1) % r.length], len = Math.hypot(bx - ax, bz - az);
+        if (len < 2.5) continue;
+        const dx = (bx - ax) / len, dz = (bz - az) / len;
+        let nx = dz, nz = -dx;
+        if (insideP(b.p, (ax + bx) / 2 + nx * 0.3, (az + bz) / 2 + nz * 0.3)) { nx = -nx; nz = -nz; }
+        const mx = (ax + bx) / 2, mz = (az + bz) / 2;
+        // the front row: a wall facing Vågen (south-west) with nothing built between it and the quay
+        if (nx * -0.71 + nz * 0.71 < 0.8) continue;
+        if ([W + 0.4, 6, 10, 15, 20].some(d => polys.nearBuilding(mx + nx * d, mz + nz * d, 0.3))) continue;
+        const gy = Math.max(ground(ax + nx * 1.1, az + nz * 1.1), ground(bx + nx * 1.1, bz + nz * 1.1), ground(mx + nx * W, mz + nz * W));
+        const L2 = len + 0.6, ox = mx + nx * W / 2, oz = mz + nz * W / 2, ang = Math.atan2(dx, dz) + Math.PI / 2;
+        boxAt(G, plankM, ox, gy - 0.6, oz, L2, 0.6 + H, W, ang);
+        // the step along the street edge
+        boxAt(G, plankM, ox + nx * (W / 2 + 0.2), gy - 0.4, oz + nz * (W / 2 + 0.2), L2, 0.4 + H / 2, 0.4, ang);
+        const hx = dx * L2 / 2, hz = dz * L2 / 2, p0x = mx - nx * 0.1, p0z = mz - nz * 0.1, p1x = mx + nx * W, p1z = mz + nz * W;
+        polys.add(Float32Array.from([p0x - hx, p0z - hz, p0x + hx, p0z + hz, p1x + hx, p1z + hz, p1x - hx, p1z - hz]), gy - 0.6, gy + H, { kind: 'flat', walk: true, noCam: true });
+        n++; out.boardwalkAt.push([Math.round(ox), Math.round(oz), Math.round(nx * 10) / 10, Math.round(nz * 10) / 10]);
+      }
+    }
+    if (n) finish(G, 'Bryggen boardwalk');
+    out.boardwalk = n;
   }
 
   // ------------------------------------------------ Statsraad Lehmkuhl at her berth by Bergenhus

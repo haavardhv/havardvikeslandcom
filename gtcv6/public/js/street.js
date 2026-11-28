@@ -244,55 +244,7 @@ export function buildStreet(scene, map, S, { terrain, polys, onRoad }) {
         acc = Math.max(0, 30 - ((L - acc) % 30));
       }
     }
-    // a line 2 trolleybus waiting at a stop or two on the wires, in Skyss livery after photos:
-    // orange roof and front, white sides, a black window band, its two poles up to the wires
-    {
-      const hex = '#e4532a';
-      const side = tex(512, 128, (g, w, h) => {
-        g.fillStyle = '#eeeff0'; g.fillRect(0, 0, w, h);
-        g.fillStyle = hex; g.fillRect(0, 0, w, h * 0.12);
-        g.fillStyle = '#121518'; g.fillRect(0, h * 0.16, w, h * 0.42);
-        g.fillStyle = 'rgba(160,180,195,0.18)'; g.fillRect(0, h * 0.16, w, h * 0.12);
-        g.fillStyle = '#2f3438'; for (const x of [w * 0.1, w * 0.55]) g.fillRect(x, h * 0.14, w * 0.09, h * 0.8);
-        g.fillStyle = '#16191c'; for (const x of [w * 0.3, w * 0.82]) { g.beginPath(); g.arc(x, h, h * 0.2, Math.PI, 0); g.fill(); }
-        g.fillStyle = hex; g.font = '700 16px Archivo, sans-serif'; g.fillText('skyss', w * 0.66, h * 0.8);
-      });
-      const front = tex(256, 256, (g, w, h) => {
-        g.fillStyle = hex; g.fillRect(0, 0, w, h);
-        g.fillStyle = '#101315'; g.fillRect(14, 10, w - 28, 140);
-        g.fillStyle = '#ffd200'; g.font = '700 26px Archivo, sans-serif'; g.textAlign = 'center'; g.fillText('2  Sentrum', w / 2, 40);
-        g.fillStyle = '#fff3d8'; for (const x of [40, w - 40]) { g.beginPath(); g.arc(x, 200, 9, 0, 7); g.fill(); }
-        g.fillStyle = '#ffffff'; g.font = '700 20px Archivo, sans-serif'; g.fillText('skyss', w / 2, 230);
-      });
-      const rear = tex(128, 128, (g, w, h) => { g.fillStyle = hex; g.fillRect(0, 0, w, h); g.fillStyle = '#121518'; g.fillRect(10, 8, w - 20, 50); g.fillStyle = '#ff2a1a'; for (const x of [16, w - 16]) g.fillRect(x - 6, 80, 12, 22); g.fillStyle = '#eeeff0'; g.fillRect(0, 108, w, 20); });
-      const rearM = std({ map: rear });
-      const sideM = std({ map: side }), frontM = std({ map: front, emissive: 0xffffff, emissiveMap: front, emissiveIntensity: 0.1 }), orangeM = std({ color: 0xe4532a }), darkM = std({ color: 0x1b1e21 });
-      const onLine = (x, z) => { for (const r of map.trolley || []) for (let i = 0; i < r.p.length - 2; i += 2) { const ax = r.p[i], az = r.p[i + 1], bx = r.p[i + 2], bz = r.p[i + 3], L = Math.hypot(bx - ax, bz - az) || 1, t = Math.max(0, Math.min(L, ((x - ax) * (bx - ax) + (z - az) * (bz - az)) / L)), px = ax + (bx - ax) * t / L, pz = az + (bz - az) * t / L; if (Math.hypot(x - px, z - pz) < 9) return { px, pz, dx: (bx - ax) / L, dz: (bz - az) / L, w: r.w, o: r.o }; } return null; };
-      let placedBus = 0;
-      for (const st of map.stops || []) {
-        if (placedBus >= 2) break;
-        const ln = onLine(st.x, st.z);
-        if (!ln) continue;
-        // in the lane on the stop's side
-        const nx = -ln.dz, nz = ln.dx, sd = Math.sign((st.x - ln.px) * nx + (st.z - ln.pz) * nz) || 1, lane = ln.o ? 0 : sd * ln.w / 4;
-        const cx = ln.px + nx * lane, cz = ln.pz + nz * lane, ang = Math.atan2(ln.dx, ln.dz);
-        if (polys.nearBuilding(cx, cz, 1.6)) continue;
-        placedBus++;
-        const bus = new THREE.Group(), gy = ground(cx, cz);
-        for (const [len, z0] of [[11, 3.5], [7, -6.2]]) {
-          const body = new THREE.Mesh(new THREE.BoxGeometry(2.55, 2.85, len), [sideM, sideM, orangeM, darkM, z0 > 0 ? frontM : darkM, z0 > 0 ? darkM : rearM]);
-          body.position.set(0, 0.35 + 1.42, z0); body.castShadow = true; bus.add(body);
-        }
-        const joint = new THREE.Mesh(new THREE.BoxGeometry(2.4, 2.7, 1.0), darkM); joint.position.set(0, 1.75, -2.25); bus.add(joint);
-        // the trolley poles, from the back of the roof up to the wires
-        for (const w of [-0.3, 0.3]) { const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.04, 6.4, 5), darkM); pole.position.set(w, 3.2 + 1.3, -5.0 + 2.9); pole.rotation.x = -1.15; bus.add(pole); }
-        bus.position.set(cx, gy, cz); bus.rotation.y = ang;
-        scene.add(bus);
-        const c = Math.cos(ang), sn = Math.sin(ang), pts = [];
-        for (const [u, v] of [[-1.3, -9.7], [1.3, -9.7], [1.3, 9.0], [-1.3, 9.0]]) pts.push(cx + u * c + v * sn, cz - u * sn + v * c);
-        polys.add(Float32Array.from(pts), gy - 0.5, gy + 3.2, { kind: 'flat', walk: true });
-      }
-    }
+    // the trolleybuses that run under them are in buses.js
     const lm = new THREE.LineBasicMaterial({ color: 0x24272a });
     for (const arr of [wires, spans]) {
       const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.Float32BufferAttribute(arr, 3));
