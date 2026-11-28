@@ -259,3 +259,7 @@ Every finding below came from screenshots of the real game in headless Chromium,
 ### Cost
 
 Road paint goes into each tile's decal batch and kerbs into its wall batch, so neither adds draw calls. The shop signs are two draw calls for the whole town. Each landmark is a handful of draw calls and is culled with its own bounding sphere. Measured in the same headless Chromium (software rendering), the game is ready to play after 6.3 s, up from 4.0 s, mostly for the bigger map.
+
+### The map grows again: all of Store Lungegårdsvann and the university
+
+The fine grid is now 2180 × 2950 m (x −1120…1060, z −1350…1600), with 5,579 buildings. The old area's measured heights were kept and only the new ground (379,000 points) was fetched. With the bigger area the street-surface textures moved from 50 cm to 75 cm to the pixel, so they stay under 4096 px (2907 × 3933), the largest texture many phones accept; at 50 cm the last extension had already gone over it (3520 × 4620). The big map's canvas is capped at 4096 px for the same reason. Ready to play after 7.9 s in the same headless test (6.3 s before this extension).

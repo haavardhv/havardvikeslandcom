@@ -43,7 +43,7 @@ OUT = sys.argv[2]
 LAT0, LON0 = 60.3931275, 5.3333919          # Cappes vei 6 (OSM address node 3126074741)
 MLAT = 111230.0
 MLON = 111320.0 * math.cos(math.radians(LAT0))
-X0, X1, Z0, Z1 = -990.0, 750.0, -1340.0, 950.0  # playable area: Bergenhus and Skuteviken to Fløyen, Grieghallen and AdO arena
+X0, X1, Z0, Z1 = -1110.0, 1050.0, -1340.0, 1590.0  # playable area: Bergenhus and Skuteviken to Fløyen, the university and Store Lungegårdsvann
 
 def P(n): return ((n['lon'] - LON0) * MLON, -(n['lat'] - LAT0) * MLAT)
 
@@ -682,7 +682,8 @@ print('areas', len(area_polys))
 # paving (blue) and gravel (paths.png), at 50 cm, with soft edges. Streets are cut where a
 # building stands, and higher kinds win where they overlap (a road over its crossing).
 from PIL import Image, ImageDraw
-MRES, MSS = 0.5, 2
+# 75 cm to the pixel keeps the textures under 4096 px, the limit on many phones
+MRES, MSS = 0.75, 3
 MW, MH = int(round((FX1 - FX0) / MRES)), int(round((FZ1 - FZ0) / MRES))
 chan = {'R': [], 'G': [], 'B': [], 'A': []}
 for rg in road_geo:

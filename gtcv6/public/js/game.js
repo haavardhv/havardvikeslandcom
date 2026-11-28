@@ -691,6 +691,8 @@ function updateHud(dt) {
 
 // ------------------------------------------------------------------ minimap
 const MAP = { x0: AX0 - 60, z0: AZ0 - 60, x1: AX1 + 60, z1: AZ1 + 60, ppm: 1.5 };
+// at most 4096 px a side: canvases bigger than that fail on some phones
+MAP.ppm = Math.min(1.5, 4096 / (MAP.x1 - MAP.x0), 4096 / (MAP.z1 - MAP.z0));
 const mapBase = document.createElement('canvas');
 mapBase.width = (MAP.x1 - MAP.x0) * MAP.ppm; mapBase.height = (MAP.z1 - MAP.z0) * MAP.ppm;
 {

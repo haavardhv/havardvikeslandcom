@@ -60,6 +60,8 @@ export function prepareLandmarks(map) {
   take('hakon', byName(map, 'Håkonshallen'));
   take('rosen', byName(map, 'Rosenkrantztårnet'));
   take('johannes', byName(map, 'Johanneskirken') || atPoint(map, -772, 508));
+  take('grieg', byName(map, 'Grieghallen'));
+  take('uimuseum', byName(map, 'De naturhistoriske samlinger (Universitetsmuseet – Naturhistorie)'));
   // restyled, with towers and details added below
   take('radhus', byName(map, 'Bergen rådhus'));
   take('station', byName(map, 'Bergen'));
@@ -147,6 +149,7 @@ function makeMaterials() {
   const M = {
     plasterW: std({ map: plaster('#ece8dd') }),
     plasterCream: std({ map: plaster('#e9dfc8') }),
+    plasterYellow: std({ map: plaster('#e8c55e') }),
     granite: std({ map: ashlar('#a9a69e', 8) }),
     graniteDark: std({ map: ashlar('#8c8981', 8) }),
     rubble: std({ map: rubble('#9b968a') }),
@@ -307,6 +310,7 @@ export function buildLandmarks(scene, map, L, { terrain, polys }) {
   const M = makeMaterials(), D = decalMaterials();
   const glowMats = [[D.lancet, 0, 0.5], [D.round, 0, 0.45], [D.clock, 0.05, 0.9], [D.sash, 0, 0.35]];
   const groups = [];
+  const artNamedFirst = (n) => (map.art || []).find(a => a.n === n);
   let glowNeon = null;
   const out = { update: null, spots: [] };
   const geoOf = () => { const G = new Geo(); return G; };
@@ -481,6 +485,102 @@ export function buildLandmarks(scene, map, L, { terrain, polys }) {
     collide(b, wallTop, hwN);
     collideBox(tx, tz, tw, tw, F.ang, gy - 3, tTop + 27);
     out.spots.push({ n: 'Johanneskirken', x: tx, z: tz });
+  }
+
+  // ------------------------------------------------ The University Museum (1865) on Nygårdshøyden
+  // After photos: ochre-yellow plaster with white pilasters, cornices and window surrounds, a
+  // taller central block facing Muséplass with a row of five arched windows, and wings with tall
+  // arched windows above square ones; the Christie statue with its lion stands in front.
+  if (L.uimuseum) {
+    const b = L.uimuseum, ring = ringOf(b.p), [lo, hi] = groundUnder(ring), G = geoOf();
+    const F = frameOf(b.p), top = hi + 11;
+    roofedBody(G, ring, lo - 3, top, [], M.plasterYellow, new THREE.MeshStandardMaterial({ color: 0x5d5f62, roughness: 0.9 }));
+    // the cornice round the top, and a white band over the ground floor
+    roofedBody(G, ring.map(([x, z]) => { const d = Math.hypot(x - F.cx, z - F.cz) || 1; return [x + (x - F.cx) / d * 0.3, z + (z - F.cz) / d * 0.3]; }), top - 0.9, top, [], M.white, M.white);
+    // the central block, on the side facing Muséplass (towards the Christie statue)
+    const ch = artNamedFirst('Christiestøtten');
+    const toward = ch ? Math.sign((ch.x - F.cx) * F.vx + (ch.z - F.cz) * F.vz) || 1 : 1;
+    const cw = Math.min(16, F.hl * 0.45), [bx, bz] = F.at(0, toward * 0.6);
+    boxAt(G, M.plasterYellow, bx, lo - 3, bz, cw, top + 6 - lo + 3, F.hw * 2 + 1.2, F.ang + Math.PI / 2);
+    boxAt(G, M.white, bx, top + 5.2, bz, cw + 0.8, 0.9, F.hw * 2 + 2.0, F.ang + Math.PI / 2);
+    for (const s2 of [-1, 1]) { const [qx, qz] = F.at(s2 * (cw / 2 - 0.6), toward * (F.hw + 1.2)); boxAt(G, M.white, qx, lo, qz, 1.3, top + 5 - lo, 0.4, F.ang + Math.PI / 2); }
+    // the windows: the front of the central block, then the wings all round
+    const fnx = F.vx * toward, fnz = F.vz * toward, [fx, fz] = F.at(0, toward * (F.hw + 1.2));
+    for (let k = -2; k <= 2; k++) decal(G, D.round, fx + F.ux * k * 2.2, fz + F.uz * k * 2.2, fnx, fnz, top + 1.0, 1.3, 2.6);
+    for (const k of [-1, 1]) { decal(G, D.round, fx + F.ux * k * 2.6, fz + F.uz * k * 2.6, fnx, fnz, hi + 5.6, 2.0, 3.6); decal(G, D.sash, fx + F.ux * k * 2.6, fz + F.uz * k * 2.6, fnx, fnz, hi + 1.4, 1.8, 2.2); }
+    decal(G, D.door, fx, fz, fnx, fnz, hi + 0.1, 2.2, 3.6);
+    windowsAlong(G, D.round, ring, hi + 5.6, 1.9, 3.4, 4.0, 6, (x, z) => Math.abs((x - F.cx) * F.ux + (z - F.cz) * F.uz) < cw / 2 + 1);
+    windowsAlong(G, D.sash, ring, hi + 1.4, 1.7, 2.2, 4.0, 6, (x, z) => Math.abs((x - F.cx) * F.ux + (z - F.cz) * F.uz) < cw / 2 + 1);
+    // steps up to the door
+    for (let k = 0; k < 5; k++) { const [sx, sz] = F.at(0, toward * (F.hw + 1.6 + k * 0.4)); boxAt(G, M.granite, sx, lo - 0.5, sz, cw - 2, hi + 0.9 - k * 0.2 - lo + 0.5, 0.4, F.ang + Math.PI / 2); }
+    finish(G, 'Universitetsmuseet');
+    collide(b, top);
+    collideBox(bx, bz, cw, F.hw * 2 + 1.2, F.ang + Math.PI / 2, lo - 3, top + 6);
+    out.spots.push({ n: 'Universitetsmuseet', x: fx, z: fz });
+  }
+
+  // ------------------------------------------------ Grieghallen (1978)
+  // After photos: a long upper volume clad in vertical bronze-brown fins with dark glass between
+  // them, floating on columns over a recessed glass foyer and wide steps, a big banner on the
+  // front, and the grey concrete stage towers behind.
+  if (L.grieg) {
+    const b = L.grieg, ring = ringOf(b.p), [lo, hi] = groundUnder(ring), G = geoOf();
+    const F = frameOf(b.p);
+    const fins = canvasTex(256, (g, S) => {
+      g.fillStyle = '#1c2126'; g.fillRect(0, 0, S, S);
+      g.fillStyle = 'rgba(120,140,155,0.18)'; g.fillRect(0, 0, S, S * 0.3);
+      for (let x = 0; x < S; x += S / 4) { const gr = g.createLinearGradient(x, 0, x + S / 6, 0); gr.addColorStop(0, '#5a3a26'); gr.addColorStop(0.5, '#7b5236'); gr.addColorStop(1, '#4a2f1f'); g.fillStyle = gr; g.fillRect(x, 0, S / 6, S); }
+      g.fillStyle = '#c46a2a'; g.fillRect(0, S - 6, S, 6);
+    }, 3.6, { metresV: 11.5 });
+    const finM = new THREE.MeshStandardMaterial({ map: fins, roughness: 0.55, metalness: 0.3 });
+    const foyer = canvasTex(256, (g, S) => { g.fillStyle = '#2b3338'; g.fillRect(0, 0, S, S); g.fillStyle = 'rgba(255,214,160,0.35)'; g.fillRect(0, S * 0.4, S, S * 0.6); g.fillStyle = '#9aa0a4'; for (let x = 0; x < S; x += S / 3) g.fillRect(x, 0, 4, S); }, 4, { metresV: 4.5 });
+    const foyerM = new THREE.MeshStandardMaterial({ map: foyer, roughness: 0.15, metalness: 0.2, emissive: 0xffffff, emissiveMap: foyer, emissiveIntensity: 0 });
+    glowMats.push([foyerM, 0.1, 0.7]);
+    const concrete = new THREE.MeshStandardMaterial({ color: 0x9a9890, roughness: 0.95 });
+    const inset = (d) => ring.map(([x, z]) => { const dd = Math.hypot(x - F.cx, z - F.cz) || 1; return [x - (x - F.cx) / dd * d, z - (z - F.cz) / dd * d]; });
+    const fl = hi + 4.5, top = hi + 16;
+    roofedBody(G, inset(3), lo - 3, fl, [], foyerM, M.white);
+    roofedBody(G, ring, fl, top, [], finM, concrete);
+    // the soffit under the floating volume
+    for (const [a, c, d] of triangulate([ring])) G.tri(M.white, [a[0], fl, a[1]], [c[0], fl, c[1]], [d[0], fl, d[1]], [[0, 0], [1, 0], [0, 1]], [0, -1, 0]);
+    // columns round the foyer
+    for (let i = 0; i < ring.length; i++) {
+      const [ax, az] = ring[i], [bx, bz] = ring[(i + 1) % ring.length], len = Math.hypot(bx - ax, bz - az);
+      for (let t = 3; t < len - 2; t += 8) { const x = ax + (bx - ax) * t / len, z = az + (bz - az) * t / len, dd = Math.hypot(x - F.cx, z - F.cz) || 1; cyl(G, M.white, x - (x - F.cx) / dd * 1.2, lo - 1, z - (z - F.cz) / dd * 1.2, 0.35, 0.35, fl - lo + 1, 10); }
+    }
+    // the stage towers, at the end away from Lille Lungegårdsvann
+    const lake = (map.waters || []).reduce((a, w) => (!a || w.a > a.a) && w.y < 2 ? w : a, null);
+    const [lx, lz] = lake ? centroid(lake.p) : [F.cx, F.cz - 100];
+    const endSign = ((F.cx + F.ux * F.hl - lx) ** 2 + (F.cz + F.uz * F.hl - lz) ** 2) > ((F.cx - F.ux * F.hl - lx) ** 2 + (F.cz - F.uz * F.hl - lz) ** 2) ? 1 : -1;
+    for (const [u, w, h] of [[F.hl * 0.45, 26, 30], [F.hl * 0.2, 18, 24]]) {
+      const [tx, tz] = F.at(endSign * u, 0);
+      if (!insideRings([ring], tx, tz)) continue;
+      boxAt(G, concrete, tx, hi, tz, Math.min(w, F.hw * 1.6), h, Math.min(w, F.hw * 1.6), F.ang);
+      collideBox(tx, tz, Math.min(w, F.hw * 1.6), Math.min(w, F.hw * 1.6), F.ang, hi - 1, hi + h);
+    }
+    // the banner on the front, towards the lake
+    {
+      const [fx, fz] = F.at(-endSign * F.hl * 0.55, 0);
+      let best = null;
+      for (let i = 0; i < ring.length; i++) { const [ax, az] = ring[i], [bx, bz] = ring[(i + 1) % ring.length], len = Math.hypot(bx - ax, bz - az); if (len < 15) continue; const mx = (ax + bx) / 2, mz = (az + bz) / 2, d = Math.hypot(mx - lx, mz - lz); if (!best || d < best.d) best = { d, mx, mz, len, ax, az, bx, bz }; }
+      if (best) {
+        let nx = (best.bz - best.az) / best.len, nz = -(best.bx - best.ax) / best.len;
+        if (insideRings([ring], best.mx + nx, best.mz + nz)) { nx = -nx; nz = -nz; }
+        const banner = decalTex((g, w, h) => {
+          g.fillStyle = '#0e6f73'; g.fillRect(0, 0, w, h);
+          g.fillStyle = '#f2efe6'; g.textAlign = 'center'; g.font = '900 29px Archivo, sans-serif'; g.fillText('BERGEN', w / 2, h * 0.62); g.fillText('FILHARMONISKE', w / 2, h * 0.7); g.fillText('ORKESTER', w / 2, h * 0.78);
+          g.fillStyle = '#d9a441'; g.beginPath(); g.arc(w / 2, h * 0.3, w * 0.28, 0, 7); g.fill();
+          g.fillStyle = '#0e6f73'; for (let k = 0; k < 5; k++) g.fillRect(w * 0.3, h * 0.22 + k * 14, w * 0.4, 3);
+          g.fillStyle = '#ffffff'; g.font = '700 22px Archivo, sans-serif'; g.fillText('GRIEGHALLEN', w / 2, h * 0.9);
+        }, 256, 512);
+        decal(G, new THREE.MeshStandardMaterial({ map: banner, roughness: 0.6, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -2 }), best.mx, best.mz, nx, nz, fl + 0.6, 5.5, 10.5, 0.1);
+        // the wide steps up to the foyer
+        for (let k = 0; k < 6; k++) { const x = best.mx + nx * (0.5 + k * 0.45), z = best.mz + nz * (0.5 + k * 0.45); boxAt(G, M.granite, x, lo - 0.5, z, 18, hi + 0.9 - k * 0.15 - lo + 0.5, 0.45, Math.atan2(nx, nz)); }
+        void fx; void fz;
+      }
+    }
+    finish(G, 'Grieghallen');
+    collide(b, top);
   }
 
   // ------------------------------------------------ Bergenhus: Håkonshallen and Rosenkrantztårnet
@@ -783,7 +883,10 @@ export function buildLandmarks(scene, map, L, { terrain, polys }) {
     // the statues
     for (const a of art) {
       if (!/statue|sculpture|bust/.test(a.k) || !a.n || /bl[åa] stein/i.test(a.n)) continue;
-      const y = ground(a.x, a.z), ang = faceTo(a.x, a.z);
+      let ang = faceTo(a.x, a.z);
+      const y = ground(a.x, a.z);
+      // Christie stands with his back to the University Museum, looking out over Muséplass
+      if (a.n === 'Christiestøtten' && L.uimuseum) { const [mx, mz] = centroid(L.uimuseum.p); ang = Math.atan2(a.x - mx, a.z - mz); }
       if (a.n === 'Ole Bull') {
         // Ole Bull on his rock with the violin, water falling into the pool below (1901)
         const rock = new THREE.DodecahedronGeometry(2.0, 0); rock.scale(1.3, 0.9, 1.1); rock.translate(0, 1.2, 0);
@@ -798,7 +901,13 @@ export function buildLandmarks(scene, map, L, { terrain, polys }) {
         figure(G, bronze, a.x, y + 16.65, a.z, 1.6, ang, 'arm');
         collideBox(a.x, a.z, 4.2, 4.2, ang, y - 1, y + 19);
       } else {
-        const tall = a.n === 'Holbergstatuen' ? 3.2 : a.n === 'Edvard Grieg' ? 1.6 : a.k === 'bust' ? 1.4 : 1.0;
+        const tall = a.n === 'Holbergstatuen' || a.n === 'Christiestøtten' ? 3.4 : a.n === 'Edvard Grieg' ? 1.6 : a.k === 'bust' ? 1.4 : 1.0;
+        if (a.n === 'Christiestøtten') {
+          // the lion lying at the foot of the pedestal
+          const lion = new THREE.SphereGeometry(0.55, 10, 8); lion.scale(1.8, 0.8, 0.9);
+          G.geom(M.graniteDark, lion, new THREE.Matrix4().makeTranslation(a.x + Math.sin(ang) * 1.3, y + 0.45, a.z + Math.cos(ang) * 1.3));
+          sphere(G, M.graniteDark, a.x + Math.sin(ang) * 1.3 + Math.cos(ang) * 0.8, y + 0.85, a.z + Math.cos(ang) * 1.3 - Math.sin(ang) * 0.8, 0.35);
+        }
         G.obox(granite, a.x, y + tall / 2, a.z, 1.4, tall, 1.4, 0, ang, 0);
         if (a.k === 'bust') { sphere(G, bronze, a.x, y + tall + 0.35, a.z, 0.3); cyl(G, bronze, a.x, y + tall, a.z, 0.35, 0.25, 0.3, 8); }
         else figure(G, bronze, a.x, y + tall, a.z, a.n === 'Holbergstatuen' || a.n === 'Edvard Grieg' ? 1.25 : 1.0, ang, a.n === 'Holbergstatuen' ? 'arm' : 'stand');
