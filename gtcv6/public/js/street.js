@@ -306,6 +306,7 @@ export function buildStreet(scene, map, S, { terrain, polys, onRoad }) {
     for (const p of map.pools || []) {
       const n = p.length / 2;
       let gy = Infinity; for (let i = 0; i < n; i++) gy = Math.min(gy, ground(p[i * 2], p[i * 2 + 1]));
+      gy = Math.max(gy, 0.3);                           // a sea-water pool by the fjord stays above the sea
       const sh = new THREE.Shape(); for (let i = 0; i < n; i++) (i ? sh.lineTo : sh.moveTo).call(sh, p[i * 2], -p[i * 2 + 1]);
       const m = new THREE.Mesh(new THREE.ShapeGeometry(sh), poolM); m.rotation.x = -Math.PI / 2; m.position.y = gy + 0.12; m.receiveShadow = true; scene.add(m);
       for (let i = 0; i < n; i++) {

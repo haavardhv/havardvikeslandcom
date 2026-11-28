@@ -708,6 +708,75 @@ export function buildLandmarks(scene, map, L, { terrain, polys, onRoad }) {
     out.spots.push({ n: 'Fløien Folkerestaurant', x: at(17, -8)[0], z: at(17, -8)[1] });
   }
 
+  // ------------------------------------------------ Statsraad Lehmkuhl at her berth by Bergenhus
+  // After photos: the three-masted barque (1914), a white steel hull 84 m long with a dark-blue
+  // band at the waterline, deckhouses, a long bowsprit, three masts of about 48 m with their
+  // yards and the sails furled white on them, and the flag at the stern. She lies alongside the
+  // quay nearest OSM's point for her, bow out towards the fjord.
+  {
+    const a0 = (map.art || []).find(a => /Lehmkuhl/.test(a.n));
+    let best = null;
+    if (a0) for (const f of map.coast || []) for (let i = 0; i < f.length - 2; i += 2) {
+      const ax = f[i], az = f[i + 1], bx = f[i + 2], bz = f[i + 3], L2 = Math.hypot(bx - ax, bz - az);
+      if (L2 < 4) continue;
+      const t = Math.max(0, Math.min(L2, ((a0.x - ax) * (bx - ax) + (a0.z - az) * (bz - az)) / L2)), x = ax + (bx - ax) * t / L2, z = az + (bz - az) * t / L2, d = Math.hypot(x - a0.x, z - a0.z);
+      if (!best || d < best.d) best = { d, x, z, dx: (bx - ax) / L2, dz: (bz - az) / L2 };
+    }
+    if (best && best.d < 150) {
+      const wx = -best.dz, wz = best.dx;                     // water side: the right of the coastline
+      // slide her along the quay, and out from it, to where the whole hull lies in open water
+      let fit = null;
+      for (let s = -70; s <= 70; s += 3.5) for (const off of [7.5, 10, 13, 17]) {
+        let bad = 0;
+        for (let k = -4; k <= 4; k++) for (const sd of [-6.5, 0, 6.5]) {
+          const x = best.x + best.dx * (s + k * 10.5) + wx * (off + sd), z = best.z + best.dz * (s + k * 10.5) + wz * (off + sd);
+          if (ground(x, z) > -0.5 || polys.nearBuilding(x, z, 1)) bad++;
+        }
+        const score = bad * 1000 + Math.abs(s) + off * 2;
+        if (!fit || score < fit.score) fit = { score, s, off };
+      }
+      const cx = best.x + best.dx * fit.s + wx * fit.off, cz = best.z + best.dz * fit.s + wz * fit.off, ang = Math.atan2(best.dx, best.dz), wl = 0.15;
+      const G = geoOf(), hullW = new THREE.MeshStandardMaterial({ color: 0xf3f3ef, roughness: 0.5 }), blueM = new THREE.MeshStandardMaterial({ color: 0x1d2f6b, roughness: 0.5 });
+      const deckM = new THREE.MeshStandardMaterial({ color: 0xa9875a, roughness: 0.85 }), sailM = new THREE.MeshStandardMaterial({ color: 0xece6d6, roughness: 0.9 });
+      const P = (u, y, v) => new THREE.Matrix4().makeTranslation(cx + best.dx * u + wx * v, wl + y, cz + best.dz * u + wz * v);
+      const R = new THREE.Matrix4().makeRotationY(ang);
+      const put = (mat, geo, u, y, v) => G.geom(mat, geo, P(u, y, v).multiply(R));
+      // the hull: a box tapered to a bow and a rounded stern, white over a blue waterline
+      const hull = (w, h, len, y) => { const g = new THREE.BoxGeometry(w, h, len, 1, 1, 8), pa = g.attributes.position; for (let i = 0; i < pa.count; i++) { const z = pa.getZ(i), k = z > 0 ? 1 - Math.pow(z / (len / 2), 2) * 0.95 : 1 - Math.pow(-z / (len / 2), 3) * 0.6; pa.setX(i, pa.getX(i) * Math.max(0.05, k)); } g.computeVertexNormals(); return g; };
+      put(blueM, hull(12.6, 1.6, 84, 0), 0, -0.2, 0);
+      put(hullW, hull(12.6, 5.6, 84, 0), 0, 3.4, 0);
+      put(deckM, (() => { const g = hull(12.0, 0.1, 83, 0); return g; })(), 0, 6.2, 0);
+      // deckhouses and the poop deck
+      put(hullW, new THREE.BoxGeometry(6, 2.2, 14), 0, 7.3, -6);
+      put(hullW, new THREE.BoxGeometry(5, 2.0, 9), 0, 7.2, 18);
+      put(hullW, new THREE.BoxGeometry(10, 1.4, 12), 0, 6.9, -34);
+      // the bowsprit
+      { const g = new THREE.CylinderGeometry(0.25, 0.4, 16, 8); g.rotateX(Math.PI / 2 - 0.25); put(new THREE.MeshStandardMaterial({ color: 0xd8d3c6 }), g, 0, 8.5, 48); }
+      // three masts with yards and furled sails, the mizzen with a gaff
+      for (const [u, h, yards] of [[26, 47, 6], [2, 48, 6], [-22, 40, 0]]) {
+        const mast = new THREE.CylinderGeometry(0.28, 0.45, h, 8); mast.translate(0, h / 2, 0); put(sailM, mast, u, 6.2, 0);
+        for (let k = 0; k < yards; k++) {
+          const y = 14 + k * 5.2, w = 26 - k * 3.2;
+          const yard = new THREE.CylinderGeometry(0.18, 0.18, w, 6); yard.rotateZ(Math.PI / 2); put(sailM, yard, u, 6.2 + y, 0);
+          const furl = new THREE.CylinderGeometry(0.45, 0.45, w * 0.9, 6); furl.rotateZ(Math.PI / 2); put(sailM, furl, u, 6.2 + y - 0.45, 0);
+        }
+        if (!yards) { const gaff = new THREE.CylinderGeometry(0.15, 0.15, 12, 6); gaff.rotateX(Math.PI / 2 - 0.35); put(sailM, gaff, u - 6, 6.2 + 24, 0); }
+      }
+      // stays from the masts to the bowsprit and the stern, and the flag
+      const lines = [];
+      const W = (u, y, v) => new THREE.Vector3(cx + best.dx * u + wx * v, wl + y, cz + best.dz * u + wz * v);
+      for (const [u, h] of [[26, 47], [2, 48], [-22, 40]]) { lines.push(W(u, 6.2 + h, 0), W(u + 22, 8, 0)); for (const s2 of [-1, 1]) lines.push(W(u, 6.2 + h * 0.8, 0), W(u - 3, 6.5, s2 * 6)); }
+      lines.push(W(26, 53, 0), W(56, 10, 0), W(-22, 46, 0), W(-42, 7, 0));
+      scene.add(new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints(lines), new THREE.LineBasicMaterial({ color: 0x3a3a36 })));
+      const flag = new THREE.Mesh(new THREE.PlaneGeometry(2.4, 1.7), new THREE.MeshStandardMaterial({ map: decalTex((g, w, h) => { g.fillStyle = '#ba0c2f'; g.fillRect(0, 0, w, h); g.fillStyle = '#ffffff'; g.fillRect(w * 0.27, 0, w * 0.18, h); g.fillRect(0, h * 0.4, w, h * 0.2); g.fillStyle = '#00205b'; g.fillRect(w * 0.31, 0, w * 0.1, h); g.fillRect(0, h * 0.45, w, h * 0.1); }, 220, 160), side: THREE.DoubleSide }));
+      const fp = W(-43, 9.5, 0); flag.position.copy(fp); flag.rotation.y = ang + Math.PI / 2; scene.add(flag);
+      finish(G, 'Statsraad Lehmkuhl');
+      // her side and stern stop you walking off the quay into her
+      collideBox(cx, cz, 12.6, 84, ang, wl - 2, wl + 7.5);
+      out.spots.push({ n: 'Statsraad Lehmkuhl', x: cx, z: cz });
+    }
+  }
+
   // ------------------------------------------------ Bergenhus: Håkonshallen and Rosenkrantztårnet
   // Håkonshallen: the king's hall of the 1260s, grey stone, crow-stepped gables at both ends
   // and a steep dark roof. Rosenkrantztårnet: the tall grey stone tower beside it.
@@ -1005,6 +1074,8 @@ export function buildLandmarks(scene, map, L, { terrain, polys, onRoad }) {
       collideBox(sx, sz, 3.2, 3.2, 0.45, sy, sy + 13);
       out.spots.push({ n: 'Sjømannsmonumentet', x: sx, z: sz });
     }
+    // the aquarium's entrance: OSM has its ticket office as a named point
+    if (!art.some(a => a.k === 'aquarium')) { const s = (map.shops || []).find(s => /^Akvariet/.test(s.n)); if (s) art.push({ n: s.n, k: 'aquarium', x: s.x, z: s.z }); }
     // the statues
     for (const a of art) {
       if (!/statue|sculpture|bust|aquarium/.test(a.k) && a.n !== 'Pacific Northwest Totem' || !a.n || /bl[åa] stein/i.test(a.n)) continue;

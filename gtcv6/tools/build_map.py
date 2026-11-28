@@ -903,6 +903,12 @@ for n in nodes.values():
     x, z = P(n)
     if not (X0 < x < X1 and Z0 < z < Z1): continue
     art.append({'n': t.get('name', ''), 'k': t.get('artwork_type') or (t.get('tourism') if t.get('tourism') != 'artwork' else '') or t.get('amenity') or t.get('memorial') or '', 'x': r1(x), 'z': r1(z)})
+for w in ways.values():
+    t = w.get('tags', {})
+    if t.get('tourism') != 'aquarium': continue
+    c = coords(w)
+    if len(c) < 3 or not in_area(c): continue
+    art.append({'n': t.get('name', ''), 'k': 'aquarium', 'x': r1(sum(x for x, _ in c) / len(c)), 'z': r1(sum(z for _, z in c) / len(c))})
 print('artworks and fountains', len(art))
 
 # Shops, cafés, restaurants, pubs and the like, with their names: the game puts each name on a

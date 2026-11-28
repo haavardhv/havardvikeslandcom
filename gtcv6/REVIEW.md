@@ -263,3 +263,13 @@ Road paint goes into each tile's decal batch and kerbs into its wall batch, so n
 ### The map grows again: all of Store Lungegårdsvann and the university
 
 The fine grid is now 2180 × 2950 m (x −1120…1060, z −1350…1600), with 5,579 buildings. The old area's measured heights were kept and only the new ground (379,000 points) was fetched. With the bigger area the street-surface textures moved from 50 cm to 75 cm to the pixel, so they stay under 4096 px (2907 × 3933), the largest texture many phones accept; at 50 cm the last extension had already gone over it (3520 × 4620). The big map's canvas is capped at 4096 px for the same reason. Ready to play after 7.9 s in the same headless test (6.3 s before this extension).
+
+### And on to Nordnes
+
+The west edge moved from x −1120 to −1800, out to the tip of Nordnes (Nordnesparken, the Aquarium, Nordnes sjøbad, Fredriksberg): 2860 × 2950 m and 6,668 buildings. The street textures are 3813 × 3933 px, still under 4096. Ready to play after 7.5 s in the same headless test.
+
+### Fløibanen's stations
+
+- **Lower station.** OpenStreetMap's track begins 40 m up the hill from the station, where the tunnel under Skansen starts, so the game had you board in the open ground between Vetrlidsallmenningen's hairpins. The line is now carried back through the tunnel into the small station building on the corner. You get on and off at its street door, under a FLØIBANEN sign, and the waiting car stands in the tunnel behind it instead of sticking out into the street.
+- **Fløyen.** A hard-coded box "restaurant" with a cone roof stood 14 m from the top station, through the real buildings and without collision, and you stepped out between their walls. It is gone. The OSM outline round the end of the track is replaced by the upper station, the restaurant and the terrace (see the README). You step out onto the platform beside the terrace, and no trees grow through any of it.
+- **Lettering.** Lettering painted on landmark walls read mirrored. The decal's horizontal axis ran to the left of someone facing the wall; it now runs to their right.
