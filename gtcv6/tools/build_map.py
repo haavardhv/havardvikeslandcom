@@ -930,6 +930,17 @@ for n in nodes.values():
         bikes.append({'x': r1(x), 'z': r1(z), 'c': int(num(t.get('capacity'), 10) or 10)})
 print('bus stops', len(stops), 'bike stations', len(bikes))
 
+# The trolleybus's overhead line (line 2): the streets OSM tags trolley_wire=yes, with their width
+# and whether they are one-way (one pair of wires) or not (a pair each way)
+trolley = []
+for w in ways.values():
+    t = w.get('tags', {})
+    if t.get('trolley_wire') != 'yes' or t.get('highway') not in WIDTH: continue
+    c = coords(w)
+    if len(c) < 2 or not in_area(c): continue
+    trolley.append({'p': flat(c), 'w': round(road_width(t, t['highway']), 1), 'o': 1 if t.get('oneway') in ('yes', '-1') else 0})
+print('trolley wire ways', len(trolley))
+
 # Quays: OpenStreetMap's coastline (land on the left of each way) is where the harbour's quay
 # walls stand. The 2.5 m terrain grid would draw the shore as a sawtooth, so the ground on the
 # water side of the line is dug out under the sea; the game stands a stone wall on the line.
@@ -1031,7 +1042,7 @@ out = {
     'lamps': lamps,
     'parking': parking,
     'waters': waters,
-    'kerbs': kerbs, 'marks': marks, 'crossings': crossings, 'coast': coast, 'art': art, 'shops': shops, 'stops': stops, 'bikes': bikes,
+    'kerbs': kerbs, 'marks': marks, 'crossings': crossings, 'coast': coast, 'art': art, 'shops': shops, 'stops': stops, 'bikes': bikes, 'trolley': trolley,
     'roadmask': {'x0': FX0, 'z0': FZ0, 'res': MRES, 'w': MW, 'h': MH},
 }
 json.dump(out, open(os.path.join(OUT, 'map.json'), 'w'), separators=(',', ':'))
