@@ -171,24 +171,47 @@ export class Audio {
   ready(id) { return !!this.ctx && !!this._line(id); }
   // whether someone on the street is speaking a line of this priority or higher
   speaking(prio = 0) { return !!this.voice && this.voice.until > this.ctx.currentTime && this.voice.prio >= prio; }
-  // A passer-by says one of their lines: dry, from where they stand (gain 0..1 for the distance,
-  // pan -1..1 for the side). One person speaks at a time: a line cuts off one of the same or lower
-  // priority, and is dropped if one of higher priority is playing. Returns whether it plays.
-  speak(id, gain = 1, pan = 0, prio = 0) {
-    if (!this.ctx || !STREET[id] || gain <= 0.01) return false;
+  // A passer-by says one of their lines, from where they stand: `at` is their position (any
+  // {x, y, z}, read every frame, so the voice follows them as they walk). It is heard in 3D, from
+  // their direction and quieter with distance, by ears that listen() puts in your head. One person
+  // speaks at a time: a line cuts off one of the same or lower priority, and is dropped if one of
+  // higher priority is playing. Returns whether it plays.
+  speak(id, at, prio = 0) {
+    if (!this.ctx || !STREET[id]) return false;
     const now = this.ctx.currentTime;
     if (this.voice && this.voice.until > now && this.voice.prio > prio) return false;
     const buf = this._line(id);
     if (!buf) return false;
     if (this.voice && this.voice.until > now) { try { this.voice.src.stop(); } catch (e) { /* */ } }
     const c = this.ctx, src = c.createBufferSource(); src.buffer = buf;
-    const g = c.createGain(); g.gain.value = 1.7 * gain;
-    let out = g;
-    if (c.createStereoPanner) { const p = c.createStereoPanner(); p.pan.value = Math.max(-1, Math.min(1, pan)); g.connect(p); out = p; }
-    src.connect(g); out.connect(this.voiceBus);
+    const g = c.createGain(); g.gain.value = 1.0;
+    const p = c.createPanner();
+    p.panningModel = 'HRTF'; p.distanceModel = 'inverse';
+    p.refDistance = 2.5; p.rolloffFactor = 1.2; p.maxDistance = 60;
+    src.connect(g).connect(p).connect(this.voiceBus);
+    this.voice = { src, panner: p, at, prio, until: now + buf.duration };
+    this._place(p, at, true);
     src.start();
-    this.voice = { src, prio, until: now + buf.duration };
     return true;
+  }
+  // set a panner or the listener's position; `now` jumps straight there instead of gliding
+  _setPos(node, x, y, z, now = false) {
+    if (node.positionX) {
+      const t = this.ctx.currentTime;
+      for (const [prm, v] of [[node.positionX, x], [node.positionY, y], [node.positionZ, z]]) { if (now) prm.setValueAtTime(v, t); else prm.setTargetAtTime(v, t, 0.03); }
+    } else node.setPosition(x, y, z);
+  }
+  _place(p, at, now = false) { this._setPos(p, at.x, at.y + 1.6, at.z, now); }
+  // The ears for the street voices: at your character's head, turned the way the camera looks, so a
+  // voice on the left of the screen is on your left. Call every frame.
+  listen(pos, fwd) {
+    if (!this.ctx) return;
+    const L = this.ctx.listener, t = this.ctx.currentTime;
+    this._setPos(L, pos.x, pos.y + 1.6, pos.z);
+    if (L.forwardX) {
+      for (const [prm, v] of [[L.forwardX, fwd.x], [L.forwardY, fwd.y], [L.forwardZ, fwd.z], [L.upX, 0], [L.upY, 1], [L.upZ, 0]]) prm.setTargetAtTime(v, t, 0.03);
+    } else L.setOrientation(fwd.x, fwd.y, fwd.z, 0, 1, 0);
+    if (this.voice && this.voice.until > t) this._place(this.voice.panner, this.voice.at);
   }
   // Each segment is also downloaded whole, once, and played from memory after that: a stream can
   // only be seeked if the server answers range requests, and without seeking, getting back on a

@@ -702,7 +702,8 @@ export function buildLandmarks(scene, map, L, { terrain, polys, onRoad }) {
       decal(G, D.door, nx2, nz2, vx, vz, fy + 0.02, 2.2, 3.4);
     }
     finish(G, 'Fløyen');
-    out.floyenStop = (() => { const [x, z] = at(-6, 3.3); return new THREE.Vector3(x, fy + 0.05, z); })();
+    out.floyenStop = (() => { const [x, z] = at(-8, 8.5); return new THREE.Vector3(x, fy + 0.05, z); })();
+    out.floyenFace = Math.atan2(vx, vz);      // facing out over the terrace and the town
     out.floyenClear = [ex, ez, 45];
     out.floyenJump = (() => { const [x, z] = at(-23, 14.5); return { x, z }; })();     // the skydive starts at the terrace's far corner
     out.spots.push({ n: 'Fløien Folkerestaurant', x: at(17, -8)[0], z: at(17, -8)[1] });
