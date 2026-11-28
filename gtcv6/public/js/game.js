@@ -533,23 +533,31 @@ player.fig.elbows[0].add(carryHold);
 carryHold.position.set(0, -0.32, 0.08);
 
 // ------------------------------------------------------------------ camera rig
-const cam = { yaw: -Math.PI / 2, pitch: 0.32, dist: 4.4, cur: 4.4, lastLook: 0, shake: 0 };
+const cam = { yaw: -Math.PI / 2, pitch: 0.32, dist: 4.4, cur: 4.4, lastLook: 0, shake: 0, py: 0, roll: 0 };
 const _v = new THREE.Vector3(), _v2 = new THREE.Vector3(), _dir = new THREE.Vector3();
 const camBox = new THREE.Vector3();
 function updateCamera(dt) {
   const p = player.pos;
   const inside = isIndoors(p);
-  const want = dive.on ? (dive.phase === 'free' ? 7 : 10) : lerp(player.riding ? 5.6 : inside ? 2.5 : 4.6, 3.1, gun.aimK);
-  cam.dist = damp(cam.dist, want, 3, dt);
+  const r = player.riding, rv = r ? Math.abs(r.speed) : 0;
+  // on a scooter the camera drops back as you speed up, and widens: it catches up when you slow
+  const want = dive.on ? (dive.phase === 'free' ? 7 : 10) : lerp(r ? 5.3 + rv * 0.07 + (turbo.on ? 0.5 : 0) : inside ? 2.5 : 4.6, 3.1, gun.aimK);
+  cam.dist = damp(cam.dist, want, r ? 2.2 : 3, dt);
   const baseFov = camera.aspect < 0.8 ? 78 : 64;
-  const fov = damp(camera.fov, (inside ? baseFov + 14 : baseFov) + (player.riding && turbo.on ? 9 : 0), 3, dt);
+  const fov = damp(camera.fov, (inside ? baseFov + 14 : baseFov) + (r ? Math.min(1, rv / 17) * 6 : 0) + (r && turbo.on ? 7 : 0), 3, dt);
   if (Math.abs(fov - camera.fov) > 0.01) { camera.fov = fov; camera.updateProjectionMatrix(); }
-  // follow the scooter's heading unless the player is steering the camera
-  if (player.riding && performance.now() - cam.lastLook > 900) {
-    cam.yaw = cam.yaw + angDiff(cam.yaw, player.riding.heading + Math.PI) * Math.min(1, dt * 2.5);
-    cam.pitch = damp(cam.pitch, 0.28, 2, dt);
+  // Follow the way the scooter is going (not where it points, so a drift or a spin in the air
+  // doesn't swing the view round), unless the player is steering the camera
+  if (r && performance.now() - cam.lastLook > 900) {
+    const go = rv > 1.5 && r.speed > 0 ? r.vdir : r.heading;
+    cam.yaw = cam.yaw + angDiff(cam.yaw, go + Math.PI) * Math.min(1, dt * (r.air ? 1.2 : 2.2 + rv * 0.08));
+    cam.pitch = damp(cam.pitch, 0.27, 2, dt);
   }
-  const pivot = _v.set(p.x, p.y + (player.knockT > 0 ? 0.6 : 1.55), p.z);
+  // on a scooter the camera's height follows the deck's springs, smoothed again, so bumps and
+  // landings don't shake the picture; on foot it follows you exactly
+  const fy = r ? (r.ry === undefined ? p.y : r.ry) : p.y;
+  cam.py = r && Math.abs(cam.py - fy) < 3 ? damp(cam.py, fy, r.air ? 5 : 9, dt) : fy;
+  const pivot = _v.set(p.x, cam.py + (player.knockT > 0 ? 0.6 : 1.55), p.z);
   // over the right shoulder while the pistol is out
   if (gun.aimK > 0.01) { pivot.x += Math.cos(cam.yaw) * 0.55 * gun.aimK; pivot.z -= Math.sin(cam.yaw) * 0.55 * gun.aimK; pivot.y += 0.05 * gun.aimK; }
   _dir.set(Math.sin(cam.yaw) * Math.cos(cam.pitch), Math.sin(cam.pitch), Math.cos(cam.yaw) * Math.cos(cam.pitch));
@@ -570,13 +578,16 @@ function updateCamera(dt) {
     camera.position.y += (Math.random() - 0.5) * cam.shake * 0.25;
   }
   camera.lookAt(pivot.x, pivot.y + 0.1, pivot.z);
+  // and leans a touch with the scooter in a turn
+  cam.roll = damp(cam.roll, r && !r.air ? -r.lean * 0.16 : 0, 4, dt);
+  if (Math.abs(cam.roll) > 1e-4) camera.rotateZ(cam.roll);
   player.fig.root.visible = cam.cur > 0.75;
 }
 
 // ------------------------------------------------------------------ input
 const keys = {};
 const pressed = { jump: false, punch: false, use: false, radio: false, gun: false, trick: false };
-const touch = { mx: 0, my: 0, run: false, driftHeld: false, stickId: null, lookId: null, sx: 0, sy: 0, lx: 0, ly: 0 };
+const touch = { mx: 0, my: 0, run: false, driftHeld: false, jumpHeld: false, stickId: null, lookId: null, sx: 0, sy: 0, lx: 0, ly: 0 };
 let locked = false;
 addEventListener('keydown', e => {
   if (e.repeat) { if (['Space', 'ArrowUp', 'ArrowDown'].includes(e.code)) e.preventDefault(); return; }
@@ -671,14 +682,15 @@ for (const b of document.querySelectorAll('#touch button')) {
     e.preventDefault();
     const k = b.dataset.k;
     if (k === 'trick') { touch.driftHeld = true; return; }      // the Drift button: hold it
+    if (k === 'jump') touch.jumpHeld = true;                     // on a scooter, Jump is held to crouch
     if (k === 'run') { touch.run = !touch.run; b.classList.toggle('on', touch.run); }
     else if (k === 'switch') openWheel(!wheelOpen);
     else pressed[k] = true;
   }, { passive: false });
 }
 {
-  const db = document.querySelector('#touch [data-k="trick"]');
-  for (const ev of ['touchend', 'touchcancel']) db.addEventListener(ev, () => { touch.driftHeld = false; });
+  const db = document.querySelector('#touch [data-k="trick"]'), jb = document.querySelector('#touch [data-k="jump"]');
+  for (const ev of ['touchend', 'touchcancel']) { db.addEventListener(ev, () => { touch.driftHeld = false; }); jb.addEventListener(ev, () => { touch.jumpHeld = false; }); }
 }
 $('pausebtn').addEventListener('click', () => pauseGame());
 
@@ -699,7 +711,7 @@ function moveInput() {
 const hud = {
   money: $('money'), alarm: $('alarm'), health: $('health').firstElementChild, timer: $('timer'),
   objective: $('objective'), prompt: $('prompt'), phone: $('phone'), toast: $('toast'), banner: $('banner'),
-  umbrellas: $('umbrellas'), street: $('street'), crosshair: $('crosshair'), ammo: $('ammo'), boost: $('boostbar').firstElementChild, clock: $('clock'),
+  umbrellas: $('umbrellas'), street: $('street'), crosshair: $('crosshair'), ammo: $('ammo'), boost: $('boostbar').firstElementChild, clock: $('clock'), combo: $('combo'),
 };
 const punchBtn = document.querySelector('#touch [data-k="punch"]'), handBtn = document.querySelector('#touch [data-k="gun"]');
 const gullSvg = '<svg viewBox="0 0 32 18" aria-hidden="true"><path d="M1 6c5-3 10-2 15 4 5-6 10-7 15-4-4 0-9 3-11 8l-4 1-4-1C10 9 5 6 1 6z"/></svg>';
@@ -1172,50 +1184,116 @@ const STREET_LINES = {
     'I min tid gikk vi opp disse bakkene to ganger om dagen.', 'Paraply? Nei, det e for østlendinger.', 'Hørte du buekorpset i går? Det var tider, det.',
     'Kossen går du, gutten min?!', 'Au! Ryggen min!', 'Din tufs!', 'Herregud, ka e det med ungdommen i dag?',
     'De sparkesyklene skulle vært forbudt!', 'Sakte, for pokker!',
-    'Nei, nei, nei, eg e for gammel for dette!', 'Ring politiet! Nei, ring kona mi!'],
+    'Nei, nei, nei, eg e for gammel for dette!', 'Ring politiet! Nei, ring kona mi!',
+    'Eg har bodd her i sytti år, og det har aldri vært tørt en tirsdag.', 'Fløibanen var bedre før. Alt var bedre før.',
+    'Kjenner du Arne? Nei? Ingen kjenner Arne lenger.', 'Ser du måken der? Han har fulgt meg siden Torget.',
+    'Brann mot Rosenborg på søndag. Da skal eg rope.', 'Eg fikk ikkje vanlig kaffe. De har bare latte.',
+    'Du har ikkje førerkort på den der, vel?!', 'I min tid hadde syklene pedaler!',
+    'Hoho! Det der hadde ikkje eg klart. Ikkje før heller.', 'Bravo, gutten min. Men du kommer til å brekke noe.'],
   m2: ['Skal du på byen i kveld, eller?', 'Eg sa til han: Dette e ikkje Norge, dette e Bergen.',
     'Har du sett kor mye en skillingsbolle koster nå?', 'Seks grader og pøsregn. Shortsvær.', 'En måke tok kebaben min på Torget. Hele kebaben.',
     'Ey! Ser du ikkje kor du går?', 'Seriøst, kompis?', 'Fysj, telefonen min!', 'Gidder du, eller?',
     'Ey, det e min sparkesykkel!', 'Sjukt! Gjør det igjen!',
-    'Nei, nei, eg stikker!', 'Dette skal på Snapchat.'],
+    'Nei, nei, eg stikker!', 'Dette skal på Snapchat.',
+    'Eg har eksamen i morgen. Eg har lest én side.', 'Kor e nachspielet i kveld, egentlig?',
+    'Har du sett jakken min? Eg mistet den på Kvarteret.', 'Eg tok Fløibanen opp og gikk ned. Ferdig med trening for i år.',
+    'Pizza på Johnny\'s klokka tre om natta. Det e kultur, det.', 'Studielånet kom i dag. Studielånet e borte i dag.',
+    'Ey! Kan eg låne den, eller?', 'Ka e det du kjører på, en rakett?',
+    'Yo! Gjør den igjen, eg filmer!', 'Det der e jo helt sjukt, kompis!'],
   f1: ['Fisketorget e bare for turister nå. Bare turister!', 'Tre cruiseskip i dag. Tre! Man kommer seg ikkje frem.',
     'Det e ikkje dårlig vær, bare dårlige klær.', 'Hun på Rema sa det skal bli sol på torsdag. Ha!', 'Svigersønnen min e fra Oslo. Men han e snill, da.',
     'Uff! Posene mine!', 'Neimen, har du sett!', 'Du burde skamme deg!', 'Kem e foreldrene dine?!',
     'På fortauet?! Nei, nå får det være nok!', 'Eg skal skrive til BT om deg!',
-    'Herregud, ikkje skyt! Eg har fisk i posen!', 'Dette hadde aldri skjedd på Kalfaret!'],
+    'Herregud, ikkje skyt! Eg har fisk i posen!', 'Dette hadde aldri skjedd på Kalfaret!',
+    'Reker på Fisketorget. Nitti kroner hekto. Nitti!', 'Eg har gått i Nordnesparken hver morgen i tjue år. Regn eller regn.',
+    'Datteren min bor i Oslo nå. Hun sier det e tørt der. Stakkars.', 'De har flyttet bussholdeplassen igjen. Uten å spørre meg.',
+    'Fiskesuppe på torsdag. Det e det eneste rette.', 'Har du sett hva et brød koster nå? Sånn ble det.',
+    'Det e fortau, ikkje motorvei!', 'Eg skal ringe kommunen om deg!',
+    'Nei, nå har eg sett alt. Herregud.', 'Moren din vet ikkje om dette, gjør hun?'],
   f2: ['Nei, eg står på Torgallmenningen. Kor e du?', 'Se! Det e sol på Fløyen! …Nei, nå e den borte.',
     'Eg skal løpe opp på Ulriken i morgen. Kanskje.', 'Har du prøvd reinsdyrpølsen på Trekroneren?', 'Regnjakke, paraply, gummistøvler. Klar for sommeren!',
     'Au! Hallo?!', 'Neimen, ka driver du med?!', 'Kaffen min! Den var helt ny!', 'Du må jo se deg for!',
     'Wow. Okei. Fint for deg.', 'Hjelm, kanskje?!',
-    'Mamma, eg ringer deg tilbake!', 'Løp! Alle sammen, løp!'],
+    'Mamma, eg ringer deg tilbake!', 'Løp! Alle sammen, løp!',
+    'Se, det letter! Det letter! …Nei.', 'Eg har kjøpt solkrem. Bare i tilfelle.',
+    'Neste uke skal det bli fint. Eg har en god følelse.', 'Ja, eg kommer! Eg e der om fem minutter! …Eller tjue.',
+    'Pils på Bryggen i kveld? Det e sikkert sol til da.', 'Eg elsker lyden av regn. Eg elsker den. Virkelig.',
+    'Ooh, kan eg sitte på?', 'Sånn! Ut og kjør i regnet!',
+    'Wow! Det e jo talent, det!', 'Eg la den ut på Instagram! Du e berømt nå!'],
+  // two more, once they're recorded: an American off a cruise ship, and a grandmother from Nordnes
+  m3: ['Excuse me, is this the famous Bryggen? Oh. It\'s a car park.', 'Honey, take a picture of the rain! Real Norwegian rain!',
+    'We have four hours in Bergen. Where are the fjords?', 'Is it always this… moist?', 'I bought a troll. Twelve hundred kroner. Worth every penny.',
+    'Oh my God! Linda, I\'ve been hit!', 'Whoa, whoa! Is that legal here?', 'My poncho! My brand new poncho!', 'Well, that\'s not in the brochure!',
+    'Gosh, the locals sure are in a hurry!', 'Hey! Is that one of those rental scooters?',
+    'Was that a gunshot? Back to the ship! Back to the ship!', 'Linda! Linda, get down!',
+    'Which way to the fish market? The one with the shrimp sandwiches?', 'They said it rains two hundred days a year. We got lucky!',
+    'Is that the mountain with the cable car, or the one with the train?', 'Linda says I can\'t buy another sweater. I\'m buying another sweater.',
+    'Takk. Tack. Tuck? Did I say that right?', 'Everybody here is so tall. And so wet.',
+    'Yeehaw! Go get \'em, Viking!', 'Slow down, son, this ain\'t Texas!',
+    'Linda, did you get that?! Tell me you got that!', 'Bravo! Is this some kind of Norwegian festival?'],
+  f3: ['Eg har strikket fire gensere i år. Og det e bare februar.', 'Hjemme hos oss het det ikkje regn. Det het vær.',
+    'Kom deg i en jakke, gutt. Du blir forkjølet.', 'Eg har sett ni tusen cruiseskip. De ser like ut, alle sammen.', 'Barnebarnet mitt sier eg må på Snapchat. Eg sa nei.',
+    'Uff da! Nå datt eg!', 'Har du ikkje lært folkeskikk?!', 'Neimen, ka e det du driver med, gutten?!', 'Eg skal si det til moren din!',
+    'Sakte! Eg har gått her siden krigen!', 'Sånne ting skulle ikkje vært lov på Nordnes!',
+    'Herregud, skyting! Kom dere inn, alle sammen!', 'Nei, nei! Ikkje i min gate!',
+    'Vaffelrøre har eg i kjøleskapet. Hvis noen spør.', 'Alle skal ha havremelk nå. Ka e galt med melk?',
+    'Eg gikk opp Skivebakken i dag. To ganger. Eg e åttifire.', 'På lørdag e det buekorps. Da sitter eg i vinduet.',
+    'Skillingsbollen var større før. Sånn e det bare.', 'Pass deg for måkene. De tok luen min i fjor.',
+    'Nei, se på han! Som en villmann!', 'Hjelm! Har du ikkje hjelm?!',
+    'Hoi! Det minner meg om min Olav. Han var også gal.', 'Gjør det der en gang til, gutten, så ringer eg presten.'],
 };
 // the lines of each kind (1-based), and how much each matters: a line cuts off one of the same
 // or lower priority, and waits for one of higher
-const LINE_KINDS = { past: { from: 1, to: 5, prio: 0 }, scooter: { from: 10, to: 11, prio: 1 }, hit: { from: 6, to: 9, prio: 2 }, scared: { from: 12, to: 13, prio: 2 } };
-const VOICES = ['m1', 'm2', 'f1', 'f2'];
-// hair to go with the voice: Gubben is grey, the women wear it long
+const LINE_KINDS = {
+  past: { ids: [1, 2, 3, 4, 5, 14, 15, 16, 17, 18, 19], prio: 0 },
+  trick: { ids: [22, 23], prio: 0 },
+  scooter: { ids: [10, 11, 20, 21], prio: 1 },
+  hit: { ids: [6, 7, 8, 9], prio: 2 },
+  scared: { ids: [12, 13], prio: 2 },
+};
+const lineId = (voice, i) => `ped_${voice}_${String(i).padStart(2, '0')}`;
+// The four voices from the start, and any new one as soon as some of its lines are recorded
+const VOICES = ['m1', 'm2', 'f1', 'f2', 'm3', 'f3'].filter((v, k) => k < 4 || STREET_LINES[v].some((_, i) => lineDur(lineId(v, i + 1))));
+// hair to go with the voice: Gubben is grey, the women wear it long, Bestemor's is white
 const VOICE_LOOK = {
   m1: { hair: [0x8a8a8a, 0xbdb9b2], longHair: false },
   m2: { hair: [0x3a2618, 0x1d1d1d, 0x6b4a2a], longHair: false },
   f1: { hair: [0x8a8a8a, 0x6b4a2a, 0xa8906e], longHair: true },
   f2: { hair: [0xc9a26b, 0x3a2618, 0x8a2e1e], longHair: true },
+  m3: { hair: [0xbdb9b2, 0xa8906e], longHair: false, hat: 0xd9b75a },
+  f3: { hair: [0xe6e2da, 0xcfcac2], longHair: true },
 };
 const lastLine = {};                 // voice and kind -> the line said last, so it isn't said twice running
 const street = { quietT: 6, scaredT: 0 };   // until someone else on the street may start talking, or cry out at a shot
 const _camF = new THREE.Vector3();
-// a passer-by says a line of the given kind, out loud if it has been recorded
+// a passer-by says a line of the given kind, out loud if it has been recorded (and only lines
+// that have been, once any of that kind are)
 function talk(n, kind) {
   if (!n.voice) { say(n, LINES[Math.floor(Math.random() * LINES.length)]); return; }
   const K = LINE_KINDS[kind], key = n.voice + kind;
-  let i = K.from + Math.floor(Math.random() * (K.to - K.from + 1));
-  if (i === lastLine[key] && K.to > K.from) i = i === K.to ? K.from : i + 1;
+  const heard = K.ids.filter(i => lineDur(lineId(n.voice, i)));
+  const pool = (heard.length ? heard : K.ids).filter(i => i <= STREET_LINES[n.voice].length);
+  if (!pool.length) return;
+  let i = pool[Math.floor(Math.random() * pool.length)];
+  if (i === lastLine[key] && pool.length > 1) i = pool[(pool.indexOf(i) + 1) % pool.length];
   lastLine[key] = i;
-  const id = `ped_${n.voice}_${String(i).padStart(2, '0')}`;
+  const id = lineId(n.voice, i);
   // a remark in passing waits until its recording has loaded, so nobody mouths it in silence
   if (K.prio === 0 && audio.ctx && audio.on && lineDur(id) && !audio.ready(id)) return;
   // heard from where they are, and following them as they walk on (audio.listen has your ears)
   audio.speak(id, n.pos, K.prio);
   say(n, STREET_LINES[n.voice][i - 1], lineDur(id));
+}
+// someone who saw you land a trick says something about it (now and then)
+function cheer(at) {
+  if (street.quietT > 0 || audio.speaking(0) || Math.random() > 0.45) return;
+  let best = null, bd = 14;
+  for (const n of npcs) {
+    if (n.active || n.mate || !n.voice || !n.placed || n.downT > 0 || !n.fig.root.visible) continue;
+    const d = n.pos.distanceTo(at);
+    if (d < bd) { bd = d; best = n; }
+  }
+  if (best) { talk(best, 'trick'); street.quietT = 6 + Math.random() * 5; }
 }
 const npcs = [];
 const NPC_N = isTouch ? 14 : 30;
@@ -1238,9 +1316,9 @@ function placeNpc(n, near) {
 }
 for (let k = 0; k < NPC_N; k++) {
   const voice = VOICES[k % VOICES.length], V = VOICE_LOOK[voice];
-  const fig = new Humanoid({ jacket: jackets[k % jackets.length], pants: [0x2b3140, 0x3b3b3b, 0x4a3a2c][k % 3], hat: Math.random() < 0.5 ? null : [0x2c4c7a, 0x7a2e28, 0x3b3b3b][k % 3], hair: V.hair[Math.floor(k / VOICES.length) % V.hair.length], longHair: V.longHair, umbrella: umbrellaCols[k % umbrellaCols.length] });
+  const fig = new Humanoid({ jacket: jackets[k % jackets.length], pants: [0x2b3140, 0x3b3b3b, 0x4a3a2c][k % 3], hat: V.hat || (Math.random() < 0.5 ? null : [0x2c4c7a, 0x7a2e28, 0x3b3b3b][k % 3]), hair: V.hair[Math.floor(k / VOICES.length) % V.hair.length], longHair: V.longHair, umbrella: umbrellaCols[k % umbrellaCols.length] });
   scene.add(fig.root);
-  const n = { fig, voice, a: 0, b: 0, t: 0, pos: new THREE.Vector3(), heading: 0, downT: 0, speed: (voice === 'm1' ? 0.85 : 1.1) + Math.random() * 0.4, bubble: null, bubbleT: 0, fall: 0, off: 0, talkT: Math.random() * 20, passT: 0, panicT: 0 };
+  const n = { fig, voice, a: 0, b: 0, t: 0, pos: new THREE.Vector3(), heading: 0, downT: 0, speed: ({ m1: 0.85, f3: 0.7, m3: 0.9 }[voice] || 1.1) + Math.random() * 0.4, bubble: null, bubbleT: 0, fall: 0, off: 0, talkT: Math.random() * 20, passT: 0, panicT: 0, nearT: 0, passMin: Infinity, passDone: false };
   npcs.push(n);
 }
 // ---- the people who live at Cappes vei 6
@@ -1499,7 +1577,7 @@ function endService(w, line) {
 // she gets off on the left of the scooter (you get off on the right)
 function dropOff(w, line) {
   const s = w.ride.s;
-  w.ride = null; w.away = true;
+  w.ride = null; w.away = true; s.rock = 0; w.fig.ride = null;
   const sx = -Math.cos(s.heading) * 0.8, sz = Math.sin(s.heading) * 0.8;
   w.pos.set(s.pos.x + sx, s.pos.y, s.pos.z + sz);
   world.collide(w.pos, RADIUS, HEIGHT, STEP);
@@ -1536,14 +1614,15 @@ function updatePassenger(w, dt) {
   // rock the scooter while it's going on (after the scooter and the rider have been posed)
   r.rock = damp(r.rock, r.serving ? 1 : 0, 4, dt);
   const rk = Math.sin(time * 9) * 0.06 * r.rock;
-  s.obj.rotation.z += rk; player.fig.root.rotation.z += rk;
+  s.rock = rk;                       // scooterRot tilts the scooter and both riders by it
   // she stands on the back of the deck, holding on
-  const bx = -Math.sin(s.heading) * 0.36, bz = -Math.cos(s.heading) * 0.36;
-  w.pos.set(s.pos.x + bx, s.pos.y, s.pos.z + bz);
+  const q = scooterRot(s, true);
+  scooterAt(s, w.pos).add(_v.set(0, 0.17 + Math.abs(rk) * 0.4, -0.36).applyQuaternion(q));
+  w.fig.ride = player.fig.ride;
   w.fig.animate(dt, 0, 'ride');
   w.fig.root.visible = true;
-  w.fig.root.position.copy(w.pos).add(_v.set(0, 0.17 + Math.abs(rk) * 0.4, 0));
-  w.fig.root.rotation.set(s.tilt, s.heading, s.lean + rk, 'YXZ');
+  w.fig.root.position.copy(w.pos);
+  w.fig.root.quaternion.copy(q);
   w.fig.body.rotation.z = 0;
   if (w.bubble) { w.bubbleT -= dt; if (w.bubbleT <= 0) { w.fig.root.remove(w.bubble); w.bubble = null; } }
 }
@@ -1628,17 +1707,28 @@ function updateNpcs(dt) {
       if (pSpeed > 5) knockNpc(n, player.pos);
       else { player.pos.x += dx / d * (0.6 - d); player.pos.z += dz / d * (0.6 - d); }
     }
-    // Talk as you go by: a word to you when you walk past (now and then: one person at a time,
-    // and nobody says something every time), and a shout after a scooter that went by too fast
-    n.talkT -= dt; n.passT -= dt;
-    if (state.mode === 'play' && n.downT <= 0 && n.fig.root.visible && Math.abs(player.pos.y - n.pos.y) < 1.5) {
-      if (player.riding && pSpeed > 6 && d > 0.6 && d < 3.5 && n.passT <= 0 && street.quietT < 4 && !audio.speaking(1)) {
-        talk(n, 'scooter'); n.passT = 20; street.quietT = Math.max(street.quietT, 3);
-      } else if (!player.riding && d < 3 && n.talkT <= 0 && street.quietT <= 0 && !audio.speaking(0)) {
-        if (Math.random() < 0.6) { talk(n, 'past'); street.quietT = 8 + Math.random() * 8; }
-        n.talkT = 45 + Math.random() * 30;
+    // Talk as you go by. Each time you pass someone they decide, once, at the moment you're
+    // closest, whether to say anything: the closer you came, the likelier, and most let you go by
+    // without a word. A remark when you walk past; a shout after a scooter going too fast. Only
+    // one person talks at a time, with a pause after, so every line gets room to be heard.
+    n.talkT -= dt; n.passT -= dt; n.nearT -= dt;
+    if (state.mode === 'play' && n.downT <= 0 && n.fig.root.visible && Math.abs(player.pos.y - n.pos.y) < 1.5 && d < 5) {
+      if (d < n.passMin) n.passMin = d;
+      else if (!n.passDone && d > n.passMin + 0.25) {
+        n.passDone = true;
+        const close = 1 - clamp((n.passMin - 0.6) / 3.4, 0, 1);       // 1 brushing past, 0 four metres off
+        if (player.riding && pSpeed > 6) {
+          if (n.passT <= 0 && street.quietT <= 0 && !audio.speaking(1) && Math.random() < 0.6 * close ** 1.5) {
+            talk(n, 'scooter'); n.passT = 25; street.quietT = 5 + Math.random() * 4;
+          }
+        } else if (n.talkT <= 0 && street.quietT <= 0 && !audio.speaking(0)) {
+          if (Math.random() < 0.5 * close ** 1.5) { talk(n, 'past'); street.quietT = 8 + Math.random() * 8; n.talkT = 45 + Math.random() * 30; }
+          else n.talkT = 6;
+        }
       }
-    }
+      // a near miss: past them fast, close, without knocking them over
+      if (player.riding && pSpeed > 8 && d < 1.4 && d > 0.6 && n.nearT <= 0 && !n.mate) { n.nearT = 5; comboAdd('Near miss', 5); }
+    } else if (d >= 5) { n.passMin = Infinity; n.passDone = false; }
     n.fig.animate(dt, n.downT > 0 ? 0 : n.speed * (n.panicT > 0 ? 2.6 : 1), 'walk');
     n.fig.root.position.copy(n.pos);
     n.fig.root.rotation.set(0, n.downT > 0 ? n.fallDir : n.heading, 0);
@@ -1694,37 +1784,127 @@ addScooter(-552, -410, 0.8);          // Bryggen
     added++;
   }
 }
-// Tricks (right-click, or T): a hop with a tailwhip, a 360 (hold A or D) or a backflip (hold S).
-// Land it all the way round for a few kroner and some boost; land halfway round and you crash.
+// Riding: Space pops an ollie (hold it to crouch, let go to jump: the longer the crouch, the
+// higher). In the air, Space again does a trick: a tailwhip, a 360 (hold A or D) or a backflip
+// (hold S); T is a no-hander. With nothing pressed, A and D spin the scooter round by hand: land
+// facing the way you're going. Tricks, spins, air, drifts and near misses add up to a combo, paid
+// out in kroner (times the number of tricks in it) once you've ridden on clean for a moment. A
+// wipeout loses the lot.
 const TRICKS = {
-  tailwhip: { name: 'Tailwhip', dur: 0.45, vy: 5.8, kr: 20 },
-  spin: { name: '360', dur: 0.5, vy: 5.8, kr: 15 },
-  backflip: { name: 'Backflip', dur: 0.62, vy: 7.6, kr: 40 },
+  tailwhip: { name: 'Tailwhip', dur: 0.45, kr: 20 },
+  spin: { name: '360', dur: 0.5, kr: 15 },
+  backflip: { name: 'Backflip', dur: 0.62, kr: 40 },
+  nohander: { name: 'No Hander', dur: 0.55, kr: 25 },
 };
+const OLLIE = { min: 4.4, max: 7.8, charge: 0.4 };    // pop speed (m/s) with no crouch and a full one, and how long a full crouch takes
+const G_SC = 20;                                       // gravity on a scooter: a little more than real, for snappy air
 const turbo = { charge: 1, on: false };
-function startTrick(s, input) {
-  if (s.trick) return;
-  const kind = input.y < -0.3 ? 'backflip' : Math.abs(input.x) > 0.3 ? 'spin' : 'tailwhip';
-  const T = TRICKS[kind];
-  const fl = world.floorAt(s.pos.x, s.pos.z, s.pos.y + 0.1, 0.5);
-  if (s.pos.y <= fl + 0.06) { s.vy = T.vy; s.pos.y += 0.02; audio.jump(); }
-  else if (s.vy < -2) return;                       // too late to start one: already coming down
-  s.trick = { kind, t: 0, dur: T.dur, dir: input.x > 0 ? -1 : 1, air: false };
+// ---- combos
+const combo = { kr: 0, n: 0, parts: [], idle: 0 };
+const comboMult = () => clamp(combo.n, 1, 5);
+function comboAdd(name, kr, trick = false) {
+  combo.kr += kr; if (trick) combo.n++;
+  combo.parts.push(name);
+  combo.idle = 0;
+  showCombo();
 }
-const _tq = new THREE.Quaternion(), _te = new THREE.Euler(), _tpv = new THREE.Vector3();
-// the trick's rotation for the deck, and for the rider (who stays put through a tailwhip),
-// both turning about a point 0.9 m above the deck
-function trickRot(s, rider) {
-  const tr = s.trick, k = Math.min(1, tr.t / tr.dur), e = k * k * (3 - 2 * k), turn = Math.PI * 2 * e;
-  const yaw = tr.kind === 'spin' || (tr.kind === 'tailwhip' && !rider) ? turn * tr.dir : 0;
-  const pitch = tr.kind === 'backflip' ? -turn : 0;
-  return _tq.setFromEuler(_te.set(s.tilt + pitch, s.heading + yaw, s.lean, 'YXZ'));
+function comboClear() { combo.kr = 0; combo.n = 0; combo.parts = []; combo.idle = 0; showCombo(); }
+function comboBank() {
+  if (combo.kr > 0) {
+    const m = comboMult(), total = Math.round(combo.kr * m);
+    save.money += total; persist();
+    audio.coin();
+    const list = combo.parts.length > 4 ? `${combo.parts.slice(0, 3).join(' + ')} + ${combo.parts.length - 3} more` : combo.parts.join(' + ');
+    toast(`${list}${m > 1 ? `  ×${m}` : ''}  +${total} kr`, 2.4);
+  }
+  comboClear();
+}
+function showCombo() {
+  const el = hud.combo;
+  if (!el) return;
+  el.hidden = !combo.parts.length;
+  if (el.hidden) return;
+  const m = comboMult(), shown = combo.parts.slice(-4);
+  el.innerHTML = `<b>${shown.join(' + ')}</b><span>${Math.round(combo.kr)} kr${m > 1 ? ` <em>×${m}</em>` : ''}</span>`;
+  el.classList.remove('pop'); void el.offsetWidth; el.classList.add('pop');
+}
+function trickDone(s, tr) {
+  const T = TRICKS[tr.kind];
+  comboAdd(T.name, T.kr, true);
+  turbo.charge = Math.min(1, turbo.charge + 0.2);
+  audio.pickup();
+  s.tricked = (s.tricked || 0) + 1;
+}
+// ---- popping and tricks
+function ollie(s, k) {
+  s.vy = lerp(OLLIE.min, OLLIE.max, clamp(k, 0, 1)) + Math.max(0, s.gvy || 0) * 0.5;   // off a slope going up, you go higher
+  s.air = true; s.airT = 0; s.airSpin = 0; s.tricked = 0;
+  s.pos.y += 0.02;
+  audio.jump();
+}
+function startTrick(s, input, kind) {
+  if (s.trick || !s.air || s.vy < -3.5) return;     // too late: already coming down fast
+  kind = kind || (input.y < -0.3 ? 'backflip' : Math.abs(input.x) > 0.3 ? 'spin' : 'tailwhip');
+  s.trick = { kind, t: 0, dur: TRICKS[kind].dur, dir: input.x > 0 ? -1 : 1 };
+}
+const _tq = new THREE.Quaternion(), _te = new THREE.Euler(), _tpv = new THREE.Vector3(), _tpo = new THREE.Vector3();
+// The scooter's rotation, with the trick's on top: for the deck, or for the rider (who stays put
+// through a tailwhip). Tricks turn about a point 0.9 m above the deck.
+function scooterRot(s, rider) {
+  let yaw = 0, pitch = 0;
+  const tr = s.trick;
+  if (tr && tr.kind !== 'nohander') {
+    const k = Math.min(1, tr.t / tr.dur), e = k * k * (3 - 2 * k), turn = Math.PI * 2 * e;
+    if (tr.kind === 'spin' || (tr.kind === 'tailwhip' && !rider)) yaw = turn * tr.dir;
+    if (tr.kind === 'backflip') pitch = -turn;
+  }
+  return _tq.setFromEuler(_te.set(s.tilt + (s.pitchV || 0) + pitch, s.heading + yaw, s.lean + (s.rock || 0), 'YXZ'));
 }
 function pivotOffset(q, h, out) { return out.set(0, h, 0).applyQuaternion(q).multiplyScalar(-1).add(_tpv.set(0, h, 0)); }
-function poseTrick(s) {
-  const q = trickRot(s, false);
+// where the scooter is drawn: on its springs, a little apart from where it physically is
+function scooterAt(s, out) { return out.set(s.pos.x, s.ry === undefined ? s.pos.y : s.ry, s.pos.z); }
+function poseScooter(s) {
+  const q = scooterRot(s, false);
   s.obj.quaternion.copy(q);
-  s.obj.position.copy(s.pos).add(pivotOffset(q, 0.9, _v));
+  scooterAt(s, s.obj.position);
+  if (s.trick) s.obj.position.add(pivotOffset(q, 0.9, _tpo));
+}
+// ---- walls
+const _tn = { x: 0, z: 0 };
+function terrainNormal(x, z, fwd, out) {
+  const t = world.terrain, e = 0.4;
+  const gx = t.ground(x + e, z) - t.ground(x - e, z), gz = t.ground(x, z + e) - t.ground(x, z - e), l = Math.hypot(gx, gz);
+  if (!(l > 1e-6) || !isFinite(l)) { out.x = -fwd.x; out.z = -fwd.z; } else { out.x = -gx / l; out.z = -gz / l; }
+  return out;
+}
+// Into a wall, a building, a parked car or a bank of earth: (nx, nz) points out of it. Head-on and
+// fast is a wipeout; otherwise the scooter keeps the speed it had along the wall (less a little
+// for the scrape) and turns to run along it, instead of grinding into it frame after frame.
+// Returns true for a wipeout.
+function scooterWall(s, nx, nz, ridden, fwd) {
+  let vx = fwd.x * s.speed, vz = fwd.z * s.speed;
+  const sp0 = Math.hypot(vx, vz);
+  if (sp0 < 1e-3) return false;
+  const into = -(vx * nx + vz * nz) / sp0;          // 1 head-on, 0 grazing, below 0 moving away
+  if (into <= 0) return false;
+  if (ridden && sp0 > 8 && into > 0.6) return true;
+  const vn = vx * nx + vz * nz, bounce = into > 0.8 ? 1.25 : 1;
+  vx -= nx * vn * bounce; vz -= nz * vn * bounce;
+  const keep = 1 - 0.3 * into;
+  vx *= keep; vz *= keep;
+  const imp = -vn;
+  if (imp > 1.5) {
+    audio.bump();
+    if (ridden) { s.rvy += imp * 0.25; cam.shake = Math.max(cam.shake, Math.min(0.35, imp * 0.04)); }
+    if (imp > 4) emit(_v.set(s.pos.x - nx * 0.3, s.pos.y + 0.3, s.pos.z - nz * 0.3), 6, { color: 0xffc860, speed: 2.5, up: 1, spread: 1, life: 0.2, grav: 6 });
+  }
+  const sp = Math.hypot(vx, vz);
+  if (sp > 0.05) {
+    if (vx * Math.sin(s.heading) + vz * Math.cos(s.heading) >= 0) { s.speed = sp; s.vdir = Math.atan2(vx, vz); }
+    else { s.speed = -sp; s.vdir = Math.atan2(-vx, -vz); }
+    if (!s.air && into < 0.85) s.heading += angDiff(s.heading, s.vdir) * 0.6;
+  } else s.speed = 0;
+  return false;
 }
 const scInfo = {};
 function updateScooter(s, dt, input) {
@@ -1732,66 +1912,99 @@ function updateScooter(s, dt, input) {
   // parked and still: nothing to simulate until someone rides it or shoots it
   if (!ridden && s.asleep) return false;
   if (s.vdir === undefined) s.vdir = s.heading;
-  // the scooter points along `heading` but travels along `vdir`: they only part in a drift
+  if (s.ry === undefined || Math.abs(s.ry - s.pos.y) > 2) { s.ry = s.pos.y; s.rvy = 0; }
+  s.gvy = s.gvy || 0; s.steer = s.steer || 0; s.pitchV = s.pitchV || 0; s.wobble = s.wobble || 0;
+  if (s.vy > 0.01 && !s.air) { s.air = true; s.airT = 0; s.airSpin = 0; s.tricked = 0; }   // knocked into the air (by a shot)
+  const air = !!s.air, speed0 = s.speed;
+  // the scooter points along `heading` but travels along `vdir`: they part in a drift, and in the air
   const fwd = _v2.set(Math.sin(s.vdir), 0, Math.cos(s.vdir));
-  // ground and slope
+  const hx = Math.sin(s.heading), hz = Math.cos(s.heading);
   const fl = world.floorAt(s.pos.x, s.pos.z, s.pos.y + 0.1, 0.5, scInfo);
-  const onStairs = (scInfo.block && scInfo.block.stairs) || city.onSteps(s.pos.x, s.pos.z);
-  const grounded = s.pos.y <= fl + 0.05;
+  const onStairs = !air && ((scInfo.block && scInfo.block.stairs) || city.onSteps(s.pos.x, s.pos.z));
+  // the slope under the two wheels
   let slope = 0;
-  if (grounded) {
-    const hf = world.floorAt(s.pos.x + fwd.x * 0.6, s.pos.z + fwd.z * 0.6, s.pos.y + 0.6, 0.9);
-    const hb = world.floorAt(s.pos.x - fwd.x * 0.6, s.pos.z - fwd.z * 0.6, s.pos.y + 0.6, 0.9);
-    if (hf > -50 && hb > -50) slope = (hf - hb) / 1.2;
+  if (!air && fl > -1e8) {
+    const hf = world.floorAt(s.pos.x + hx * 0.47, s.pos.z + hz * 0.47, s.pos.y + 0.6, 0.9);
+    const hb = world.floorAt(s.pos.x - hx * 0.47, s.pos.z - hz * 0.47, s.pos.y + 0.6, 0.9);
+    if (hf > -50 && hb > -50) slope = clamp((hf - hb) / 0.94, -1.2, 1.2);
   }
-  // Drift: hold Shift (Run) at speed and the back wheel lets go. The scooter turns faster than it
-  // travels, so it slides sideways; let go of Shift after a good drift for a burst of speed.
-  const drifting = ridden && grounded && input.drift && s.speed > 4 && !onStairs;
-  // Boost: hold Shift (Run). It drains the meter and refills slowly, and faster after a drift.
+  const v = Math.abs(s.speed);
+  // Drift: hold the right mouse button at speed and the back wheel lets go. The scooter turns
+  // faster than it travels, so it slides sideways; let go after a good drift for a burst of speed.
+  const drifting = ridden && !air && input.drift && s.speed > 4 && !onStairs;
+  // Boost: hold Shift (Run). It drains the meter and refills slowly, and faster after tricks.
   const boosting = ridden && input.run && turbo.charge > 0.01 && s.speed > -0.5;
-  turbo.on = boosting;
-  if (ridden) turbo.charge = clamp(turbo.charge + (boosting ? -dt / 3.2 : dt / 10), 0, 1);
+  if (ridden) { turbo.on = boosting; turbo.charge = clamp(turbo.charge + (boosting ? -dt / 3.2 : dt / 10), 0, 1); }
   if (drifting && !s.drifting) s.driftT = 0;
   s.drifting = drifting;
-  if (ridden && grounded) {
-    const thr = input.y;
-    if (thr > 0) s.speed += thr * (s.speed < 0 ? 12 : 5.5) * dt;
-    else if (thr < 0) s.speed += thr * (s.speed > 0.5 ? 11 : 3) * dt;
-    if (boosting) s.speed += 9 * dt;
-    const turn = 2.3 * clamp(Math.abs(s.speed) / 3, 0.25, 1) * (s.speed < 0 ? -1 : 1) * (drifting ? 1.75 : 1);
-    s.heading -= input.x * turn * dt;
-    s.lean = damp(s.lean, -input.x * clamp(s.speed / 10, 0, 1) * (drifting ? 0.6 : 0.35), 6, dt);
-  } else s.lean = damp(s.lean, 0, 6, dt);
-  // grip: the direction of travel follows where the scooter points, slowly while drifting
-  const slip = angDiff(s.vdir, s.heading);
-  s.vdir += slip * Math.min(1, dt * (drifting ? 1.5 : grounded ? 14 : 2));
-  if (s.speed < 0.5) s.vdir = s.heading;
-  // never more than about 40 degrees sideways: past that a scooter would just fall over
-  { const sl = angDiff(s.vdir, s.heading); if (Math.abs(sl) > 0.7) s.vdir = s.heading - Math.sign(sl) * 0.7; }
+  // Steering: the bar turns over a moment rather than all at once, and the faster you go the less
+  // it turns (like a real two-wheeler): tight round the corners in Fjellet, steady on Fjellveien
+  const sIn = ridden ? input.x : 0, sRate = (sIn === 0 ? 9 : 6.5) * dt;
+  s.steer += clamp(sIn - s.steer, -sRate, sRate);
+  let yawRate = 0;
+  if (!air) {
+    const maxSteer = lerp(0.62, 0.12, clamp((v - 1) / 12, 0, 1));
+    yawRate = clamp(s.speed * Math.tan(s.steer * maxSteer) / 0.93, -2.5, 2.5);
+    if (v < 1.5 && ridden) yawRate += s.steer * 0.9 * (1 - v / 1.5);      // walking it round
+    if (drifting) yawRate *= 1.7;
+    if (onStairs) yawRate *= 0.6;
+    s.heading -= yawRate * dt;
+  } else if (ridden && !s.trick && Math.abs(input.x) > 0.1) {
+    const w = input.x * 9.5;                   // a spin by hand: a full turn off a big pop
+    s.heading -= w * dt; s.airSpin += Math.abs(w * dt);
+  }
+  // lean into the turn as much as the turn needs (and more in a drift); a wobble after a sketchy landing
+  const leanT = air ? 0 : clamp(-Math.atan(s.speed * yawRate / 9.8) * 0.5 * (drifting ? 1.4 : 1), -0.6, 0.6);
+  s.wobble = Math.max(0, s.wobble - dt * 1.6);
+  s.lean = damp(s.lean, leanT + Math.sin(time * 17) * 0.12 * s.wobble, air ? 3 : 8, dt);
+  // grip: the direction of travel follows where the scooter points, slowly in a drift, not at all in the air
+  if (!air) {
+    s.vdir += angDiff(s.vdir, s.heading) * Math.min(1, dt * (drifting ? 1.5 : 14));
+    if (v < 0.5) s.vdir = s.heading;
+    // never more than about 40 degrees sideways: past that a scooter would just fall over
+    const sl = angDiff(s.vdir, s.heading); if (Math.abs(sl) > 0.7) s.vdir = s.heading - Math.sign(sl) * 0.7;
+  }
   s.slip = angDiff(s.vdir, s.heading);
   if (drifting) {
     s.speed *= 1 - Math.min(0.9, Math.abs(Math.sin(s.slip))) * 0.55 * dt;   // sliding scrubs speed
     if (Math.abs(s.slip) > 0.2) s.driftT += dt;
   } else if (ridden && s.driftT > 0) {
     // let go after a proper drift: a boost, bigger for longer drifts
-    if (s.driftT > 0.6 && grounded) {
-      const b = Math.min(4, 1.2 + s.driftT * 1.4);
-      s.speed += b; s.boostT = 1.3;
+    if (s.driftT > 0.6 && !air) {
+      s.speed += Math.min(4, 1.2 + s.driftT * 1.4); s.boostT = 1.3;
       turbo.charge = Math.min(1, turbo.charge + Math.min(0.4, s.driftT * 0.15));
-      audio.start2(); cam.shake = Math.max(cam.shake, 0.25);
-      if (s.driftT > 1.5) { save.money += Math.round(s.driftT * 2); toast(`Drift! ${s.driftT.toFixed(1)} s  +${Math.round(s.driftT * 2)} kr`, 1.6); }
+      audio.start2(); cam.shake = Math.max(cam.shake, 0.2);
+      comboAdd(`Drift ${s.driftT.toFixed(1)} s`, Math.round(s.driftT * 6));
     }
     s.driftT = 0;
   }
   s.boostT = Math.max(0, (s.boostT || 0) - dt);
-  if (grounded) {
-    s.speed -= slope * 9.8 * 0.55 * dt;
-    s.speed *= 1 - (ridden && input.y !== 0 ? 0.25 : 0.9) * dt;
-    const maxS = onStairs ? 4.5 : 12.5 + (s.boostT > 0 || boosting ? 5 : 0);
-    s.speed = clamp(s.speed, -3, maxS);
-    if (onStairs && Math.abs(s.speed) > 1.5 && ridden) { cam.shake = Math.max(cam.shake, 0.35); if (Math.random() < dt * 8) audio.bump(); }
+  // speed along the ground
+  if (!air) {
+    const thr = ridden ? input.y : 0;
+    const top = onStairs ? 4.5 : 12.5 + (s.boostT > 0 || boosting ? 5 : 0);
+    let a = 0;
+    if (thr > 0) a = s.speed < -0.2 ? 14 * thr : thr * 7.5 * Math.max(0, 1 - (Math.max(0, s.speed) / top) ** 2);
+    else if (thr < 0) a = s.speed > 0.3 ? 13 * thr : s.speed > -3 ? 3.2 * thr : 0;
+    if (boosting) a += 9;
+    const hill = -slope / Math.hypot(1, slope) * 9.8 * 0.6;
+    // The handbrake: let go of the throttle at a crawl and the scooter stops, and stays stopped,
+    // on any hill. A parked one is held the same way.
+    if (thr === 0 && v < 1.2 && !drifting) {
+      const stop = 7 * dt;
+      s.speed = Math.abs(s.speed) <= stop ? 0 : s.speed - Math.sign(s.speed) * stop;
+    } else {
+      s.speed += (a + hill) * dt;
+      // rolling, the air, and a little regenerative braking when you let go (more with nobody on it)
+      const drag = ((thr === 0 ? 1.1 : 0.35) + (ridden ? 0 : 2.5) + 0.008 * v * v) * dt;
+      s.speed = Math.abs(s.speed) <= drag ? 0 : s.speed - Math.sign(s.speed) * drag;
+    }
+    if (s.speed > top) s.speed = damp(s.speed, top, onStairs ? 6 : 1.2, dt);
+    if (s.speed < -3) s.speed = -3;
+    // down the stairs it rattles: the springs take it, not the camera
+    if (onStairs && v > 1.5 && Math.random() < dt * 8) { s.rvy -= 0.6 + Math.random() * 0.6; if (ridden) audio.bump(); }
   }
-  // move
+  // move, in small steps
   const dist = s.speed * dt, n = Math.max(1, Math.ceil(Math.abs(dist) / 0.1));
   let crashed = false;
   for (let i = 0; i < n; i++) {
@@ -1801,39 +2014,86 @@ function updateScooter(s, dt, input) {
     const g1 = world.terrain.ground(s.pos.x, s.pos.z);
     if (g1 > s.pos.y + Math.abs(dist / n) * 1.2 + 0.08) {
       s.pos.x = px; s.pos.z = pz;
-      if (ridden && Math.abs(s.speed) > 7.5) { crashed = true; break; }
-      s.speed *= -0.2; audio.bump(); break;
+      const nr = terrainNormal(px, pz, fwd, _tn);
+      crashed = scooterWall(s, nr.x, nr.z, ridden, fwd);
+      break;
     }
     const hit = world.collide(s.pos, 0.35, 1.7, 0.45);
-    if (hit) {
-      const into = -(hit.nx * fwd.x + hit.nz * fwd.z);
-      if (ridden && Math.abs(s.speed) > 7.5 && into > 0.5) { crashed = true; break; }
-      s.speed *= into > 0.5 ? -0.25 : 0.9;
-      if (into > 0.5 && Math.abs(s.speed) > 1) audio.bump();
+    if (hit) { crashed = scooterWall(s, hit.nx, hit.nz, ridden, fwd); break; }
+  }
+  // up and down: on the ground it follows the ground, and leaves it off a ledge, or off a crest
+  // taken fast; in the air it falls
+  const y0 = s.pos.y;
+  let landed = false, impact = 0;
+  if (!s.air) {
+    const fl2 = world.floorAt(s.pos.x, s.pos.z, y0 + 0.1, 0.5);
+    const need = (fl2 - y0) / dt;              // how fast it has to go up (or down) to stay on the ground
+    const ledge = !(fl2 > -1e8) || y0 - fl2 > 0.45 + Math.abs(s.speed) * dt * 0.6;
+    const crest = Math.abs(s.speed) > 7 && s.gvy > 1.2 && need < s.gvy - 2.6;
+    if (ledge || crest) {
+      s.air = true; s.airT = 0; s.airSpin = 0; s.tricked = 0;
+      s.vy = crest ? clamp(s.gvy, 0, 6) * 0.85 : clamp(s.gvy, -2, 4);
+    } else {
+      s.pos.y = fl2;
+      if (Math.abs(need) < 4) s.gvy = lerp(s.gvy, need, Math.min(1, dt * 14));   // kerbs and steps don't count
     }
   }
-  // vertical
-  const fl2 = world.floorAt(s.pos.x, s.pos.z, s.pos.y + 0.1, 0.5);
-  const tr = s.trick;
-  if (tr) { tr.t += dt; if (s.pos.y > fl2 + 0.08) tr.air = true; }
-  let landed = false;
-  if (s.vy <= 0 && s.pos.y <= fl2 + 0.35 && (grounded || s.pos.y <= fl2)) { s.pos.y = fl2; if (s.vy < -6 && ridden) { audio.land(); cam.shake = 0.5; } s.vy = 0; landed = true; }
-  else { s.vy -= 20 * dt; s.pos.y += s.vy * dt; if (s.pos.y < fl2) { s.pos.y = fl2; s.vy = 0; landed = true; } }
-  if (tr && tr.air && landed) {
-    s.trick = null;
-    if (tr.t / tr.dur >= 0.85) {
-      const kr = TRICKS[tr.kind].kr;
-      save.money += kr; turbo.charge = Math.min(1, turbo.charge + 0.25);
-      audio.coin(); toast(`${TRICKS[tr.kind].name}!  +${kr} kr`, 1.6);
-    } else if (ridden) crashed = true;            // landed halfway round: that's a wipeout
+  if (s.air) {
+    s.airT += dt;
+    s.vy -= G_SC * dt;
+    s.pos.y += s.vy * dt;
+    const fl3 = world.floorAt(s.pos.x, s.pos.z, s.pos.y + 0.1, 0.5);
+    if (s.vy <= 0 && s.pos.y <= fl3) { s.pos.y = fl3; impact = -s.vy; s.vy = 0; s.air = false; s.gvy = 0; landed = true; }
   }
-  s.tilt = damp(s.tilt, -Math.atan(slope), 10, dt);
-  s.obj.position.copy(s.pos);
-  s.obj.rotation.set(s.tilt, s.heading, s.lean, 'YXZ');
-  if (s.trick) poseTrick(s);
+  // tricks: done once it has gone all the way round, and you can start another while still up
+  const tr = s.trick;
+  if (tr) {
+    tr.t += dt;
+    if (!landed && tr.t >= tr.dur) { if (ridden) trickDone(s, tr); s.trick = null; }
+  }
+  if (landed) {
+    if (s.trick) {
+      const k = s.trick.t / s.trick.dur;
+      if (k >= 0.85) { if (ridden) trickDone(s, s.trick); }
+      else if (k > 0.2 && ridden) crashed = true;   // landed halfway round: that's a wipeout
+      s.trick = null;
+    }
+    const off = Math.abs(angDiff(s.heading, s.vdir));
+    if (!crashed && ridden && Math.abs(s.speed) > 1.5) {
+      if (off > 1.25) crashed = true;                 // landed sideways
+      else if (off > 0.5) { s.speed *= 0.55; s.wobble = 1; toast('Sketchy!', 0.9); }
+    }
+    if (!crashed && ridden) {
+      const spins = Math.round(s.airSpin / (Math.PI * 2));
+      if (spins >= 1) comboAdd(`${spins * 360} spin`, 15 * spins * spins, true);
+      if (s.tricked || spins >= 1) cheer(s.pos);
+      if (s.airT > 0.75) comboAdd(`Air ${s.airT.toFixed(1)} s`, Math.round((s.airT - 0.5) * 24));
+      if (impact > 5.5) { audio.land(); cam.shake = Math.max(cam.shake, Math.min(0.5, impact * 0.035)); }
+      if (impact > 4) emit(_v.set(s.pos.x, s.pos.y + 0.05, s.pos.z), Math.min(14, Math.round(impact * 1.5)), { color: 0xcfd8dc, speed: 1.6, up: 1, spread: 1, life: 0.4 });
+    }
+    s.airSpin = 0;
+  }
+  // The deck rides on springs that follow the physics and smooth it: a kerb, a kink in the
+  // ground or a landing is taken up over a moment instead of in a single frame
+  {
+    const vFeed = s.air ? s.vy : s.gvy, K = 420, C = 33, m = Math.max(1, Math.ceil(dt / 0.008)), h = dt / m;
+    for (let i = 0; i < m; i++) {
+      s.rvy += (K * (s.pos.y - s.ry) + C * (vFeed - s.rvy)) * h;
+      s.ry += s.rvy * h;
+    }
+    if (s.ry < s.pos.y - 0.14) { s.ry = s.pos.y - 0.14; s.rvy = Math.max(s.rvy, vFeed); }
+    if (s.ry > s.pos.y + 0.3) { s.ry = s.pos.y + 0.3; s.rvy = Math.min(s.rvy, vFeed); }
+  }
+  // pitch: along the ground under the wheels, or nose along the jump in the air; and the nose
+  // lifts a little as you pull away and dips as you brake
+  s.tilt = damp(s.tilt, s.air ? clamp(-Math.atan2(s.vy, Math.max(5, Math.abs(s.speed))) * 0.6, -0.45, 0.45) : -Math.atan(slope), s.air ? 3 : 12, dt);
+  const acc = dt > 0 ? (s.speed - speed0) / dt : 0;
+  s.pitchV = damp(s.pitchV, s.air ? 0 : clamp(-acc * 0.006, -0.06, 0.07), 6, dt);
+  s.acc = acc;
+  poseScooter(s);
   if (!ridden) {
     if (Math.abs(s.speed) < 0.05) s.speed = 0;
-    s.asleep = s.speed === 0 && s.vy === 0 && s.pos.y <= fl2 + 1e-3;
+    s.asleep = s.speed === 0 && !s.air && s.vy === 0 && Math.abs(s.ry - s.pos.y) < 2e-3 && Math.abs(s.rvy) < 0.02;
   } else s.asleep = false;
   return crashed;
 }
@@ -2081,12 +2341,13 @@ function updateUmbrellas(dt, time) {
 // ------------------------------------------------------------------ places
 const PLACE_STYLE = {
   bar: { bg: '#2a1f3d', fg: '#f4d35e', line: 'One beer at Magda. Just one. The gulls lose track of you in here.' },
-  hotdog: { bg: '#b3261e', fg: '#ffffff', line: 'A pølse from Trekroneren, with everything. Health restored.' },
+  hotdog: { bg: '#b3261e', fg: '#ffffff', line: 'A pølse from Trekroneren, with everything. 50 kr. Health restored.' },
   shop: { bg: '#0d3a7a', fg: '#ffffff', line: 'Rema 1000 Marken: snacks for the party, and a little energy.' },
   food: { bg: '#a3121b', fg: '#f6d46b', line: 'Guangdong House. The most important place in Bergen.' },
   pizza: { bg: '#1f6a3a', fg: '#ffffff', line: 'A slice at Johnny’s. Health restored.' },
   office: { bg: '#2c6fb5', fg: '#ffffff', line: 'Myreze, Halfdan Kjerulfs gate 4. The office is up on the 4th floor.' },
 };
+const PLACE_PRICE = { hotdog: 50 };
 save.places = save.places || [];
 const PLACES = [...(map.places || []), { n: 'Myreze', k: 'office', x: OFFICE_STREET.x, z: OFFICE_STREET.z }].map(pl => {
   const st = PLACE_STYLE[pl.k];
@@ -2103,9 +2364,26 @@ function updatePlaces(dt, time) {
     pl.coolT -= dt;
     if (state.mode !== 'play' || pl.coolT > 0) continue;
     if (Math.hypot(player.pos.x - pl.x, player.pos.z - pl.z) > 6 || Math.abs(player.pos.y - pl.y) > 4) continue;
+    // you buy a pølse by stopping at the kiosk, not by riding past it
+    if (pl.k === 'hotdog' && (player.riding ? Math.abs(player.riding.speed) : Math.hypot(player.vel.x, player.vel.z)) > 3) continue;
     pl.coolT = 45;
     const first = !save.places.includes(pl.n);
     if (first) { save.places.push(pl.n); save.money += 50; persist(); }
+    // A pølse at Trekroneren is 50 kr. With a lady on the back of the scooter it's on the house:
+    // one of the boys Vipps you for it the moment they hear.
+    if (pl.k === 'hotdog') {
+      const w = nightPassenger();
+      if (w) {
+        const mates = CHAR_IDS.filter(id => id !== active), from = PEOPLE[mates[Math.floor(Math.random() * mates.length)]].name;
+        player.health = 100; audio.coin();
+        toast((first ? `Found: ${pl.n}  +50 kr · ` : '') + 'Two pølser with everything, one for her. On the boys.', 4);
+        showPhone('Vipps', `${from} sent you ${PLACE_PRICE.hotdog} kr: «pølse til damen 😏»`, 5);
+        say(w, 'Ooh, a pølse! You know how to treat a girl.');
+        continue;
+      }
+      if (save.money < PLACE_PRICE.hotdog) { pl.coolT = 8; audio.bump(); toast('A pølse is 50 kr. You haven’t got it.', 2.5); continue; }
+      save.money -= PLACE_PRICE.hotdog; persist();
+    }
     if (pl.k === 'hotdog' || pl.k === 'pizza') player.health = 100;
     if (pl.k === 'shop') player.health = Math.min(100, player.health + 35);
     if (pl.k === 'bar' && state.alarm > state.alarmMin) state.alarm = state.alarmMin;
@@ -2542,30 +2820,56 @@ function updatePlayer(dt) {
 
   if (player.riding) {
     const s = player.riding;
-    if (pressed.trick || pressed.jump) startTrick(s, inp);      // Space (or T) on a scooter: a trick
+    // Space: crouch while it's held, pop when it's let go; in the air, a trick. T: a no-hander
+    // (popping first if you're on the ground).
+    const jumpHeld = !!(keys.Space || touch.jumpHeld);
+    if (pressed.jump) { if (s.air) startTrick(s, inp); else if (!s.charge) s.charge = 1e-3; }
+    if (pressed.trick) { if (!s.air) { ollie(s, 0.75); s.charge = 0; } startTrick(s, inp, 'nohander'); }
+    if (s.charge > 0) {
+      if (s.air) s.charge = 0;                        // rolled off an edge while crouching
+      else if (jumpHeld) s.charge = Math.min(OLLIE.charge, s.charge + dt);   // crouched as long as you like
+      else { ollie(s, s.charge / OLLIE.charge); s.charge = 0; }
+    }
     const crashed = updateScooter(s, dt, inp);
     player.pos.copy(s.pos);
     player.heading = s.heading;
-    player.vel.set(Math.sin(s.heading) * s.speed, s.vy, Math.cos(s.heading) * s.speed);
+    player.vel.set(Math.sin(s.vdir) * s.speed, s.vy, Math.cos(s.vdir) * s.speed);
+    // a combo is banked once you've ridden on clean for a moment
+    if (!crashed) {
+      if (!s.air && !s.drifting && !s.trick) { combo.idle += dt; if (combo.parts.length && combo.idle > 1.6) comboBank(); }
+      else combo.idle = 0;
+    }
     if (crashed) {
       const sp = s.speed;
-      s.trick = null;
+      s.trick = null; s.charge = 0;
+      const lost = combo.kr > 0;
+      comboClear();
       dismount(true);
-      player.vel.set(Math.sin(s.heading) * sp * 0.6, 4, Math.cos(s.heading) * sp * 0.6);
+      player.vel.set(Math.sin(s.vdir) * sp * 0.6, 4, Math.cos(s.vdir) * sp * 0.6);
       s.speed = 0;
       player.knockT = 1.4; player.onGround = false;
       audio.crash(); cam.shake = 1;
       player.health = Math.max(5, player.health - 10); player.regenT = 4;
-      toast('Wipeout!');
+      toast(lost ? 'Wipeout! Combo lost' : 'Wipeout!');
       if (player.carrying) dropBolle();
     }
+    // the rider: crouched for a pop or as the springs give on landing, knees up in the air,
+    // leaning into the pull of the motor, and hands off the bar for a no-hander
+    if (!player.riding) { pressed.jump = false; return; }
+    {
+      const tr = s.trick, comp = clamp((s.pos.y - s.ry) / 0.14, 0, 1);
+      player.fig.ride = {
+        crouch: s.charge > 0 ? Math.min(1, s.charge / OLLIE.charge) : Math.max(comp * 0.8, s.air ? 0.35 : 0),
+        lean: s.air ? 0 : clamp((s.acc || 0) * 0.012, -0.08, 0.14),
+        nohander: tr && tr.kind === 'nohander' ? Math.sin(Math.min(1, tr.t / tr.dur) * Math.PI) : 0,
+      };
+    }
     player.fig.animate(dt, 0, 'ride');
-    player.fig.root.position.copy(player.pos).add(_v.set(0, 0.17, 0));
-    player.fig.root.rotation.set(s.tilt, s.heading, s.lean, 'YXZ');
-    if (s.trick) {
-      const q = trickRot(s, true);
+    {
+      const q = scooterRot(s, true);
       player.fig.root.quaternion.copy(q);
-      player.fig.root.position.copy(player.pos).add(pivotOffset(q, 0.9, _v)).add(_v2.set(0, 0.17, 0).applyQuaternion(q));
+      scooterAt(s, player.fig.root.position).add(_v2.set(0, 0.17, 0).applyQuaternion(q));
+      if (s.trick) player.fig.root.position.add(pivotOffset(q, 0.9, _v));
     }
     pressed.jump = false;
     return;
@@ -2644,8 +2948,10 @@ function nearestScooter(r) {
 }
 function mount(s) {
   player.riding = s;
-  s.speed = 0; s.driftT = 0; s.drifting = false; s.asleep = false; s.vdir = s.heading; s.trick = null;
+  s.speed = 0; s.driftT = 0; s.drifting = false; s.asleep = false; s.vdir = s.heading; s.trick = null; s.charge = 0; s.steer = 0;
   player.vel.set(0, 0, 0);
+  cam.py = s.ry === undefined ? s.pos.y : s.ry;
+  comboClear();
   audio.start2();
   if (!s.stolen) { s.stolen = true; toast('Grand Theft Sparkesykkel'); save.money += 0; }
 }
@@ -2653,7 +2959,11 @@ function dismount(crash = false) {
   const s = player.riding;
   if (!s) return;
   { const w = nightPassenger(); if (w) { if (w.ride.serving && !crash) endService(w, 'Leaving already, sweetie?'); else dropOff(w, crash ? 'Ow! Idiot!' : 'Fine, I\'ll walk.'); } }
+  if (!crash) comboBank();
   player.riding = null;
+  player.fig.ride = null;
+  turbo.on = false;
+  s.charge = 0;
   const side = _v.set(Math.cos(s.heading), 0, -Math.sin(s.heading)).multiplyScalar(0.7);
   player.pos.copy(s.pos).add(crash ? _v.set(0, 0.3, 0) : side);
   world.collide(player.pos, RADIUS, HEIGHT, STEP);
@@ -3525,7 +3835,7 @@ function frame(now) {
     if (prompt) { /* the night's business comes first */ }
     else if (state.mode === 'play' && !player.riding) { const s = nearestScooter(1.7); if (s) prompt = `<kbd>${isTouch ? 'E' : 'E'}</kbd>${s.stolen ? 'Ride e-scooter' : 'Steal e-scooter'}`; }
     else if (state.mode === 'play' && player.riding && Math.abs(player.riding.speed) < 1) prompt = '<kbd>E</kbd>Get off';
-    else if (state.mode === 'play' && player.riding && player.riding.speed > 4 && !save.rideHint) prompt = isTouch ? '<kbd>Jump</kbd>trick <kbd>Run</kbd>boost <kbd>Drift</kbd>hold to drift' : '<kbd>Space</kbd>trick <kbd>Shift</kbd>boost <kbd>Right mouse</kbd>hold to drift';
+    else if (state.mode === 'play' && player.riding && player.riding.speed > 4 && !save.rideHint) prompt = isTouch ? '<kbd>Jump</kbd>hold, let go to pop · again in the air: trick <kbd>Run</kbd>boost <kbd>Drift</kbd>hold' : '<kbd>Space</kbd>hold, let go to pop · in the air: trick <kbd>A</kbd><kbd>D</kbd>spin <kbd>Shift</kbd>boost <kbd>Right mouse</kbd>drift';
     if (player.riding && (player.riding.driftT > 1 || player.riding.trick) && !save.rideHint) { save.rideHint = true; persist(); }
     if (!prompt && funiHere()) prompt = funiHere() === 'up' ? '<kbd>E</kbd>Take Fløibanen up to Fløyen' : '<kbd>E</kbd>Take Fløibanen down to town';
     if (state.mode === 'play' && !player.riding && !dive.on && !prompt && Math.hypot(player.pos.x - JUMP.x, player.pos.z - JUMP.z) < 3.5 && Math.abs(player.pos.y - JUMP.y) < 3) prompt = '<kbd>E</kbd>Skydive from 450 m';
@@ -3613,4 +3923,4 @@ $('play').disabled = false;
 $('play').textContent = save.mission > 0 ? (save.mission >= MISSIONS.length ? 'Free roam' : 'Continue') : 'Play';
 
 // debug hooks for testing
-window.__gt = { landmarks, shopSigns, openMap, closeMap, setWaypoint, clearWaypoint, waypoint: () => waypoint, wpGps: () => wpGps, bm, gameTime: () => time, nightPassenger, tryPickup, quietHere, places, street, tram, dive, funiState, FUNI_DOOR, funiHere, takeFuni, startSkydive, JUMP, gun, shoot, toggleGun, brolly, cycleHand, npcs, turbo, clock, dayState, nightPeople, lampLights, audio, switchTo, swapTo, mates: () => housemates, active: () => active, OUT_SPOTS, offer: () => offer, acceptOffer, declineOffer, makeOffer, scene, renderer, camera, player, cam, world, state, startMission, save, weather, scooters, gulls, mission: () => mission, startGame, raiseAlarm, ending, L2V, L2W, W2L, H, house, city, route, BAKERY, CHECKPOINTS: () => CHECKPOINTS, inHouse, housemates, PLACES, hitPlayer, dropBolle, bolle: () => ({ drop: bolleDrop, carrying: !!player.carrying }) };
+window.__gt = { combo, landmarks, shopSigns, openMap, closeMap, setWaypoint, clearWaypoint, waypoint: () => waypoint, wpGps: () => wpGps, bm, gameTime: () => time, nightPassenger, tryPickup, quietHere, places, street, tram, dive, funiState, FUNI_DOOR, funiHere, takeFuni, startSkydive, JUMP, gun, shoot, toggleGun, brolly, cycleHand, npcs, turbo, clock, dayState, nightPeople, lampLights, audio, switchTo, swapTo, mates: () => housemates, active: () => active, OUT_SPOTS, offer: () => offer, acceptOffer, declineOffer, makeOffer, scene, renderer, camera, player, cam, world, state, startMission, save, weather, scooters, gulls, mission: () => mission, startGame, raiseAlarm, ending, L2V, L2W, W2L, H, house, city, route, BAKERY, CHECKPOINTS: () => CHECKPOINTS, inHouse, housemates, PLACES, hitPlayer, dropBolle, bolle: () => ({ drop: bolleDrop, carrying: !!player.carrying }) };

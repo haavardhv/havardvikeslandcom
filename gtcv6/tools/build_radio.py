@@ -7,7 +7,8 @@ RECORDINGS_DIR holds the recorded clips, one file per clip (WAV, MP3, M4A, FLAC 
 after their IDs in gtcv6/RADIO.md. The conversations between Regnar and Sol are recorded one
 line per file: `chat_weather_01`, `chat_weather_02`, ... and `over_umbrella_01`, ... Their lines
 are joined in order, with a short pause between them, into one clip per conversation
-(`chat_weather.mp3`). Every clip is levelled to -16 LUFS and written as 96 kbps mono MP3 to
+(`chat_weather.mp3`). The phone-ins (`call_arne_01`, ...) are recorded the same way; Regnar has
+the odd lines and the caller the even ones, which get the sound of a telephone line. Every clip is levelled to -16 LUFS and written as 96 kbps mono MP3 to
 gtcv6/public/audio/radio/.
 
 Without RECORDINGS_DIR it only rewrites the list of clips and their durations
@@ -24,7 +25,7 @@ from pathlib import Path
 
 OUT = Path(__file__).resolve().parent.parent / 'public' / 'audio' / 'radio'
 EXTS = {'.wav', '.mp3', '.m4a', '.flac', '.ogg', '.aac'}
-LINE = re.compile(r'^((?:chat|over|ad)_[a-z0-9]+)_(\d+)$')
+LINE = re.compile(r'^((?:chat|over|ad|call)_[a-z0-9]+)_(\d+)$')
 GAP = 0.18          # seconds between two lines of a conversation (each line has its own short silence)
 
 
@@ -36,10 +37,14 @@ def duration(f):
     return float(subprocess.check_output(['ffprobe', '-v', 'error', '-show_entries', 'format=duration', '-of', 'csv=p=0', str(f)]))
 
 
-def to_wav(src, dst):
-    """Mono 44.1 kHz WAV, each line levelled on its own so the two voices match."""
+PHONE = 'highpass=f=320,lowpass=f=3400,acompressor=threshold=-18dB:ratio=4,'
+
+
+def to_wav(src, dst, phone=False):
+    """Mono 44.1 kHz WAV, each line levelled on its own so the voices match; a caller's line
+    through a telephone first."""
     run('ffmpeg', '-y', '-v', 'error', '-i', str(src), '-ac', '1', '-ar', '44100',
-        '-af', 'loudnorm=I=-16:TP=-1.5:LRA=11', '-ar', '44100', str(dst))
+        '-af', (PHONE if phone else '') + 'loudnorm=I=-16:TP=-1.5:LRA=11', '-ar', '44100', str(dst))
 
 
 def to_mp3(src, dst):
@@ -68,7 +73,7 @@ def build(rec_dir):
             parts = []
             for n, f in lines:
                 w = tmp / f'{name}_{n:02d}.wav'
-                to_wav(f, w)
+                to_wav(f, w, phone=name.startswith('call_') and n % 2 == 0)
                 parts += [w, gap]
             listing = tmp / f'{name}.txt'
             listing.write_text(''.join(f"file '{p}'\n" for p in parts[:-1]))

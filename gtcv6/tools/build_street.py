@@ -2,12 +2,14 @@
 """Put recorded lines in the mouths of the people on the street.
 
     python3 gtcv6/tools/build_street.py m1=paul.mp3 m2=benjamin.mp3 f1=melissa.mp3 f2=annie.mp3
+    python3 gtcv6/tools/build_street.py m1@14=paul-more.mp3 m3=tourist.mp3
     python3 gtcv6/tools/build_street.py path/to/recordings
 
-Each voice in gtcv6/STREET.md (m1, m2, f1, f2) has 13 lines, `ped_m1_01` to `ped_m1_13`. A voice
-can come as one long take with the lines in order and a pause of about two seconds between them
-(`m1=take.mp3`): the take is levelled as a whole, so the lines keep their levels against each
-other, and cut on the pauses. Or the lines can come one file each, named after their IDs, in a
+Each voice in gtcv6/STREET.md (m1, m2, f1, f2, m3, f3) has 23 lines, `ped_m1_01` to `ped_m1_23`.
+A voice can come as one long take with the lines in order and a pause of about two seconds
+between them (`m1=take.mp3`): the take is levelled as a whole, so the lines keep their levels
+against each other, and cut on the pauses. A take that starts further down the list says where
+(`m1@14=take.mp3` holds lines 14 to 23). Or the lines can come one file each, named after their IDs, in a
 folder. Every line is trimmed to 0.12 s of silence at each end, levelled to -16 LUFS (the same as
 the radio) and written as 96 kbps mono MP3 to gtcv6/public/audio/street/.
 
@@ -24,8 +26,8 @@ from pathlib import Path
 
 OUT = Path(__file__).resolve().parent.parent / 'public' / 'audio' / 'street'
 EXTS = {'.wav', '.mp3', '.m4a', '.flac', '.ogg', '.aac'}
-VOICES = ('m1', 'm2', 'f1', 'f2')
-LINES = 13          # per voice
+VOICES = ('m1', 'm2', 'f1', 'f2', 'm3', 'f3')
+LINES = 23          # per voice
 PAUSE = 1.2         # a silence at least this long (s) is a pause between two lines
 PAD = 0.12          # silence kept at each end of a line (s)
 LOUD = 'loudnorm=I=-16:TP=-1.5:LRA=11'
@@ -59,7 +61,7 @@ def encode(src, dst, start=None, end=None, level=True):
         '-codec:a', 'libmp3lame', '-b:a', '96k', str(dst))
 
 
-def build_take(voice, take):
+def build_take(voice, take, first=1):
     with tempfile.TemporaryDirectory() as tmp:
         lev = Path(tmp) / 'take.wav'
         run('ffmpeg', '-y', '-v', 'error', '-i', str(take), '-ac', '1', '-ar', '44100', '-af', LOUD, str(lev))
@@ -67,9 +69,10 @@ def build_take(voice, take):
         gaps = pauses(lev)
         bounds = [0.0] + [e for _, e in gaps], [s for s, _ in gaps] + [total]
         lines = [(a, b) for a, b in zip(*bounds) if b - a > 0.25]
-        if len(lines) != LINES:
-            print(f'  {voice}: found {len(lines)} lines in {take}, expected {LINES}: check the pauses')
-        for i, (a, b) in enumerate(lines[:LINES], 1):
+        want = LINES - first + 1
+        if len(lines) != want:
+            print(f'  {voice}: found {len(lines)} lines in {take}, expected {want} ({first} to {LINES}): check the pauses')
+        for i, (a, b) in enumerate(lines[:want], first):
             dst = OUT / f'ped_{voice}_{i:02d}.mp3'
             encode(lev, dst, max(0.0, a - 0.3), min(total, b + 0.3), level=False)
             print(f'  {dst.stem}.mp3  {duration(dst):.2f} s')
@@ -93,9 +96,13 @@ if __name__ == '__main__':
     for arg in sys.argv[1:]:
         if '=' in arg:
             voice, take = arg.split('=', 1)
+            voice, _, first = voice.partition('@')
             if voice not in VOICES:
                 sys.exit(f'unknown voice {voice!r}: use one of {", ".join(VOICES)}')
-            build_take(voice, take)
+            first = int(first or 1)
+            if not 1 <= first <= LINES:
+                sys.exit(f'{voice}@{first}: the lines run from 1 to {LINES}')
+            build_take(voice, take, first)
         else:
             build_dir(arg)
     write_list()

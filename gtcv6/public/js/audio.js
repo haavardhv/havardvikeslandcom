@@ -9,7 +9,9 @@ const SONGS = [
   { id: 'grand-theft-cappes-vei-6', title: 'Grand Theft Cappes Vei 6', dur: 167.16 },
   { id: 'cappes-vei-six', title: 'Cappes Vei Six', dur: 253.68 },
   { id: 'guangdong-house', title: 'Guangdong House', dur: 193.96 },
+  { id: 'the-streets-of-marken', title: 'The Streets of Marken', dur: 169.14 },
   { id: 'stone-and-salt', title: 'Cappes Vei Stone and Salt', dur: 203.08 },
+  { id: 'a-little-piece-of-home', title: 'A Little Piece of Home', dur: 316.84 },
   { id: 'cappes-vei-six-2', title: 'Cappes Vei Six (Version 2)', dur: 334.97 },
 ];
 // The station's clips (gtcv6/RADIO.md has the scripts) and their durations, from clips.json, which
@@ -20,21 +22,26 @@ const [TALK, STREET] = await Promise.all([clipList('/audio/radio/clips.json'), c
 // how long a recorded street line is, in seconds (0 if it hasn't been recorded)
 export const lineDur = id => STREET[id] || 0;
 const INTRO = { 'grand-theft-cappes-vei-6': 'intro_grand-theft-cappes-vei-6', 'cappes-vei-six': 'intro_cappes-vei-six',
-  'guangdong-house': 'intro_guangdong-house', 'stone-and-salt': 'intro_stone-and-salt', 'cappes-vei-six-2': 'intro_cappes-vei-six-v2' };
+  'guangdong-house': 'intro_guangdong-house', 'stone-and-salt': 'intro_stone-and-salt', 'cappes-vei-six-2': 'intro_cappes-vei-six-v2',
+  'the-streets-of-marken': 'intro_the-streets-of-marken', 'a-little-piece-of-home': 'intro_a-little-piece-of-home' };
 // the rotating slots: a different clip of the kind plays in each slot, round after round
+// (clips that haven't been recorded yet are simply skipped)
 const POOL = {
-  id: ['id_01', 'id_02', 'id_03', 'id_04'],
-  outro: ['outro_01', 'outro_02', 'outro_03'],
-  // Regnar and Sol talking between the songs
-  chat: ['chat_weather', 'chat_gulls', 'chat_steep', 'chat_party'],
-  ad: ['ad_maakeskrekk', 'ad_regnfrakk', 'ad_bratt', 'ad_sparksjo', 'ad_myreze'],
-  news: ['news_maakemelding', 'news_traffic', 'news_party'],
+  id: ['id_01', 'id_05', 'id_02', 'id_07', 'id_03', 'id_06', 'id_04', 'id_08'],
+  outro: ['outro_01', 'outro_04', 'outro_02', 'outro_05', 'outro_03', 'outro_06'],
+  // Regnar and Sol talking between the songs (and a guest in the studio)
+  chat: ['chat_weather', 'chat_tourists', 'chat_gulls', 'chat_bolle', 'chat_steep', 'chat_professor', 'chat_party', 'chat_buekorps', 'chat_johnnys'],
+  ad: ['ad_maakeskrekk', 'ad_fjellgeit', 'ad_regnfrakk', 'ad_tork', 'ad_bratt', 'ad_regnlotto', 'ad_sparksjo', 'ad_myreze'],
+  news: ['news_maakemelding', 'news_cruise', 'news_traffic', 'news_floibanen', 'news_party', 'news_brann', 'news_bolle'],
+  // listeners ringing in, and Kåre out in the traffic on his scooter
+  call: ['call_arne', 'call_linda', 'call_martin', 'call_tourist'],
+  traffic: ['traffic_01', 'traffic_02', 'traffic_03', 'traffic_04'],
   // and over the music, halfway through a song
-  over: ['over_umbrella', 'over_sunglasses', 'over_bolle', 'over_fortyone'],
+  over: ['over_umbrella', 'over_window', 'over_sunglasses', 'over_gull', 'over_bolle', 'over_dance', 'over_fortyone'],
 };
 // what follows each song (RADIO.md, "How it plays")
-const AFTER = [['outro', 'chat'], ['chat', 'news'], ['ad', 'chat'], ['outro', 'news'], ['chat', 'ad']];
-const TITLE = { news: 'Nyheter', ad: 'Reklame', chat: 'Regnar & Sol' };
+const AFTER = [['outro', 'chat'], ['call', 'news'], ['ad', 'chat'], ['traffic', 'ad'], ['outro', 'news'], ['chat', 'call'], ['traffic', 'chat', 'ad']];
+const TITLE = { news: 'Nyheter', ad: 'Reklame', chat: 'Regnar & Sol', call: 'Ring Regnar', traffic: 'Trafikken med Kåre' };
 // The broadcast: a station ID, Regnar's intro, the song (with the two of them talking over it
 // halfway through), then the chatter after it. It runs for enough rounds of the songs that the
 // rotating clips come round evenly, then starts again. It is a broadcast: it plays the same
@@ -187,7 +194,8 @@ export class Audio {
     const g = c.createGain(); g.gain.value = 1.0;
     const p = c.createPanner();
     p.panningModel = 'HRTF'; p.distanceModel = 'inverse';
-    p.refDistance = 2.5; p.rolloffFactor = 1.2; p.maxDistance = 60;
+    // gently quieter with distance: a line called after you as you ride by can still be made out
+    p.refDistance = 4; p.rolloffFactor = 0.75; p.maxDistance = 60;
     src.connect(g).connect(p).connect(this.voiceBus);
     this.voice = { src, panner: p, at, prio, until: now + buf.duration };
     this._place(p, at, true);

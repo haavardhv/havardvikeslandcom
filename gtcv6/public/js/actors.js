@@ -4,6 +4,7 @@ import * as THREE from '../vendor/three.module.min.js';
 
 const mat = (color, o = {}) => new THREE.MeshStandardMaterial({ color, roughness: 0.75, ...o });
 const box = (w, h, d, m) => { const x = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), m); x.castShadow = true; return x; };
+const lerpN = (a, b, t) => a + (b - a) * t;
 
 // The people who live at Cappes vei 6, from their photos (public/img/people)
 export const PEOPLE = {
@@ -276,7 +277,14 @@ export class Humanoid {
     const amp = Math.min(1, speed / 6) * 0.75 + (speed > 0.2 ? 0.12 : 0);
     let lL = 0, lR = 0, aL = 0, aR = 0, lean = 0, bob = 0, aLz = 0, aRz = 0, kL = 0.05, kR = 0.05, eL = -0.18, eR = -0.18;
     if (state === 'ride') {
-      lL = -0.05; lR = 0.2; kL = 0.1; kR = 0.25; aL = -0.9; aR = -0.9; eL = eR = -0.35; aLz = 0.12; aRz = -0.12; lean = 0.1;
+      // this.ride (set by the game): crouch 0..1 (popping, landing, in the air), lean (forward
+      // as the motor pulls), nohander 0..1 (both hands off the bar, arms out)
+      const R = this.ride || {}, c = R.crouch || 0, nh = R.nohander || 0;
+      lL = -0.05 - c * 0.55; lR = 0.2 - c * 0.5; kL = 0.1 + c * 1.05; kR = 0.25 + c * 0.95;
+      aL = -0.9 + c * 0.15; aR = -0.9 + c * 0.15; eL = eR = -0.35 - c * 0.35; aLz = 0.12; aRz = -0.12;
+      lean = 0.1 + c * 0.32 + (R.lean || 0);
+      bob = -c * 0.2;
+      if (nh > 0) { aL = aR = lerpN(aL, -0.25, nh); aLz = lerpN(aLz, 1.45, nh); aRz = lerpN(aRz, -1.45, nh); eL = eR = lerpN(eL, -0.15, nh); lean = lerpN(lean, -0.12, nh); }
     } else if (state === 'sit') {
       lL = lR = -1.5; kL = kR = 1.5; aL = aR = -0.35; eL = eR = -0.7; lean = -0.05;
     } else if (state === 'down') {
