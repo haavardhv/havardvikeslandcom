@@ -62,6 +62,7 @@ export function prepareLandmarks(map) {
   take('rosen', byName(map, 'Rosenkrantztårnet'));
   take('johannes', byName(map, 'Johanneskirken') || atPoint(map, -772, 508));
   take('grieg', byName(map, 'Grieghallen'));
+  take('hotelnorge', map.buildings.find(b => (b.n || '').startsWith('Hotel Norge')));
   // Fløyen: OpenStreetMap draws the upper station and Fløien Folkerestaurant as one outline round
   // the end of the track; both are modelled below, with the viewing terrace you step out onto
   { const f = map.funicular; if (f && f.length >= 4) take('floyen', atPoint(map, f[f.length - 2], f[f.length - 1])); }
@@ -820,6 +821,84 @@ export function buildLandmarks(scene, map, L, { terrain, polys, onRoad }) {
     out.floyenClear = [ex, ez, 45];
     out.floyenJump = (() => { const [x, z] = at(-23, 14.5); return { x, z }; })();     // the skydive starts at the terrace's far corner
     out.spots.push({ n: 'Fløien Folkerestaurant', x: at(17, -8)[0], z: at(17, -8)[1] });
+  }
+
+  // ------------------------------------------------ Hotel Norge on Ole Bulls plass
+  // After photos of the hotel as rebuilt in 2018: nine storeys of big windows framed by cream
+  // slab bands and fins, a glazed ground floor lit warm, and the red-and-white striped canopy
+  // over the entrance on the square, facing Ole Bull and his pond.
+  if (L.hotelnorge) {
+    const b = L.hotelnorge, ring = ringOf(b.p), [lo, hi] = groundUnder(ring), G = geoOf();
+    const top = lo + (b.t ?? 28) - (b.b ?? 0) - 0.5, baseTop = hi + 4.6, ST = 3.25, BAY = 2.7;
+    const NB = 8;                                       // the texture holds 8 x 8 rooms, lit at random
+    const grid = (emit) => { const R = rnd(41); return canvasTex(1024, (g, S0) => {
+      const S = S0 / NB, f = 0.24 * S, slab = 0.26 * S;   // fin and slab widths in each bay
+      if (emit) g.fillStyle = '#000', g.fillRect(0, 0, S0, S0);
+      for (let i = 0; i < NB; i++) for (let j = 0; j < NB; j++) {
+        const x = i * S, y = j * S, r = R();
+        if (emit) {
+          if (r < 0.45) continue;
+          g.fillStyle = r < 0.6 ? '#b98f5c' : r < 0.85 ? '#ffd9a0' : '#ffe9c8'; g.fillRect(x + f / 2, y + slab, S - f, S - slab);
+          g.fillStyle = 'rgba(0,0,0,0.45)'; g.fillRect(x + f / 2, y + slab, S - f, (S - slab) * (0.1 + R() * 0.3));
+          continue;
+        }
+        const gr = g.createLinearGradient(x, y, x + S * 0.6, y + S); gr.addColorStop(0, '#b4c0c8'); gr.addColorStop(0.45, '#75838e'); gr.addColorStop(1, '#3c4650'); g.fillStyle = gr; g.fillRect(x, y, S, S);
+        g.fillStyle = `rgba(230,222,205,${0.1 + r * 0.25})`; g.fillRect(x + f / 2, y + slab, (S - f) * (0.15 + R() * 0.3), S - slab);      // a curtain
+        g.fillStyle = '#ebe4d4'; g.fillRect(x, y, S, slab); g.fillRect(x, y, f / 2, S); g.fillRect(x + S - f / 2, y, f / 2, S);
+        g.fillStyle = 'rgba(0,0,0,0.18)'; g.fillRect(x, y + slab - 3, S, 3); g.fillRect(x + f / 2, y, 2, S); g.fillRect(x + S - f / 2 - 2, y, 2, S);
+      }
+    }, BAY * NB, { metresV: ST * NB }); };
+    const gT = grid(false), gE = grid(true);
+    for (const t of [gT, gE]) t.offset.y = -((baseTop / (ST * NB)) % 1);
+    const gridM = new THREE.MeshStandardMaterial({ map: gT, emissive: 0xffffff, emissiveMap: gE, emissiveIntensity: 0, roughness: 0.35, metalness: 0.1 });
+    glowMats.push([gridM, 0, 0.55]);
+    const shopT = canvasTex(256, (g, S) => {
+      g.fillStyle = '#3a2e26'; g.fillRect(0, 0, S, S);
+      const gr = g.createLinearGradient(0, 0, 0, S); gr.addColorStop(0, '#6b5844'); gr.addColorStop(1, '#2b2a28'); g.fillStyle = gr; g.fillRect(S * 0.06, S * 0.12, S * 0.88, S * 0.88);
+      g.fillStyle = '#e9e2d2'; g.fillRect(0, 0, S, S * 0.12); g.fillRect(0, 0, S * 0.06, S); g.fillRect(S * 0.94, 0, S * 0.06, S);
+      g.fillStyle = 'rgba(25,20,16,0.8)'; g.fillRect(S / 2 - 2, S * 0.12, 4, S);
+    }, 4.4, { metresV: 4.6 });
+    shopT.offset.y = -(((hi) / 4.6) % 1);
+    const shopM = new THREE.MeshStandardMaterial({ map: shopT, emissive: 0xffc68a, emissiveMap: shopT, emissiveIntensity: 0.15, roughness: 0.3 });
+    glowMats.push([shopM, 0.15, 0.9]);
+    const roofM = new THREE.MeshStandardMaterial({ color: 0x4a4b4d, roughness: 0.9 });
+    roofedBody(G, ring, lo - 3, baseTop, [], shopM, roofM);
+    roofedBody(G, ring, baseTop, top, [], gridM, roofM);
+    // a slab edge between the ground floor and the rooms, and a cornice at the top
+    const grow = (d) => { const F2 = frameOf(b.p); return ring.map(([x, z]) => { const l = Math.hypot(x - F2.cx, z - F2.cz) || 1; return [x + (x - F2.cx) / l * d, z + (z - F2.cz) / l * d]; }); };
+    roofedBody(G, grow(0.25), baseTop - 0.05, baseTop + 0.45, [], M.white, M.white);
+    roofedBody(G, grow(0.2), top, top + 0.7, [], M.white, roofM);
+    // plant rooms on the roof
+    { const F2 = frameOf(b.p); boxAt(G, roofM, F2.cx, top, F2.cz, 9, 2.6, 6, F2.ang); }
+    // the striped canopy over the entrance, on the face towards Ole Bull
+    const ob = (map.art || []).filter(a => a.n === 'Ole Bull').sort((a, c) => Math.hypot(a.x - ring[0][0], a.z - ring[0][1]) - Math.hypot(c.x - ring[0][0], c.z - ring[0][1]))[0];
+    if (ob) {
+      let best = null;
+      for (let i = 0; i < ring.length; i++) {
+        const [ax, az] = ring[i], [bx, bz] = ring[(i + 1) % ring.length], len = Math.hypot(bx - ax, bz - az);
+        if (len < 12) continue;
+        const dx = (bx - ax) / len, dz = (bz - az) / len, t = Math.max(6, Math.min(len - 6, (ob.x - ax) * dx + (ob.z - az) * dz));
+        const px = ax + dx * t, pz = az + dz * t, d = Math.hypot(ob.x - px, ob.z - pz);
+        if (!best || d < best.d) { let nx = dz, nz = -dx; if (insideP(b.p, px + nx * 0.3, pz + nz * 0.3)) { nx = -nx; nz = -nz; } best = { d, px, pz, dx, dz, nx, nz }; }
+      }
+      const { px, pz, dx, dz, nx, nz } = best, cy = ground(px + nx * 3, pz + nz * 3) + 4.4, ang = Math.atan2(dx, dz) + Math.PI / 2;
+      const red = new THREE.MeshStandardMaterial({ color: 0xc8402e, roughness: 0.6, emissive: 0xff6a3a, emissiveIntensity: 0 }), whiteS = new THREE.MeshStandardMaterial({ color: 0xf3efe6, roughness: 0.6, emissive: 0xfff0d0, emissiveIntensity: 0 });
+      glowMats.push([red, 0, 0.25], [whiteS, 0, 0.35]);
+      const CW = 12, CD = 6, NS = 24;
+      for (let k = 0; k < NS; k++) {
+        const s0 = -CW / 2 + (k + 0.5) * CW / NS;
+        G.obox(k % 2 ? whiteS : red, px + dx * s0 + nx * CD / 2, cy, pz + dz * s0 + nz * CD / 2, CW / NS * 0.7, 0.7, CD, 0, ang, 0);
+      }
+      G.obox(M.white, px + nx * CD, cy - 0.4, pz + nz * CD, CW + 0.2, 0.14, 0.14, 0, ang, 0);
+      for (const s0 of [-CW / 2 + 0.3, CW / 2 - 0.3]) boxAt(G, M.white, px + dx * s0 + nx * (CD - 0.2), ground(px + nx * CD, pz + nz * CD) - 0.5, pz + dz * s0 + nz * (CD - 0.2), 0.3, cy - ground(px + nx * CD, pz + nz * CD) + 0.5, 0.3, ang);
+      const name = decalTex((g, w, h) => { g.clearRect(0, 0, w, h); g.fillStyle = '#f6f1e4'; g.font = '600 64px Georgia, serif'; g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillText('HOTEL NORGE', w / 2, h / 2 + 4); }, 1024, 112);
+      const nm = new THREE.MeshStandardMaterial({ map: name, transparent: true, alphaTest: 0.4, emissive: 0xffffff, emissiveMap: name, emissiveIntensity: 0.1, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -2 });
+      glowMats.push([nm, 0.1, 0.9]);
+      decal(G, nm, px, pz, nx, nz, cy + 0.75, 6.3, 0.7, 0.06);
+    }
+    finish(G, 'Hotel Norge');
+    collide(b, top + 0.7);
+    out.spots.push({ n: 'Hotel Norge', x: ring[0][0], z: ring[0][1] });
   }
 
   // ------------------------------------------------ Bryggen's boardwalk
