@@ -731,7 +731,7 @@ export function buildCity(scene, map, T, opts) {
   {
     const R = rng(31);
     const spots = [];
-    for (let i = 0; i < map.trees.length; i += 2) spots.push([map.trees[i], map.trees[i + 1]]);
+    for (let i = 0; i < map.trees.length; i += 2) if (!opts.keepClear(map.trees[i], map.trees[i + 1])) spots.push([map.trees[i], map.trees[i + 1]]);
     // gardens and slopes on the hillside: add trees where nothing else is
     const g = map.terrain;
     for (let k = 0; k < 2600 && spots.length < 1100; k++) {
@@ -984,7 +984,16 @@ export function buildCity(scene, map, T, opts) {
   // from the lower station, and under Fjellveien) it runs on a steady incline between the portals,
   // well under the ground. Only the open stretches are drawn; the tunnels get a lit lining and
   // a concrete portal at each mouth.
-  const fl = map.funicular, tun = map.funiTunnel || [];
+  // The lower station is the small building on Vetrlidsallmenningen: OpenStreetMap's track starts
+  // 40 m up the hill from it, where the tunnel under Skansen is, so the line is carried back
+  // through the tunnel into the station, and you get on and off at its street door.
+  let fl = map.funicular, tun = map.funiTunnel || [];
+  const funiStation = map.buildings.find(b => (b.n || '').startsWith('Fløibanen'));
+  if (funiStation) {
+    const p = funiStation.p, n = p.length / 2;
+    let sx = 0, sz = 0; for (let i = 0; i < n; i++) { sx += p[i * 2]; sz += p[i * 2 + 1]; } sx /= n; sz /= n;
+    if (Math.hypot(sx - fl[0], sz - fl[1]) < 80 && Math.hypot(sx - fl[0], sz - fl[1]) > 3) { fl = [sx, sz, ...fl]; tun = [1, ...tun]; }
+  }
   const N = fl.length / 2;
   const fx = i => fl[i * 2], fz = i => fl[i * 2 + 1];
   const fy = new Array(N);
@@ -1075,15 +1084,6 @@ export function buildCity(scene, map, T, opts) {
     scene.add(car);
     cars.push(car);
   }
-  // Fløien Folkerestaurant at the top station
-  {
-    const top = fpts[fpts.length - 1];
-    const rest = new THREE.Mesh(new THREE.BoxGeometry(22, 8, 12), new THREE.MeshStandardMaterial({ color: 0xeeede6, roughness: 0.8 }));
-    rest.position.set(top.x + 14, top.y + 3, top.z + 6);
-    const rr = new THREE.Mesh(new THREE.ConeGeometry(14, 5, 4), new THREE.MeshStandardMaterial({ color: 0x3a2d28 }));
-    rr.position.set(top.x + 14, top.y + 9.5, top.z + 6); rr.rotation.y = Math.PI / 4; rr.scale.set(1, 1, 0.6);
-    scene.add(rest, rr);
-  }
   // Ulriken's TV tower
   {
     const ux = 2937, uz = 1735, uh = terrain.height(ux, uz);
@@ -1096,5 +1096,5 @@ export function buildCity(scene, map, T, opts) {
 
   geo.build(scene);
 
-  return { terrain, polys, funiCurve, cars, onSteps, onRoad, named, buildingLods, water, lamps, nightGlow };
+  return { terrain, polys, funiCurve, funiStation, cars, onSteps, onRoad, named, buildingLods, water, lamps, nightGlow };
 }

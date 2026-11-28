@@ -27,7 +27,7 @@ def get(url, tries=6):
 # OSM tiles
 i = 0
 for lat in (60.3765, 60.3800, 60.3835, 60.3870, 60.3905, 60.3940, 60.3975, 60.4010, 60.4045):   # Store Lungegårdsvann north to Skuteviken
-    for lon in (5.3030, 5.3090, 5.3150, 5.3210, 5.3270, 5.3335, 5.3400, 5.3465):   # Sydnes and Bergenhus east to Fløyen
+    for lon in (5.2970, 5.3030, 5.3090, 5.3150, 5.3210, 5.3270, 5.3335, 5.3400, 5.3465):   # Nordnes east to Fløyen
         i += 1
         f = os.path.join(WORK, f't_{i}.json')
         if not os.path.exists(f):
@@ -55,4 +55,4 @@ def grid(name, x0, x1, z0, z1, step):
     json.dump({'x0': x0, 'z0': z0, 'step': step, 'nx': nx, 'nz': nz, 'h': zs}, open(os.path.join(WORK, name + '.json'), 'w'))
 
 grid('coarse', -3000, 4000, -3000, 3000, 60)
-grid('fine', -1120, 1060, -1350, 1600, 2.5)    # Skuteviken to Store Lungegårdsvann, the university to Fløyen
+grid('fine', -1800, 1060, -1350, 1600, 2.5)    # Nordnes to Fløyen, Skuteviken to Store Lungegårdsvann

@@ -61,6 +61,9 @@ export function prepareLandmarks(map) {
   take('rosen', byName(map, 'Rosenkrantztårnet'));
   take('johannes', byName(map, 'Johanneskirken') || atPoint(map, -772, 508));
   take('grieg', byName(map, 'Grieghallen'));
+  // Fløyen: OpenStreetMap draws the upper station and Fløien Folkerestaurant as one outline round
+  // the end of the track; both are modelled below, with the viewing terrace you step out onto
+  { const f = map.funicular; if (f && f.length >= 4) take('floyen', atPoint(map, f[f.length - 2], f[f.length - 1])); }
   take('uimuseum', byName(map, 'De naturhistoriske samlinger (Universitetsmuseet – Naturhistorie)'));
   // restyled, with towers and details added below
   take('radhus', byName(map, 'Bergen rådhus'));
@@ -286,7 +289,8 @@ function cyl(G, mat, x, y, z, r0, r1, h, sides = 12) {
 function sphere(G, mat, x, y, z, r) { G.geom(mat, new THREE.SphereGeometry(r, 10, 8), new THREE.Matrix4().makeTranslation(x, y, z)); }
 // a decal on a vertical face: centre (x, z) on the face, normal (nx, nz), bottom y0, size w x h
 function decal(G, mat, x, z, nx, nz, y0, w, h, out = 0.04) {
-  const tx = -nz, tz = nx, hx = tx * w / 2, hz = tz * w / 2, ox = x + nx * out, oz = z + nz * out;
+  // t runs to the right of someone facing the wall, so lettering reads the right way round
+  const tx = nz, tz = -nx, hx = tx * w / 2, hz = tz * w / 2, ox = x + nx * out, oz = z + nz * out;
   G.quad(mat, [ox - hx, y0, oz - hz], [ox + hx, y0, oz + hz], [ox + hx, y0 + h, oz + hz], [ox - hx, y0 + h, oz - hz], [[0, 0], [1, 0], [1, 1], [0, 1]], [nx, 0, nz]);
 }
 // decals along every long wall of a footprint, between y0 and y0 + h, one every `step` metres
@@ -306,7 +310,7 @@ function windowsAlong(G, mat, ring, y0, w, h, step, minLen = 4, skipNear = null)
 }
 
 // ---------------------------------------------------------------------------- the landmarks
-export function buildLandmarks(scene, map, L, { terrain, polys }) {
+export function buildLandmarks(scene, map, L, { terrain, polys, onRoad }) {
   const M = makeMaterials(), D = decalMaterials();
   const glowMats = [[D.lancet, 0, 0.5], [D.round, 0, 0.45], [D.clock, 0.05, 0.9], [D.sash, 0, 0.35]];
   const groups = [];
@@ -581,6 +585,127 @@ export function buildLandmarks(scene, map, L, { terrain, polys }) {
     }
     finish(G, 'Grieghallen');
     collide(b, top);
+  }
+
+  // ------------------------------------------------ Fløibanen's lower station on Vetrlidsallmenningen: its name over the door
+  {
+    const b = map.buildings.find(q => (q.n || '').startsWith('Fløibanen'));
+    if (b) {
+      const r = ringOf(b.p);
+      let best = null;
+      for (let i = 0; i < r.length; i++) {
+        const [ax, az] = r[i], [bx, bz] = r[(i + 1) % r.length], L2 = Math.hypot(bx - ax, bz - az);
+        if (L2 < 2) continue;
+        let nx = (bz - az) / L2, nz = -(bx - ax) / L2;
+        if (insideRings([r], (ax + bx) / 2 + nx * 0.3, (az + bz) / 2 + nz * 0.3)) { nx = -nx; nz = -nz; }
+        const t = b.d && b.d[0] === i ? b.d[1] : 0.5, x = ax + (bx - ax) * t, z = az + (bz - az) * t;
+        const score = (b.d && b.d[0] === i ? 100 : 0) + (onRoad && onRoad(x + nx * 3, z + nz * 3) ? 10 : 0) + L2;
+        if (!best || score > best.score) best = { score, x, z, nx, nz };
+      }
+      if (best) {
+        const G = geoOf(), gy = ground(best.x + best.nx, best.z + best.nz);
+        const t = decalTex((g, w, h) => { g.fillStyle = '#16325c'; g.fillRect(0, 0, w, h); g.fillStyle = '#ffffff'; g.font = '800 72px Archivo, sans-serif'; g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillText('FLØIBANEN', w / 2, h / 2 + 4); g.fillStyle = '#c4312a'; g.fillRect(0, h - 12, w, 12); }, 768, 128);
+        const m = new THREE.MeshStandardMaterial({ map: t, emissive: 0xffffff, emissiveMap: t, emissiveIntensity: 0.1, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -4 });
+        glowMats.push([m, 0.1, 0.9]);
+        decal(G, m, best.x, best.z, best.nx, best.nz, gy + 2.9, 4.2, 0.7, 0.12);
+        decal(G, D.door, best.x, best.z, best.nx, best.nz, gy + 0.02, 2.0, 2.7, 0.08);
+        finish(G, 'Fløibanen nedre stasjon');
+      }
+    }
+  }
+
+  // ------------------------------------------------ Fløyen: the upper station, Fløien Folkerestaurant, the terrace
+  // After photos: a low glazed station hall over the end of the track; the restaurant on the uphill
+  // side, white boards, a long glazed veranda and the taller square pavilion with its cupola, and
+  // FLØIEN FOLKERESTAURANT over the door; a paved terrace on a stone wall beside the track, over
+  // the drop towards the town, with a railing, flagpoles, lamps and benches. You step out onto it.
+  if (map.funicular && map.funicular.length >= 4) {
+    const f = map.funicular, n = f.length / 2;
+    const ex = f[n * 2 - 2], ez = f[n * 2 - 1], px = f[n * 2 - 6], pz = f[n * 2 - 5];
+    const ul = Math.hypot(ex - px, ez - pz) || 1, ux = (ex - px) / ul, uz = (ez - pz) / ul;   // u: along the track, uphill
+    // v: across it, towards the lower side (the view)
+    let vx = -uz, vz = ux;
+    if (ground(ex + vx * 15, ez + vz * 15) > ground(ex - vx * 15, ez - vz * 15)) { vx = -vx; vz = -vz; }
+    const at = (u, v) => [ex + ux * u + vx * v, ez + uz * u + vz * v];
+    const fy = ground(ex, ez), ang = Math.atan2(ux, uz);
+    const G = geoOf();
+    const rect = (u0, u1, v0, v1) => [at(u0, v0), at(u1, v0), at(u1, v1), at(u0, v1)];
+    const woodT = canvasTex(256, (g, S) => { g.fillStyle = '#f4f2ec'; g.fillRect(0, 0, S, S); for (let k = 0; k < 8; k++) { g.fillStyle = 'rgba(0,0,0,0.12)'; g.fillRect(0, k * S / 8 + S / 8 - 3, S, 3); } }, 1.4);
+    const woodM = new THREE.MeshStandardMaterial({ map: woodT, roughness: 0.8 });
+    const greyRoof = new THREE.MeshStandardMaterial({ color: 0x4a4d52, roughness: 0.7 });
+    const glassM = new THREE.MeshStandardMaterial({ color: 0x9fb6c2, roughness: 0.05, metalness: 0.3, transparent: true, opacity: 0.45, depthWrite: false });
+    // the station hall: a roof on posts over the last 16 m of track, glazed on the uphill side
+    {
+      const [hx, hz] = at(-6, 0.6);
+      boxAt(G, M.white, hx, fy + 4.4, hz, 17, 0.35, 9.5, ang + Math.PI / 2);
+      for (let u = -14; u <= 2; u += 4) for (const v of [-4.2, 4.6]) { const [qx, qz] = at(u, v); boxAt(G, M.iron, qx, fy - 0.5, qz, 0.18, 4.95, 0.18, ang); }
+      const [gx, gz] = at(-6, -4.3);
+      const gw = new THREE.Mesh(new THREE.BoxGeometry(16, 4.2, 0.06), glassM); gw.position.set(gx, fy + 2.1, gz); gw.rotation.y = ang + Math.PI / 2; scene.add(gw);
+      const [bx, bz] = at(2.6, 0.2); boxAt(G, woodM, bx, fy - 1, bz, 0.4, 5.4, 9, ang + Math.PI / 2);
+      // the platform beside the car, level with the terrace
+      const plat = rect(-15, 2.4, 1.5, 4.8);
+      roofedBody(G, plat, fy - 3, fy + 0.05, [], M.granite, M.granite);
+      polys.add(Float32Array.from(plat.flat()), fy - 3, fy + 0.05, { kind: 'flat', walk: true, noCam: true });
+      const sign = decalTex((g, w, h) => { g.fillStyle = '#16325c'; g.fillRect(0, 0, w, h); g.fillStyle = '#ffffff'; g.font = '800 64px Archivo, sans-serif'; g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillText('FLØYEN  320 moh.', w / 2, h / 2 + 3); }, 1024, 128);
+      const sm = new THREE.MeshStandardMaterial({ map: sign, emissive: 0xffffff, emissiveMap: sign, emissiveIntensity: 0.15 });
+      glowMats.push([sm, 0.1, 0.8]);
+      const [sx2, sz2] = at(-6, 4.75); const sg = new THREE.Mesh(new THREE.PlaneGeometry(7, 0.875), sm); sg.position.set(sx2, fy + 3.85, sz2); sg.rotation.y = Math.atan2(vx, vz); scene.add(sg);
+      collideBox(gx, gz, 16, 0.3, ang + Math.PI / 2, fy - 1, fy + 4.4);
+    }
+    // the terrace: a paved deck on a stone wall, beside the track and out over the drop
+    const deck = rect(-26, 3, 4.8, 17);
+    roofedBody(G, deck, fy - 8, fy + 0.05, [], M.rubble, new THREE.MeshStandardMaterial({ color: 0xa9a7a0, roughness: 0.85, map: M.granite.map }));
+    polys.add(Float32Array.from(deck.flat()), fy - 8, fy + 0.05, { kind: 'flat', walk: true, noCam: true });
+    // the railing along its outer edges, and along the track side west of the platform
+    const rail = (u0, v0, u1, v1) => {
+      const [ax, az] = at(u0, v0), [bx, bz] = at(u1, v1), L2 = Math.hypot(bx - ax, bz - az), a2 = Math.atan2(bx - ax, bz - az) + Math.PI / 2;
+      G.obox(M.iron, (ax + bx) / 2, fy + 1.05, (az + bz) / 2, L2, 0.07, 0.07, 0, a2, 0);
+      G.obox(M.iron, (ax + bx) / 2, fy + 0.55, (az + bz) / 2, L2, 0.04, 0.04, 0, a2, 0);
+      for (let k = 0; k <= Math.floor(L2 / 1.5); k++) { const t = k * 1.5 / L2; G.obox(M.iron, ax + (bx - ax) * t, fy + 0.55, az + (bz - az) * t, 0.05, 1.05, 0.05, 0, 0, 0); }
+      polys.add(Float32Array.from([ax - 0.1, az - 0.1, bx - 0.1, bz - 0.1, bx + 0.1, bz + 0.1, ax + 0.1, az + 0.1]), fy - 1, fy + 1.1, { tree: true, noCam: true });
+    };
+    rail(-26, 4.8, -26, 17); rail(-26, 17, 3, 17); rail(-26, 4.8, -15, 4.8);
+    // flagpoles, lamps, benches and coin binoculars along it
+    const flagCols = [0xc8102e, 0x00205b, 0xc8102e, 0xffffff];
+    for (let k = 0; k < 4; k++) {
+      const [qx, qz] = at(-2 - k * 3, 15.5); cyl(G, M.white, qx, fy, qz, 0.08, 0.05, 11, 6);
+      const fl = new THREE.Mesh(new THREE.PlaneGeometry(1.8, 1.2), new THREE.MeshStandardMaterial({ color: flagCols[k], side: THREE.DoubleSide, roughness: 0.9 }));
+      fl.position.set(qx + vx * 0.0 + ux * 0.95, fy + 10.2, qz + uz * 0.95); fl.rotation.y = ang + Math.PI / 2; scene.add(fl);
+    }
+    for (const u of [-22, -12]) { const [qx, qz] = at(u, 16); cyl(G, M.iron, qx, fy, qz, 0.07, 0.05, 4, 6); sphere(G, M.white, qx, fy + 4.1, qz, 0.25); }
+    for (const u of [-20, -14, -8]) { const [qx, qz] = at(u, 15.9); G.obox(M.wood, qx, fy + 0.45, qz, 1.8, 0.06, 0.45, 0, ang, 0); G.obox(M.wood, qx, fy + 0.75, qz - 0.0, 1.8, 0.4, 0.05, 0, ang, 0); }
+    { const [qx, qz] = at(-24, 15.6); cyl(G, M.iron, qx, fy, qz, 0.06, 0.06, 1.1, 6); G.obox(new THREE.MeshStandardMaterial({ color: 0x2f6db5 }), qx, fy + 1.25, qz, 0.25, 0.25, 0.55, 0, ang + Math.PI / 2, 0); }
+    // Fløien Folkerestaurant on the uphill side: white boards, two storeys under a dark hipped roof,
+    // the glazed veranda along its front and the square pavilion at its far end
+    {
+      const body = rect(4, 30, -15, -1.5), [rx, rz] = at(17, -8.25), rtop = fy + 8;
+      roofedBody(G, body, fy - 4, rtop, [{ cx: rx, cz: rz, ux, uz, hl: 13, hw: 6.75, rise: 3 }], woodM, greyRoof);
+      collide({ p: body.flat(), b: fy - 4 }, rtop, 3);
+      windowsAlong(G, D.sash, body, fy + 0.8, 1.1, 1.8, 2.6, 4);
+      windowsAlong(G, D.sash, body, fy + 4.6, 1.1, 1.8, 2.6, 4);
+      const ver = rect(4, 26, -1.5, 2.8), [vx2, vz2] = at(15, 0.65);
+      void vx2; void vz2;
+      roofedBody(G, ver, fy - 1, fy + 3.4, [], glassM, greyRoof);
+      { const [ax, az] = at(15, 2.95); G.obox(new THREE.MeshStandardMaterial({ color: 0x2e6b4c }), ax, fy + 3.2, az, 22.4, 0.45, 0.35, 0, ang + Math.PI / 2, 0); }
+      collide({ p: ver.flat(), b: fy - 1 }, fy + 3.4);
+      // the pavilion
+      const pav = rect(26, 35, -15, -3), [cx2, cz2] = at(30.5, -9), ptop = fy + 11;
+      roofedBody(G, pav, fy - 4, ptop, [], woodM, greyRoof);
+      const pyr = new THREE.ConeGeometry(7.6, 3.2, 4); pyr.translate(0, 1.6, 0); pyr.rotateY(Math.PI / 4); pyr.scale(9 / 10.7, 1, 12 / 10.7);
+      G.geom(greyRoof, pyr, new THREE.Matrix4().makeRotationY(ang).premultiply(new THREE.Matrix4().makeTranslation(cx2, ptop, cz2)));
+      cyl(G, M.white, cx2, ptop + 2.6, cz2, 0.9, 0.9, 1.4, 8); cone(G, greyRoof, cx2, ptop + 4.0, cz2, 1.1, 1.2, 8);
+      windowsAlong(G, D.sash, pav, fy + 0.8, 1.1, 1.8, 2.4, 4); windowsAlong(G, D.sash, pav, fy + 4.6, 1.1, 1.8, 2.4, 4); windowsAlong(G, D.round, pav, fy + 8.2, 1.0, 1.8, 2.4, 4);
+      collide({ p: pav.flat(), b: fy - 4 }, ptop + 3);
+      // the name over the door, facing the terrace
+      const nameT = decalTex((g, w, h) => { g.fillStyle = '#f4f2ec'; g.fillRect(0, 0, w, h); g.strokeStyle = '#2b2b2b'; g.lineWidth = 6; g.strokeRect(6, 6, w - 12, h - 12); g.fillStyle = '#1e1e1e'; g.font = '700 58px Georgia, serif'; g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillText('FLØIEN FOLKERESTAURANT', w / 2, h / 2 + 3); }, 1024, 112);
+      const [nx2, nz2] = at(30.5, -2.95); decal(G, new THREE.MeshStandardMaterial({ map: nameT, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -2 }), nx2, nz2, vx, vz, fy + 4.2, 7.5, 0.82, 0.02);
+      decal(G, D.door, nx2, nz2, vx, vz, fy + 0.02, 2.2, 3.4);
+    }
+    finish(G, 'Fløyen');
+    out.floyenStop = (() => { const [x, z] = at(-6, 3.3); return new THREE.Vector3(x, fy + 0.05, z); })();
+    out.floyenClear = [ex, ez, 45];
+    out.floyenJump = (() => { const [x, z] = at(-23, 14.5); return { x, z }; })();     // the skydive starts at the terrace's far corner
+    out.spots.push({ n: 'Fløien Folkerestaurant', x: at(17, -8)[0], z: at(17, -8)[1] });
   }
 
   // ------------------------------------------------ Bergenhus: Håkonshallen and Rosenkrantztårnet
@@ -882,12 +1007,37 @@ export function buildLandmarks(scene, map, L, { terrain, polys }) {
     }
     // the statues
     for (const a of art) {
-      if (!/statue|sculpture|bust/.test(a.k) || !a.n || /bl[åa] stein/i.test(a.n)) continue;
+      if (!/statue|sculpture|bust|aquarium/.test(a.k) && a.n !== 'Pacific Northwest Totem' || !a.n || /bl[åa] stein/i.test(a.n)) continue;
       let ang = faceTo(a.x, a.z);
       const y = ground(a.x, a.z);
       // Christie stands with his back to the University Museum, looking out over Muséplass
       if (a.n === 'Christiestøtten' && L.uimuseum) { const [mx, mz] = centroid(L.uimuseum.p); ang = Math.atan2(a.x - mx, a.z - mz); }
-      if (a.n === 'Ole Bull') {
+      if (a.n === 'Pacific Northwest Totem') {
+        // the totem pole in Nordnesparken, Seattle's gift for Bergen's 900th year (Duane Pasco, 1970):
+        // a tall carved cedar pole of stacked figures in red, black, white and turquoise, wings at the top
+        const totem = canvasTex(128, (g, S) => {
+          g.fillStyle = '#8a5a3a'; g.fillRect(0, 0, S, S);
+          const cols = ['#b3261e', '#141414', '#e8e2d2', '#2f8f8a'];
+          for (let k = 0; k < 4; k++) { const y = k * S / 4; g.fillStyle = cols[k]; g.beginPath(); g.ellipse(S * 0.3, y + 12, 12, 8, 0, 0, 7); g.ellipse(S * 0.7, y + 12, 12, 8, 0, 0, 7); g.fill(); g.fillStyle = cols[(k + 1) % 4]; g.fillRect(S * 0.35, y + 20, S * 0.3, 6); g.fillStyle = '#141414'; g.beginPath(); g.arc(S * 0.3, y + 12, 4, 0, 7); g.arc(S * 0.7, y + 12, 4, 0, 7); g.fill(); }
+        }, 2.5, { metresV: 2.5 });
+        const tm = new THREE.MeshStandardMaterial({ map: totem, roughness: 0.8 });
+        cyl(G, tm, a.x, y - 0.5, a.z, 0.45, 0.38, 11, 10);
+        for (const sd of [-1, 1]) G.obox(tm, a.x + Math.cos(ang) * sd * 1.1, y + 9.6, a.z - Math.sin(ang) * sd * 1.1, 1.6, 0.5, 0.12, 0, ang, sd * 0.35);
+        collideBox(a.x, a.z, 1, 1, 0, y - 1, y + 11);
+      } else if (a.k === 'aquarium') {
+        // Akvariet's entrance after photos: a low pavilion with white posts under a dark slate roof,
+        // AKVARIET I BERGEN in letters along its ridge, flagpoles beside it
+        const W = 14, Dp = 4;
+        const roof = new THREE.ConeGeometry(Math.hypot(W, Dp) / 2, 1.4, 4); roof.rotateY(Math.PI / 4); roof.scale(W / Math.hypot(W, Dp) * Math.SQRT2, 1, Dp / Math.hypot(W, Dp) * Math.SQRT2);
+        G.geom(M.slateDark, roof, new THREE.Matrix4().makeRotationY(ang + Math.PI / 2).premultiply(new THREE.Matrix4().makeTranslation(a.x, y + 3.2, a.z)));
+        for (let k = -3; k <= 3; k++) for (const sd of [-1, 1]) { const px = a.x + Math.cos(ang) * k * 2.2 + Math.sin(ang) * sd * 1.6, pz = a.z - Math.sin(ang) * k * 2.2 + Math.cos(ang) * sd * 1.6; G.obox(M.white, px, y + 1.6, pz, 0.2, 3.2, 0.2, 0, ang, 0); }
+        const letters = decalTex((g, w, h) => { g.clearRect(0, 0, w, h); g.fillStyle = '#e8eef2'; g.font = '800 56px Archivo, sans-serif'; g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillText('AKVARIET I BERGEN', w / 2, h / 2); }, 1024, 96);
+        const lm = new THREE.MeshStandardMaterial({ map: letters, transparent: true, alphaTest: 0.4, side: THREE.DoubleSide, emissive: 0xffffff, emissiveMap: letters, emissiveIntensity: 0.2 });
+        const sign = new THREE.Mesh(new THREE.PlaneGeometry(10, 0.95), lm); sign.position.set(a.x, y + 4.4, a.z); sign.rotation.y = ang; scene.add(sign);
+        for (let k = 0; k < 4; k++) { const fx = a.x + Math.cos(ang) * (W / 2 + 2 + k * 1.4) + Math.sin(ang) * 3, fz = a.z - Math.sin(ang) * (W / 2 + 2 + k * 1.4) + Math.cos(ang) * 3; cyl(G, M.white, fx, y, fz, 0.06, 0.04, 9, 6); G.obox(new THREE.MeshStandardMaterial({ color: [0x2a5bb8, 0xc8102e, 0x2a5bb8, 0x3a8fd0][k], side: THREE.DoubleSide }), fx, y + 7.6, fz + 0.5, 0.02, 2.2, 0.9, 0, ang, 0); }
+        collideBox(a.x, a.z, W, Dp, ang, y - 1, y + 3.5);
+        out.spots.push({ n: 'Akvariet', x: a.x, z: a.z });
+      } else if (a.n === 'Ole Bull') {
         // Ole Bull on his rock with the violin, water falling into the pool below (1901)
         const rock = new THREE.DodecahedronGeometry(2.0, 0); rock.scale(1.3, 0.9, 1.1); rock.translate(0, 1.2, 0);
         G.geom(M.graniteDark, rock, new THREE.Matrix4().makeTranslation(a.x, y, a.z));

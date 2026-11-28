@@ -181,7 +181,8 @@ const city = buildCity(scene, map, T, {
   // the rendered ground is cut away over the house and its side passage, so it never shows inside
   // them; everywhere else, the street in front of the door included, it keeps its real height
   hole: { o: [OX, OZ], u: [HUX, HUZ], v: [HVX, HVZ], r: [-1.3, 8.05, 0.02, H.D + 0.05] },
-  keepClear: (x, z) => { const [u, v] = W2L(x, z); return u > -4 && u < 12 && v > -4 && v < 14; },
+  // no trees round the house, nor on Fløyen's terrace and the plaza by the restaurant
+  keepClear: (x, z) => { const [u, v] = W2L(x, z); if (u > -4 && u < 12 && v > -4 && v < 14) return true; const f = map.funicular, n = f.length; return Math.hypot(x - f[n - 2], z - f[n - 1]) < 45; },
 });
 // the house, its side passage and the terrace replace the ground there
 city.terrain.masks.push((x, z) => { const [u, v] = W2L(x, z); return u > -1.3 && u < 8.05 && v > -0.3 && v < H.D + 3.95; });
@@ -2291,7 +2292,7 @@ function updateGun(dt) {
 // At the viewpoint on Fløyen there's a jump: E takes you 450 m up over the mountain, and you
 // fall. Steer with WASD, open the parachute (Space or click) and fly it down: A/D turn, W dives,
 // S flares. Forget to open it and that's the end of you. The canopy carries the Brann logo.
-const JUMP = (() => { const x = 516, z = -166; return { x, z, y: world.floorAt(x, z, 600, 700) }; })();
+const JUMP = (() => { const j = landmarks.floyenJump, x = j ? j.x : 516, z = j ? j.z : -166; return { x, z, y: world.floorAt(x, z, 600, 700) }; })();
 const jumpSign = new THREE.Sprite(new THREE.SpriteMaterial({ map: textTexture(['Fallskjermhopp'], { w: 640, h: 128, bg: '#e2231a', fg: '#ffffff', font: '800 60px "Archivo", sans-serif', radius: 24, border: '#ffffff' }), fog: false }));
 jumpSign.scale.set(4.5, 0.9, 1); jumpSign.position.set(JUMP.x, JUMP.y + 4.2, JUMP.z);
 scene.add(jumpSign);
@@ -3050,6 +3051,8 @@ const OUT_SPOTS = (() => {
     theodor: near('bar', SPAWN.torget),                                // Magda
     jaakko: near('food', SPAWN.torget),                                // Guangdong House
     martin: (() => {                                                   // by Fløibanen's lower station, off Torget
+      const d = stationDoor(city.funiStation);
+      if (d) { const x = d.x + 1.6, z = d.z + 0.8; return [x, world.floorAt(x, z, 300), z, Math.atan2(d.x - x, d.z - z)]; }
       const fx = map.funicular[0], fz = map.funicular[1], i = nearestNode(fx, fz, 60);
       const x = i >= 0 ? gx(i) : fx, z = i >= 0 ? gz(i) : fz;
       return [x, world.floorAt(x, z, 300), z, Math.atan2(fx - x, fz - z)];
@@ -3365,7 +3368,26 @@ const FUNI_WAIT = 18, FUNI_RUN = 75;
 const funiState = { t: 0, ride: null, u: [0, 1] };
 const funiWin = city.cars.map(car => car.children[1] && car.children[1].material);
 // the platform beside each end of the line, where you get on and off
+// at the bottom: on the street outside the station's door
+function stationDoor(b) {
+  if (!b) return null;
+  const p = b.p, n = p.length / 2;
+  let cx = 0, cz = 0; for (let i = 0; i < n; i++) { cx += p[i * 2]; cz += p[i * 2 + 1]; } cx /= n; cz /= n;
+  let best = null;
+  for (let i = 0; i < n; i++) {
+    const ax = p[i * 2], az = p[i * 2 + 1], bx = p[((i + 1) % n) * 2], bz = p[((i + 1) % n) * 2 + 1], L = Math.hypot(bx - ax, bz - az);
+    if (L < 2) continue;
+    let nx = (bz - az) / L, nz = -(bx - ax) / L;
+    if (PolyWorld.inside(p, (ax + bx) / 2 + nx * 0.3, (az + bz) / 2 + nz * 0.3)) { nx = -nx; nz = -nz; }
+    const t = b.d && b.d[0] === i ? b.d[1] : 0.5, x = ax + (bx - ax) * t + nx * 1.6, z = az + (bz - az) * t + nz * 1.6;
+    const score = (b.d && b.d[0] === i ? 100 : 0) + (city.onRoad(x + nx * 2, z + nz * 2) ? 10 : 0) + L;
+    if (!best || score > best.score) best = { score, x, z };
+  }
+  return best && new THREE.Vector3(best.x, city.terrain.height(best.x, best.z), best.z);
+}
 const funiStop = [0, 1].map(u => {
+  if (u === 0) { const d = stationDoor(city.funiStation); if (d) return d; }
+  if (u === 1 && landmarks.floyenStop) return landmarks.floyenStop.clone();      // on the platform, by the terrace
   const c = city.funiCurve, p = c.getPointAt(u), q = c.getPointAt(u ? u - 0.01 : 0.01);
   const dx = q.x - p.x, dz = q.z - p.z, l = Math.hypot(dx, dz) || 1;
   for (const side of [1, -1]) for (const d of [3.5, 5, 7]) {
@@ -3383,8 +3405,10 @@ function updateFuni(dt) {
   const u0 = t < FUNI_WAIT ? 0 : t < FUNI_WAIT + FUNI_RUN ? ease((t - FUNI_WAIT) / FUNI_RUN) : t < 2 * FUNI_WAIT + FUNI_RUN ? 1 : 1 - ease((t - 2 * FUNI_WAIT - FUNI_RUN) / FUNI_RUN);
   f.u = [u0, 1 - u0];
   f.waiting = t < FUNI_WAIT || (t >= FUNI_WAIT + FUNI_RUN && t < 2 * FUNI_WAIT + FUNI_RUN);
+  // at the bottom the cars wait 12 m into the tunnel, behind the little station on the street
+  const U0 = Math.min(0.2, 12 / city.funiCurve.getLength());
   city.cars.forEach((car, i) => {
-    const u = clamp(f.u[i], 0, 0.995);
+    const u = clamp(U0 + (1 - U0) * f.u[i], 0, 0.995);
     const p = city.funiCurve.getPointAt(u), p2 = city.funiCurve.getPointAt(u + 0.005);
     car.position.copy(p);
     car.lookAt(p2.x, p.y, p2.z);

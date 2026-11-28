@@ -43,7 +43,7 @@ OUT = sys.argv[2]
 LAT0, LON0 = 60.3931275, 5.3333919          # Cappes vei 6 (OSM address node 3126074741)
 MLAT = 111230.0
 MLON = 111320.0 * math.cos(math.radians(LAT0))
-X0, X1, Z0, Z1 = -1110.0, 1050.0, -1340.0, 1590.0  # playable area: Bergenhus and Skuteviken to Fløyen, the university and Store Lungegårdsvann
+X0, X1, Z0, Z1 = -1790.0, 1050.0, -1340.0, 1590.0  # playable area: Nordnes, Bergenhus and Skuteviken to Fløyen, the university and Store Lungegårdsvann
 
 def P(n): return ((n['lon'] - LON0) * MLON, -(n['lat'] - LAT0) * MLAT)
 
@@ -898,10 +898,11 @@ def write_grid(g, h, path, scale):
 art = []
 for n in nodes.values():
     t = n.get('tags', {})
-    if not (t.get('tourism') == 'artwork' or t.get('amenity') == 'fountain' or t.get('historic') in ('memorial', 'monument') and t.get('memorial') in ('statue', 'obelisk', 'stone')): continue
+    if not (t.get('tourism') in ('artwork', 'aquarium') or t.get('amenity') == 'fountain' or t.get('historic') in ('memorial', 'monument') and t.get('memorial') in ('statue', 'obelisk', 'stone')
+            or (t.get('tourism') == 'attraction' and 'Lehmkuhl' in t.get('name', ''))): continue
     x, z = P(n)
     if not (X0 < x < X1 and Z0 < z < Z1): continue
-    art.append({'n': t.get('name', ''), 'k': t.get('artwork_type') or t.get('amenity') or t.get('memorial') or '', 'x': r1(x), 'z': r1(z)})
+    art.append({'n': t.get('name', ''), 'k': t.get('artwork_type') or (t.get('tourism') if t.get('tourism') != 'artwork' else '') or t.get('amenity') or t.get('memorial') or '', 'x': r1(x), 'z': r1(z)})
 print('artworks and fountains', len(art))
 
 # Shops, cafés, restaurants, pubs and the like, with their names: the game puts each name on a
@@ -941,6 +942,16 @@ for w in ways.values():
     if len(c) < 2 or not in_area(c): continue
     trolley.append({'p': flat(c), 'w': round(road_width(t, t['highway']), 1), 'o': 1 if t.get('oneway') in ('yes', '-1') else 0})
 print('trolley wire ways', len(trolley))
+
+# Outdoor swimming pools (Nordnes sjøbad): turquoise water a little under the ground round them
+pools = []
+for w in ways.values():
+    t = w.get('tags', {})
+    if t.get('leisure') != 'swimming_pool' or t.get('indoor') == 'yes' or t.get('covered') == 'yes' or 'building' in t: continue
+    c = coords(w)
+    if len(c) < 4 or c[0] != c[-1] or not in_area(c) or Polygon(c).area < 20: continue
+    pools.append(flat(c[:-1]))
+print('outdoor pools', len(pools))
 
 # Quays: OpenStreetMap's coastline (land on the left of each way) is where the harbour's quay
 # walls stand. The 2.5 m terrain grid would draw the shore as a sawtooth, so the ground on the
@@ -1043,7 +1054,7 @@ out = {
     'lamps': lamps,
     'parking': parking,
     'waters': waters,
-    'kerbs': kerbs, 'marks': marks, 'crossings': crossings, 'coast': coast, 'art': art, 'shops': shops, 'stops': stops, 'bikes': bikes, 'trolley': trolley,
+    'kerbs': kerbs, 'marks': marks, 'crossings': crossings, 'coast': coast, 'art': art, 'shops': shops, 'stops': stops, 'bikes': bikes, 'trolley': trolley, 'pools': pools,
     'roadmask': {'x0': FX0, 'z0': FZ0, 'res': MRES, 'w': MW, 'h': MH},
 }
 json.dump(out, open(os.path.join(OUT, 'map.json'), 'w'), separators=(',', ':'))

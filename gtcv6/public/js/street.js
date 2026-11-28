@@ -300,6 +300,22 @@ export function buildStreet(scene, map, S, { terrain, polys, onRoad }) {
     }
   }
 
+  // ------------------------------------------------ outdoor pools (Nordnes sjøbad): turquoise water with a white edge
+  {
+    const poolM = new THREE.MeshStandardMaterial({ color: 0x3fb7c4, roughness: 0.08, metalness: 0.1 }), edgeM = std({ color: 0xf2f0ea, roughness: 0.6 });
+    for (const p of map.pools || []) {
+      const n = p.length / 2;
+      let gy = Infinity; for (let i = 0; i < n; i++) gy = Math.min(gy, ground(p[i * 2], p[i * 2 + 1]));
+      const sh = new THREE.Shape(); for (let i = 0; i < n; i++) (i ? sh.lineTo : sh.moveTo).call(sh, p[i * 2], -p[i * 2 + 1]);
+      const m = new THREE.Mesh(new THREE.ShapeGeometry(sh), poolM); m.rotation.x = -Math.PI / 2; m.position.y = gy + 0.12; m.receiveShadow = true; scene.add(m);
+      for (let i = 0; i < n; i++) {
+        const ax = p[i * 2], az = p[i * 2 + 1], bx = p[((i + 1) % n) * 2], bz = p[((i + 1) % n) * 2 + 1], L = Math.hypot(bx - ax, bz - az);
+        if (L < 0.1) continue;
+        G.obox(edgeM, (ax + bx) / 2, gy + 0.05, (az + bz) / 2, L + 0.4, 0.35, 0.4, 0, Math.atan2(bx - ax, bz - az) + Math.PI / 2, 0);
+      }
+    }
+  }
+
   G.build(scene);
   return { update(lamp) { for (const [m, d, n] of glow) m.emissiveIntensity = d + (n - d) * lamp; } };
 }
