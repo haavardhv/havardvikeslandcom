@@ -822,6 +822,49 @@ export function buildLandmarks(scene, map, L, { terrain, polys, onRoad }) {
     out.spots.push({ n: 'Fløien Folkerestaurant', x: at(17, -8)[0], z: at(17, -8)[1] });
   }
 
+  // ------------------------------------------------ Bryggen's boardwalk
+  // After photos: a raised walk of grey-brown planks along the shopfronts, a step up from the
+  // street, the length of the row. It runs along each Bryggen house's wall on the harbour side.
+  {
+    const G = geoOf();
+    const plankM = new THREE.MeshStandardMaterial({ roughness: 0.9, map: canvasTex(256, (g, S) => {
+      g.fillStyle = '#6f6253'; g.fillRect(0, 0, S, S);
+      const R = rnd(5);
+      for (let j = 0; j < 8; j++) { g.fillStyle = `rgba(${R() < 0.5 ? '30,24,18' : '200,185,160'},${0.06 + R() * 0.12})`; g.fillRect(0, j * S / 8, S, S / 8); g.fillStyle = 'rgba(20,16,12,0.55)'; g.fillRect(0, j * S / 8, S, 3); for (let x = R() * S; x < S; x += 90 + R() * 80) g.fillRect(x, j * S / 8, 2, S / 8); }
+    }, 1.6) });
+    const W = 2.2, H = 0.28;
+    let n = 0;
+    out.boardwalkAt = [];
+    // the Bryggen houses, and the houses standing in the row between them
+    const bc = map.buildings.filter(b => b.k === 'bryggen').map(b => centroid(b.p));
+    for (const b of map.buildings) {
+      if (b.skip) continue;
+      if (b.k !== 'bryggen') { const [x, z] = centroid(b.p); if (!bc.some(([x2, z2]) => Math.hypot(x - x2, z - z2) < 16)) continue; }
+      const r = ringOf(b.p);
+      for (let i = 0; i < r.length; i++) {
+        const [ax, az] = r[i], [bx, bz] = r[(i + 1) % r.length], len = Math.hypot(bx - ax, bz - az);
+        if (len < 2.5) continue;
+        const dx = (bx - ax) / len, dz = (bz - az) / len;
+        let nx = dz, nz = -dx;
+        if (insideP(b.p, (ax + bx) / 2 + nx * 0.3, (az + bz) / 2 + nz * 0.3)) { nx = -nx; nz = -nz; }
+        const mx = (ax + bx) / 2, mz = (az + bz) / 2;
+        // the front row: a wall facing Vågen (south-west) with nothing built between it and the quay
+        if (nx * -0.71 + nz * 0.71 < 0.8) continue;
+        if ([W + 0.4, 6, 10, 15, 20].some(d => polys.nearBuilding(mx + nx * d, mz + nz * d, 0.3))) continue;
+        const gy = Math.max(ground(ax + nx * 1.1, az + nz * 1.1), ground(bx + nx * 1.1, bz + nz * 1.1), ground(mx + nx * W, mz + nz * W));
+        const L2 = len + 0.6, ox = mx + nx * W / 2, oz = mz + nz * W / 2, ang = Math.atan2(dx, dz) + Math.PI / 2;
+        boxAt(G, plankM, ox, gy - 0.6, oz, L2, 0.6 + H, W, ang);
+        // the step along the street edge
+        boxAt(G, plankM, ox + nx * (W / 2 + 0.2), gy - 0.4, oz + nz * (W / 2 + 0.2), L2, 0.4 + H / 2, 0.4, ang);
+        const hx = dx * L2 / 2, hz = dz * L2 / 2, p0x = mx - nx * 0.1, p0z = mz - nz * 0.1, p1x = mx + nx * W, p1z = mz + nz * W;
+        polys.add(Float32Array.from([p0x - hx, p0z - hz, p0x + hx, p0z + hz, p1x + hx, p1z + hz, p1x - hx, p1z - hz]), gy - 0.6, gy + H, { kind: 'flat', walk: true, noCam: true });
+        n++; out.boardwalkAt.push([Math.round(ox), Math.round(oz), Math.round(nx * 10) / 10, Math.round(nz * 10) / 10]);
+      }
+    }
+    if (n) finish(G, 'Bryggen boardwalk');
+    out.boardwalk = n;
+  }
+
   // ------------------------------------------------ Statsraad Lehmkuhl at her berth by Bergenhus
   // After photos: the three-masted barque (1914), a white steel hull 84 m long with a dark-blue
   // band at the waterline, deckhouses, a long bowsprit, three masts of about 48 m with their
