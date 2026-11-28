@@ -489,6 +489,7 @@ for i, g in sorted(kept.items()):
         if name: b['n'] = name
         if church: b['k'] = 'church'
         if bryggen: b['k'] = 'bryggen'
+        if kind == 'kiosk': b['k'] = 'kiosk'; b['bc'] = t.get('building:colour', '')
         if elevated: b['el'] = 1
         b['_poly'] = poly; b['_kind'] = kind; b['_t'] = t; b['_hv'] = hv; b['_levels'] = levels; b['_centre'] = centre
         buildings.append((bid, b))
@@ -818,6 +819,7 @@ print('funicular points', len(fl), 'from', [r1(v) for v in fl[0]], 'to', [r1(v) 
 tram_ways = [w for w in ways.values() if w.get('tags', {}).get('railway') in ('light_rail', 'tram') and in_area(coords(w))
              and w.get('tags', {}).get('tunnel') not in ('yes',)]
 tracks = [flat(coords(w)) for w in tram_ways if len(coords(w)) >= 2]
+n_light = len(tracks)           # Bybanen's tracks come first; the railway's are added after
 # the railway into Bergen station gets rails too (drawn, not driven)
 for w in ways.values():
     t = w.get('tags', {})
@@ -836,10 +838,16 @@ if tadj:
         t = w.get('tags', {})
         if not (t.get('railway') == 'platform' or (t.get('public_transport') == 'platform' and (t.get('tram') == 'yes' or t.get('light_rail') == 'yes'))): continue
         c = coords(w)
-        if len(c) < 4 or c[0] != c[-1] or not in_area(c): continue
-        pg = Polygon(c).buffer(0)
-        if pg.is_empty or pg.distance(tl_union) > 6: continue
-        platforms.append({'p': flat(c[:-1]), 'n': t.get('name', '')})
+        if len(c) < 2 or not in_area(c): continue
+        if len(c) >= 4 and c[0] == c[-1]: pg = Polygon(c).buffer(0)
+        else:
+            # a platform mapped as a line along its edge: a 3 m strip, kept clear of the tram's envelope
+            pg = LineString(c).buffer(2.2, cap_style=2).difference(tl_union.buffer(1.5))
+            parts = polys_of(pg)
+            if not parts: continue
+            pg = max(parts, key=lambda p: p.area).simplify(0.1)
+        if pg.is_empty or pg.geom_type != 'Polygon' or pg.distance(tl_union) > 6 or pg.area < 8: continue
+        platforms.append({'p': flat(list(pg.exterior.coords)[:-1]), 'n': t.get('name', '')})
     # start: the dead end nearest Byparken's platform
     byp = next((Polygon([(pp[k], pp[k + 1]) for k in range(0, len(pp), 2)]) for pp in (pl['p'] for pl in platforms)), None)
     ends = [n for n, a in tadj.items() if len(a) == 1]
@@ -909,6 +917,18 @@ for n in nodes.values():
     if not (X0 < x < X1 and Z0 < z < Z1): continue
     shops.append({'n': nm[:28], 'k': kind, 'b': t.get('brand', ''), 'x': r1(x), 'z': r1(z)})
 print('named shops', len(shops))
+
+# Bus stops (with or without a shelter) and the city-bike stations
+stops, bikes = [], []
+for n in nodes.values():
+    t = n.get('tags', {})
+    x, z = P(n)
+    if not (X0 < x < X1 and Z0 < z < Z1): continue
+    if t.get('highway') == 'bus_stop' or (t.get('public_transport') == 'platform' and t.get('bus') == 'yes'):
+        stops.append({'n': t.get('name', '')[:30], 'x': r1(x), 'z': r1(z), 'sh': 1 if t.get('shelter') == 'yes' else 0})
+    elif t.get('amenity') == 'bicycle_rental':
+        bikes.append({'x': r1(x), 'z': r1(z), 'c': int(num(t.get('capacity'), 10) or 10)})
+print('bus stops', len(stops), 'bike stations', len(bikes))
 
 # Quays: OpenStreetMap's coastline (land on the left of each way) is where the harbour's quay
 # walls stand. The 2.5 m terrain grid would draw the shore as a sawtooth, so the ground on the
@@ -1002,7 +1022,7 @@ out = {
     'trees': trees,
     'funicular': funicular,
     'funiTunnel': funi_tunnel,
-    'tram': {'tracks': tracks, 'platforms': platforms, 'route': tram_route},
+    'tram': {'tracks': tracks, 'nLight': n_light, 'platforms': platforms, 'route': tram_route},
     'landmarks': landmarks,
     'graph': graph,
     'places': places,
@@ -1011,7 +1031,7 @@ out = {
     'lamps': lamps,
     'parking': parking,
     'waters': waters,
-    'kerbs': kerbs, 'marks': marks, 'crossings': crossings, 'coast': coast, 'art': art, 'shops': shops,
+    'kerbs': kerbs, 'marks': marks, 'crossings': crossings, 'coast': coast, 'art': art, 'shops': shops, 'stops': stops, 'bikes': bikes,
     'roadmask': {'x0': FX0, 'z0': FZ0, 'res': MRES, 'w': MW, 'h': MH},
 }
 json.dump(out, open(os.path.join(OUT, 'map.json'), 'w'), separators=(',', ':'))

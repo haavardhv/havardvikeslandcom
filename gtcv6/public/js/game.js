@@ -10,6 +10,7 @@ import { Audio, lineDur } from './audio.js';
 import { stylePlaceBuildings, buildPlaces } from './places.js';
 import { prepareLandmarks, buildLandmarks } from './landmarks.js';
 import { buildShopSigns } from './signs.js';
+import { prepareStreet, buildStreet } from './street.js';
 import { buildTram } from './tram.js';
 
 const $ = id => document.getElementById(id);
@@ -164,6 +165,7 @@ const T = buildTextures();
 const map = await loadMapData();
 const placeBuildings = stylePlaceBuildings(map);
 const landmarkBuildings = prepareLandmarks(map);
+const streetThings = prepareStreet(map);
 const H = map.house6;
 const [OX, OZ] = H.origin, [HUX, HUZ] = H.u, [HVX, HVZ] = H.v;
 // house-local (u along the street, v into the house) <-> world
@@ -309,6 +311,8 @@ const places = buildPlaces(scene, map, placeBuildings, {
 const landmarks = buildLandmarks(scene, map, landmarkBuildings, { terrain: city.terrain, polys: city.polys, onRoad: city.onRoad });
 // the names of the shops, cafés and restaurants over their doors
 const shopSigns = buildShopSigns(scene, map, { terrain: city.terrain, polys: city.polys, onRoad: city.onRoad });
+// the kiosks, bus stops and city-bike stations
+const streetFurniture = buildStreet(scene, map, streetThings, { terrain: city.terrain, polys: city.polys, onRoad: city.onRoad });
 // Bybanen: the rails, the platforms at Byparken and Kaigaten, and the tram
 const tram = buildTram(scene, map.tram, { terrain: city.terrain, polys: city.polys });
 function updateTram(dt) {
@@ -1316,6 +1320,7 @@ function updateDayNight(dt) {
   places.update(dt, lamp);
   landmarks.update(dt, lamp, time);
   shopSigns.update(lamp);
+  streetFurniture.update(lamp);
 }
 // the scooter's headlight: one spot light, on the scooter you ride, at night
 const headlight = new THREE.SpotLight(0xfff0d8, 0, 34, 0.42, 0.55, 1.1);

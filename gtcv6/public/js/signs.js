@@ -12,7 +12,7 @@ const BRANDS = {
   'rema 1000': ['#1f3fa6', '#ffffff', '#e1251b'], 'kiwi': ['#5fa832', '#ffffff'], '7-eleven': ['#ffffff', '#0b7a44', '#f37021'],
   'meny': ['#d9131f', '#ffffff'], "mcdonald's": ['#d52b1e', '#ffc72c'], 'burger king': ['#f5ebdc', '#d62300', '#502314'],
   'starbucks': ['#00704a', '#ffffff'], 'h&m': ['#ffffff', '#e50010'], 'clas ohlson': ['#1c3f7c', '#ffffff'], 'posten': ['#e32d22', '#ffffff'],
-  'narvesen': ['#1a1a1a', '#ffd400'], 'espresso house': ['#4a2a22', '#ffffff'], 'deli de luca': ['#e2661c', '#ffffff'],
+  'narvesen': ['#18328f', '#ffffff', '#f26522'], 'espresso house': ['#4a2a22', '#ffffff'], 'deli de luca': ['#e2661c', '#ffffff'],
   'bunnpris': ['#e2001a', '#ffffff', '#ffd400'], 'extra': ['#ffd400', '#d6001c'], 'joe & the juice': ['#1a1a1a', '#f2a7b7'],
 };
 const KIND = (k) => k === 'restaurant' ? ['#5c1f1f', '#f3e6c8'] : k === 'cafe' ? ['#23392c', '#f1ead8'] : k === 'bar' || k === 'pub' || k === 'nightclub' ? ['#2a1b14', '#e8c27a']
@@ -28,7 +28,7 @@ export function buildShopSigns(scene, map, { terrain, polys, onRoad }) {
   const CW = 384, CH = 48, COLS = 5, ROWS = 42, PER = COLS * ROWS;
   const atlases = [];
   const newAtlas = () => { const c = document.createElement('canvas'); c.width = CW * COLS; c.height = CH * ROWS; const a = { c, g: c.getContext('2d'), n: 0, p: [], u: [], nr: [] }; atlases.push(a); return a; };
-  const placed = [];
+  const placed = [], chains = [];
   const tmp = { x: 0, z: 0 };
   for (const s of shops) {
     if (placed.length >= PER * 2) break;
@@ -60,15 +60,31 @@ export function buildShopSigns(scene, map, { terrain, polys, onRoad }) {
     const brand = BRANDS[(s.b || s.n).toLowerCase()];
     const [bg, fg, acc] = brand || KIND(s.k.replace('shop:', 'shop:'));
     g.fillStyle = bg; g.fillRect(cx, cy, CW, CH);
-    if (acc) { g.fillStyle = acc; g.fillRect(cx, cy + CH - 7, CW, 7); }
+    const bkey = (s.b || s.n).toLowerCase();
+    if (bkey === '7-eleven') ['#f37021', '#ee2526', '#008163'].forEach((c2, i) => { g.fillStyle = c2; g.fillRect(cx, cy + CH - 15 + i * 5, CW, 5); });
+    else if (acc) { g.fillStyle = acc; g.fillRect(cx, cy + CH - 7, CW, 7); }
     g.strokeStyle = 'rgba(0,0,0,0.25)'; g.lineWidth = 3; g.strokeRect(cx + 1.5, cy + 1.5, CW - 3, CH - 3);
     g.fillStyle = fg; g.textAlign = 'center'; g.textBaseline = 'middle';
-    const text = brand ? s.n : s.n.toUpperCase();
-    let size = 32; do { g.font = `800 ${size}px ${FONT}`; size -= 1; } while (g.measureText(text).width > CW - 24 && size > 12);
+    // a chain's fascia says the chain, not the branch ("7-Eleven Torget" is just 7-ELEVEn)
+    const BRAND_TEXT = { '7-eleven': '7-ELEVEn', kiwi: 'kiwi', 'rema 1000': 'REMA 1000', narvesen: 'NARVESEN', meny: 'MENY', 'h&m': 'H&M', extra: 'Extra', bunnpris: 'Bunnpris', posten: 'Posten' };
+    const text = brand ? (BRAND_TEXT[bkey] || s.b || s.n) : s.n.toUpperCase();
+    if (bkey === 'narvesen') {
+      // the dark-blue oval, green on the left and orange on the right
+      g.fillStyle = '#0f1d4a'; g.fillRect(cx, cy, CW, CH);
+      const ox = cx + CW / 2, oy = cy + CH / 2, rx = CW * 0.3, ry = CH * 0.42;
+      g.fillStyle = '#18328f'; g.beginPath(); g.ellipse(ox, oy, rx, ry, 0, 0, 7); g.fill();
+      g.lineWidth = 4; g.strokeStyle = '#3fb24a'; g.beginPath(); g.ellipse(ox, oy, rx, ry, 0, Math.PI * 0.55, Math.PI * 1.45); g.stroke();
+      g.strokeStyle = '#f26522'; g.beginPath(); g.ellipse(ox, oy, rx, ry, 0, -Math.PI * 0.45, Math.PI * 0.45); g.stroke();
+    }
+    g.fillStyle = fg;
+    let size = 32; do { g.font = `800 ${size}px ${FONT}`; size -= 1; } while (g.measureText(text).width > (bkey === 'narvesen' ? CW * 0.5 : CW - 24) && size > 12);
     g.fillText(text, cx + CW / 2, cy + CH / 2 + 2);
     // the sign: the part of the cell the name fills, 50 cm high, over the shopfront
-    const tw = Math.min(CW, g.measureText(text).width + 28), h = 0.5;
-    const width = Math.min(best.L - 0.5, tw / CH * h);
+    // a chain gets a fascia across its shopfront (the whole cell, up to 6.4 x 0.8 m); the rest a
+    // name board as long as the name
+    const tw = brand ? CW : Math.min(CW, g.measureText(text).width + 28);
+    const h = brand ? Math.min(0.8, (best.L - 0.5) / 8) : 0.5;
+    const width = brand ? h * 8 : Math.min(best.L - 0.5, tw / CH * h);
     const gy = terrain.height(best.px + best.nx * 1.2, best.pz + best.nz * 1.2), y0 = gy + 2.82, out = 0.1;
     const ox = best.px + best.nx * out, oz = best.pz + best.nz * out, hx = best.dx * width / 2, hz = best.dz * width / 2;
     const u0 = (cx + CW / 2 - tw / 2) / a.c.width, u1 = (cx + CW / 2 + tw / 2) / a.c.width, v0 = 1 - (cy + CH) / a.c.height, v1 = 1 - cy / a.c.height;
@@ -76,6 +92,7 @@ export function buildShopSigns(scene, map, { terrain, polys, onRoad }) {
     const L0 = [ox + hx, y0, oz + hz], R0 = [ox - hx, y0, oz - hz];
     const sx = (best.nx * best.dz - best.nz * best.dx) > 0;
     const A = sx ? L0 : R0, B = sx ? R0 : L0;
+    if (brand) chains.push({ n: s.n, x: best.px, z: best.pz, nx: best.nx, nz: best.nz });
     const quad = [A, B, [B[0], y0 + h, B[2]], [A[0], y0 + h, A[2]]], uv = [[u0, v0], [u1, v0], [u1, v1], [u0, v1]];
     for (const i of [0, 1, 2, 0, 2, 3]) { a.p.push(...quad[i]); a.u.push(...uv[i]); a.nr.push(best.nx, 0, best.nz); }
   }
@@ -91,5 +108,5 @@ export function buildShopSigns(scene, map, { terrain, polys, onRoad }) {
     const mesh = new THREE.Mesh(geo, m); mesh.matrixAutoUpdate = false; mesh.receiveShadow = true;
     scene.add(mesh); mats.push(m);
   }
-  return { count: placed.length, update(lamp) { for (const m of mats) m.emissiveIntensity = 0.05 + 0.75 * lamp; } };
+  return { count: placed.length, chains, update(lamp) { for (const m of mats) m.emissiveIntensity = 0.05 + 0.75 * lamp; } };
 }
